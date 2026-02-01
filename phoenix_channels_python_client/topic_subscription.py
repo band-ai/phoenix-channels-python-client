@@ -21,7 +21,7 @@ class TopicSubscription:
     queue: Queue[ChannelMessage]
     subscription_ready: Future[None]
     join_ref: str
-    process_topic_messages_task: Task[None] = None
+    process_topic_messages_task: Optional[Task[None]] = None
     leave_requested: Event = field(default_factory=Event)
     unsubscribe_completed: Optional[Future[None]] = None
     current_callback_task: Optional[Task[None]] = None

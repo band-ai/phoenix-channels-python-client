@@ -1,15 +1,15 @@
 import json
 import pytest_asyncio
-from typing import AsyncGenerator
-from websockets.asyncio.server import serve
+from typing import AsyncGenerator, Optional
+from websockets.asyncio.server import serve, ServerConnection
 
 
 class FakePhoenixServerV2:
-    def __init__(self, host="localhost", port=8765):
+    def __init__(self, host: str = "localhost", port: int = 8765):
         self.host = host
         self.port = port
         self.server = None
-        self.client_websocket = None
+        self.client_websocket: Optional[ServerConnection] = None
         self.valid_topics = {
             "test-topic",
             "test-topic-b",
@@ -33,6 +33,9 @@ class FakePhoenixServerV2:
 
     async def handle_message(self, data):
         """Handle incoming v2 protocol messages (array format: [join_ref, msg_ref, topic, event, payload])"""
+        if self.client_websocket is None:
+            return
+
         if not isinstance(data, list) or len(data) != 5:
             return  # Invalid v2 message format
 
