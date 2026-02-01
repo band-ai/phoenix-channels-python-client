@@ -29,6 +29,8 @@ dev = [
     "pytest-asyncio",
     "pre-commit>=3.0.0",
     "commitizen>=3.13.0",
+    "pyrefly",
+    "ruff",
 ]
 test = [
     "pytest",

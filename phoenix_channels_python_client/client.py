@@ -114,11 +114,11 @@ class PHXChannelsClient:
                 self.unsubscribe_from_topic(topic) for topic in topics_to_unsubscribe
             ]
 
+            async def gather_unsubscribes() -> list[BaseException | None]:
+                return await asyncio.gather(*unsubscribe_tasks, return_exceptions=True)
+
             try:
-                results = await asyncio.wait_for(
-                    asyncio.gather(*unsubscribe_tasks, return_exceptions=True),
-                    timeout=5.0,
-                )
+                results = await asyncio.wait_for(gather_unsubscribes(), timeout=5.0)
 
                 for topic, result in zip(topics_to_unsubscribe, results):
                     if isinstance(result, Exception):
@@ -334,6 +334,8 @@ class PHXChannelsClient:
         topic_join_message = make_message(
             event=PHXEvent.join, topic=topic, ref=join_ref, join_ref=join_ref
         )
+        if self.connection is None:
+            raise PHXConnectionError("Not connected to server")
         await self._protocol_handler.send_message(self.connection, topic_join_message)
 
         try:
@@ -359,6 +361,8 @@ class PHXChannelsClient:
             ref=leave_ref,
             join_ref=topic_subscription.join_ref,
         )
+        if self.connection is None:
+            raise PHXConnectionError("Not connected to server")
         await self._protocol_handler.send_message(self.connection, topic_leave_message)
 
         topic_subscription.leave_requested.set()
@@ -459,6 +463,8 @@ class PHXChannelsClient:
         return topic_subscription.async_callback is not None
 
     async def _start_processing(self) -> None:
+        if self.connection is None:
+            raise PHXConnectionError("Not connected to server")
         await self._protocol_handler.process_websocket_messages(
             self.connection, self._topic_subscriptions
         )

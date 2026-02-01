@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 from phoenix_channels_python_client.client import PHXChannelsClient
-from phoenix_channels_python_client.phx_messages import ChannelMessage
+from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
@@ -383,7 +383,7 @@ async def test_dynamic_event_handler_management_with_counter(
         assert message_handler_count == 1
 
         # Add specific handler, event goes to both message handler and specific handler
-        client.add_event_handler("test-topic", "count_me", count_handler)
+        client.add_event_handler("test-topic", Event("count_me"), count_handler)
         await phoenix_server.simulate_server_event(
             "test-topic", "count_me", {}, join_ref="1"
         )
@@ -396,7 +396,7 @@ async def test_dynamic_event_handler_management_with_counter(
         assert message_handler_count == 2  # Both handlers ran
 
         # Remove specific handler, event goes to message handler only again
-        client.remove_event_handler("test-topic", "count_me")
+        client.remove_event_handler("test-topic", Event("count_me"))
         await phoenix_server.simulate_server_event(
             "test-topic", "count_me", {}, join_ref="1"
         )
@@ -430,6 +430,7 @@ async def test_run_forever_exits_when_connection_closes(
 
         run_forever_task = asyncio.create_task(client.run_forever())
 
+        assert phoenix_server.client_websocket is not None
         await phoenix_server.client_websocket.close()
 
         # run_forever() should exit (proving it detected the closure)

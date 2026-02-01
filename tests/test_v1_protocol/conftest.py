@@ -1,15 +1,15 @@
 import json
 import pytest_asyncio
-from typing import AsyncGenerator
-from websockets.asyncio.server import serve
+from typing import AsyncGenerator, Optional
+from websockets.asyncio.server import serve, ServerConnection
 
 
 class FakePhoenixServerV1:
-    def __init__(self, host="localhost", port=8765):
+    def __init__(self, host: str = "localhost", port: int = 8765):
         self.host = host
         self.port = port
         self.server = None
-        self.client_websocket = None
+        self.client_websocket: Optional[ServerConnection] = None
         self.valid_topics = {
             "test-topic",
             "test-topic-b",
@@ -33,6 +33,9 @@ class FakePhoenixServerV1:
 
     async def handle_message(self, data):
         """Handle incoming v1 protocol messages (JSON object format)"""
+        if self.client_websocket is None:
+            return
+
         topic = data.get("topic")
         event = data.get("event")
         ref = data.get("ref")

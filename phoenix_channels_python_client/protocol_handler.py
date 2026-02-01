@@ -1,10 +1,10 @@
 import logging
 from enum import Enum
-from typing import Dict, Union
+from typing import Any, Dict, Optional, Union
 from websockets import ClientConnection
 
 import json
-from phoenix_channels_python_client.phx_messages import ChannelMessage
+from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
 from phoenix_channels_python_client.utils import make_message
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 
@@ -35,27 +35,41 @@ class PHXProtocolHandler:
                         f"Protocol v{self.protocol_version} expects 5-element array, got {len(parsed_data)}"
                     )
 
-                message_dict = {
-                    "topic": parsed_data[2],
-                    "event": parsed_data[3],
-                    "ref": parsed_data[1],
-                    "payload": parsed_data[4] or {},
-                    "join_ref": parsed_data[0],  # join_ref from first element
-                }
+                topic: str = parsed_data[2]
+                event_str: str = parsed_data[3]
+                ref: Optional[str] = parsed_data[1]
+                payload: dict[str, Any] = parsed_data[4] or {}
+                join_ref: Optional[str] = parsed_data[0]
+                return make_message(
+                    event=Event(event_str),
+                    topic=topic,
+                    ref=ref,
+                    payload=payload,
+                    join_ref=join_ref,
+                )
             else:
                 if not isinstance(parsed_data, dict):
                     raise ValueError(
                         f"Protocol v{self.protocol_version} expects object format, got {type(parsed_data).__name__}"
                     )
 
-                message_dict = parsed_data
+                required_fields = ["topic", "event", "payload"]
+                for field in required_fields:
+                    if field not in parsed_data:
+                        raise ValueError(f"Missing required field '{field}'")
 
-            required_fields = ["topic", "event", "payload"]
-            for field in required_fields:
-                if field not in message_dict:
-                    raise ValueError(f"Missing required field '{field}'")
-
-            return make_message(**message_dict)
+                topic = str(parsed_data["topic"])
+                event_str = str(parsed_data["event"])
+                ref = parsed_data.get("ref")
+                payload = parsed_data.get("payload", {})
+                join_ref = parsed_data.get("join_ref")
+                return make_message(
+                    event=Event(event_str),
+                    topic=topic,
+                    ref=ref if ref is None else str(ref),
+                    payload=payload if isinstance(payload, dict) else {},
+                    join_ref=join_ref if join_ref is None else str(join_ref),
+                )
 
         except Exception as e:
             self.logger.error(f"Failed to parse message {raw_message}: {e}")
