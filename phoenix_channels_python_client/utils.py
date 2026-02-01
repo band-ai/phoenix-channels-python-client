@@ -1,7 +1,13 @@
 import logging
 from typing import Any, Optional
 
-from phoenix_channels_python_client.phx_messages import ChannelEvent, ChannelMessage, PHXEvent, PHXEventMessage, PHXMessage
+from phoenix_channels_python_client.phx_messages import (
+    ChannelEvent,
+    ChannelMessage,
+    PHXEvent,
+    PHXEventMessage,
+    PHXMessage,
+)
 
 
 def parse_event(event: ChannelEvent) -> ChannelEvent:
@@ -23,9 +29,21 @@ def make_message(
 
     processed_event = parse_event(event)
     if isinstance(processed_event, PHXEvent):
-        return PHXEventMessage(event=processed_event, topic=topic, ref=ref, payload=payload, join_ref=join_ref)
+        return PHXEventMessage(
+            event=processed_event,
+            topic=topic,
+            ref=ref,
+            payload=payload,
+            join_ref=join_ref,
+        )
     else:
-        return PHXMessage(event=processed_event, topic=topic, ref=ref, payload=payload, join_ref=join_ref)
+        return PHXMessage(
+            event=processed_event,
+            topic=topic,
+            ref=ref,
+            payload=payload,
+            join_ref=join_ref,
+        )
 
 
 def setup_logging(level: int = logging.INFO) -> None:
@@ -42,6 +60,6 @@ def setup_logging(level: int = logging.INFO) -> None:
     """
     logging.basicConfig(
         level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )

@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Phoenix Channels Python Client! T
 
 ### Prerequisites
 
-- Python 3.7+
+- Python 3.11+
 - [uv](https://docs.astral.sh/uv/) package manager (recommended) or pip
 
 ### Initial Setup

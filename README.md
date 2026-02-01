@@ -1,6 +1,6 @@
 # Phoenix Channels Python Client
 
-[![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A modern, async Python client library for connecting to [Phoenix Channels](https://hexdocs.pm/phoenix/channels.html) - the real-time WebSocket layer of the Phoenix Framework.
@@ -41,7 +41,7 @@ pytest
 
 ### Dependencies
 
-- Python 3.7+
+- Python 3.11+
 - `websockets>=10.0`
 
 ## Quick Start
