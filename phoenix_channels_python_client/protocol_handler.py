@@ -72,7 +72,7 @@ class PHXProtocolHandler:
                 )
 
         except Exception as e:
-            self.logger.error(f"Failed to parse message {raw_message}: {e}")
+            self.logger.error("Failed to parse message %s: %s", raw_message, e)
             raise ValueError(f"Invalid message format: {e}") from e
 
     def serialize_message(self, message: ChannelMessage) -> str:
@@ -100,7 +100,7 @@ class PHXProtocolHandler:
             return serialized
 
         except Exception as e:
-            self.logger.error(f"Failed to serialize message {message}: {e}")
+            self.logger.error("Failed to serialize message %s: %s", message, e)
             raise TypeError(f"Cannot serialize message: {e}") from e
 
     def get_protocol_version(self) -> str:
@@ -108,7 +108,7 @@ class PHXProtocolHandler:
 
     def set_protocol_version(self, version: str) -> None:
         self.logger.info(
-            f"Changing protocol version from {self.protocol_version} to {version}"
+            "Changing protocol version from %s to %s", self.protocol_version, version
         )
         self.protocol_version = version
 
@@ -134,7 +134,7 @@ class PHXProtocolHandler:
                     and topic_subscription.join_ref != phx_message.join_ref
                 ):
                     self.logger.warning(
-                        f"Ignoring message for topic {topic} with mismatched join_ref"
+                        "Ignoring message for topic %s with mismatched join_ref", topic
                     )
                     continue
                 await topic_subscription.queue.put(phx_message)
