@@ -35,23 +35,41 @@ class FakePhoenixServerV2:
         """Handle incoming v2 protocol messages (array format: [join_ref, msg_ref, topic, event, payload])"""
         if not isinstance(data, list) or len(data) != 5:
             return  # Invalid v2 message format
-        
+
         join_ref, msg_ref, topic, event, payload = data
-        
+
         if event == "phx_join":
             # Check if topic is valid before allowing join
             if self.is_valid_topic(topic):
                 # Send successful join reply for valid topics
-                reply = [join_ref, msg_ref, topic, "phx_reply", {"status": "ok", "response": {}}]
+                reply = [
+                    join_ref,
+                    msg_ref,
+                    topic,
+                    "phx_reply",
+                    {"status": "ok", "response": {}},
+                ]
             else:
                 # Send error reply for invalid topics
-                reply = [join_ref, msg_ref, topic, "phx_reply", {"status": "error", "response": {"reason": "unmatched topic"}}]
+                reply = [
+                    join_ref,
+                    msg_ref,
+                    topic,
+                    "phx_reply",
+                    {"status": "error", "response": {"reason": "unmatched topic"}},
+                ]
             await self.client_websocket.send(json.dumps(reply))
         elif event == "phx_leave":
             # Send successful leave reply
-            reply = [join_ref, msg_ref, topic, "phx_reply", {"status": "ok", "response": {}}]
+            reply = [
+                join_ref,
+                msg_ref,
+                topic,
+                "phx_reply",
+                {"status": "ok", "response": {}},
+            ]
             await self.client_websocket.send(json.dumps(reply))
-            
+
             # Also send phx_close message after successful leave
             close_message = [join_ref, join_ref, topic, "phx_close", {}]
             await self.client_websocket.send(json.dumps(close_message))
@@ -72,14 +90,14 @@ class FakePhoenixServerV2:
     async def start(self):
         """Start the fake Phoenix server"""
         self.server = await serve(self.handler, self.host, self.port)
-        
+
     async def stop(self):
         """Stop the fake Phoenix server"""
         if self.server:
             self.server.close()
             await self.server.wait_closed()
         self.client_websocket = None
-    
+
     @property
     def url(self):
         return f"ws://{self.host}:{self.port}/socket/websocket"
