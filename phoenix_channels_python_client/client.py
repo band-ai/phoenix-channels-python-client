@@ -72,7 +72,7 @@ class PHXChannelsClient:
             )
             return self
         except Exception as e:
-            self.logger.error(f"Failed to connect to Phoenix WebSocket server: {e}")
+            self.logger.error("Failed to connect to Phoenix WebSocket server: %s", e)
             raise PHXConnectionError(
                 f"Failed to connect to {self.channel_socket_url}: {e}"
             ) from e
@@ -103,12 +103,12 @@ class PHXChannelsClient:
         Note: This method is automatically called by __aexit__ when using
         the async context manager. You can also call it explicitly.
         """
-        self.logger.info(f"Shutting down client: {reason}")
+        self.logger.info("Shutting down client: %s", reason)
 
         topics_to_unsubscribe = list(self._topic_subscriptions.keys())
         if topics_to_unsubscribe:
             self.logger.info(
-                f"Unsubscribing from {len(topics_to_unsubscribe)} topic(s)"
+                "Unsubscribing from %d topic(s)", len(topics_to_unsubscribe)
             )
             unsubscribe_tasks = [
                 self.unsubscribe_from_topic(topic) for topic in topics_to_unsubscribe
@@ -123,7 +123,7 @@ class PHXChannelsClient:
                 for topic, result in zip(topics_to_unsubscribe, results):
                     if isinstance(result, Exception):
                         self.logger.warning(
-                            f"Failed to unsubscribe from topic {topic}: {result}"
+                            "Failed to unsubscribe from topic %s: %s", topic, result
                         )
                         self._unregister_topic(topic)
             except asyncio.TimeoutError:
@@ -188,7 +188,7 @@ class PHXChannelsClient:
                     await self._handle_normal_message_mode(topic, message)
 
         except Exception as e:
-            self.logger.error(f"Error in topic processor for {topic.name}: {e}")
+            self.logger.error("Error in topic processor for %s: %s", topic.name, e)
             self._unregister_topic(topic.name)
 
     async def _handle_join_response_mode(
@@ -201,7 +201,7 @@ class PHXChannelsClient:
 
         if message.payload.get("status") == "ok":
             self._set_subscription_ready(topic)
-            self.logger.info(f"Subscribed to topic: {topic.name}")
+            self.logger.info("Subscribed to topic: %s", topic.name)
         else:
             response = message.payload.get("response", {})
             error_message = (
@@ -213,7 +213,7 @@ class PHXChannelsClient:
             error = PHXTopicError(error_message)
             self._set_subscription_error(topic, error)
             self.logger.error(
-                f"Failed to subscribe to topic {topic.name}: {error_message}"
+                "Failed to subscribe to topic %s: %s", topic.name, error_message
             )
             raise error
 
@@ -250,11 +250,11 @@ class PHXChannelsClient:
 
             if not has_message_handler and not has_specific_handler:
                 self.logger.warning(
-                    f"No handler for event {message.event} on topic {topic.name}"
+                    "No handler for event %s on topic %s", message.event, topic.name
                 )
 
         except Exception as e:
-            self.logger.error(f"Error in topic callback for {topic.name}: {e}")
+            self.logger.error("Error in topic callback for %s: %s", topic.name, e)
         finally:
             topic.current_callback_task = None
 
@@ -267,14 +267,14 @@ class PHXChannelsClient:
         is_leave_success = message.payload.get("status") == "ok"
 
         if is_leave_success:
-            self.logger.info(f"Unsubscribed from topic: {topic.name}")
+            self.logger.info("Unsubscribed from topic: %s", topic.name)
 
             if topic.current_callback_task and not topic.current_callback_task.done():
                 try:
                     await topic.current_callback_task
                 except Exception as e:
                     self.logger.error(
-                        f"Error waiting for callback to finish for {topic.name}: {e}"
+                        "Error waiting for callback to finish for %s: %s", topic.name, e
                     )
 
             if topic.unsubscribe_completed and not topic.unsubscribe_completed.done():
@@ -282,7 +282,7 @@ class PHXChannelsClient:
 
         else:
             self.logger.error(
-                f"Failed to unsubscribe from topic {topic.name}: {message.payload}"
+                "Failed to unsubscribe from topic %s: %s", topic.name, message.payload
             )
             if topic.unsubscribe_completed and not topic.unsubscribe_completed.done():
                 topic.unsubscribe_completed.set_exception(
@@ -341,7 +341,7 @@ class PHXChannelsClient:
         try:
             await subscription_ready_future
         except Exception as e:
-            self.logger.error(f"Failed to subscribe to {topic}: {e}")
+            self.logger.error("Failed to subscribe to %s: %s", topic, e)
             self._unregister_topic(topic)
             raise
 
@@ -372,7 +372,7 @@ class PHXChannelsClient:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            self.logger.error(f"Error unsubscribing from {topic}: {e}")
+            self.logger.error("Error unsubscribing from %s: %s", topic, e)
             raise
         finally:
             self._unregister_topic(topic)

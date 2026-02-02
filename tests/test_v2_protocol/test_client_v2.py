@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import pytest
 from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
@@ -7,6 +8,8 @@ from phoenix_channels_python_client.protocol_handler import (
 )
 from phoenix_channels_python_client.exceptions import PHXTopicError
 from .conftest import FakePhoenixServerV2
+
+logger = logging.getLogger(__name__)
 
 
 @pytest.mark.asyncio
@@ -20,7 +23,7 @@ async def test_subscribe_to_topic_succeeds_when_subscribing_to_valid_topic(
     ) as client:
 
         async def test_callback(message: ChannelMessage):
-            print(f"Received message: {message}")
+            logger.debug("Received message: %s", message)
 
         await client.subscribe_to_topic("test-topic", test_callback)
 
@@ -46,7 +49,7 @@ async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_unmat
     ) as client:
 
         async def test_callback(message: ChannelMessage):
-            print(f"Received message: {message}")
+            logger.debug("Received message: %s", message)
 
         with pytest.raises(PHXTopicError) as exc_info:
             await client.subscribe_to_topic("invalid-topic", test_callback)
@@ -65,7 +68,7 @@ async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_alrea
     ) as client:
 
         async def test_callback(message: ChannelMessage):
-            print(f"Received message: {message}")
+            logger.debug("Received message: %s", message)
 
         await client.subscribe_to_topic("test-topic", test_callback)
 
@@ -87,7 +90,7 @@ async def test_unsubscribe_from_topic_succeeds_when_unsubscribing_from_subscribe
     ) as client:
 
         async def test_callback(message: ChannelMessage):
-            print(f"Received message: {message}")
+            logger.debug("Received message: %s", message)
 
         await client.subscribe_to_topic("test-topic", test_callback)
 

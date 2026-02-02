@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 async def message_handler(message):
-    logger.info(f"Received: {message}")
+    logger.info("Received: %s", message)
 
 
 async def main():
@@ -49,7 +49,7 @@ async def main():
             await client.run_forever()
 
     except Exception as e:
-        logger.error(f"Connection failed: {e}")
+        logger.error("Connection failed: %s", e)
         raise
 
 
