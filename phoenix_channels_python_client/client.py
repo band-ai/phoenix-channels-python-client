@@ -185,16 +185,16 @@ class PHXChannelsClient:
         Send periodic heartbeat messages to keep the connection alive.
 
         Phoenix servers expect heartbeat messages on the "phoenix" topic at regular
-        intervals (default 30 seconds). If the server doesn't receive a heartbeat
-        within the timeout period (typically 2x the interval), it will close the
-        connection.
+        intervals (default 30 seconds). The Phoenix server's default timeout is
+        typically configured to 60 seconds (2x the heartbeat interval), after which
+        it will close connections that haven't sent a heartbeat.
 
         This loop sends heartbeat messages and tracks pending heartbeat refs.
         Heartbeat responses are handled in _handle_heartbeat_response().
-        """
-        if self._heartbeat_interval_secs is None:
-            return
 
+        Note: This task is only created when heartbeat_interval_secs is not None,
+        so no None check is needed here.
+        """
         while True:
             try:
                 await asyncio.sleep(self._heartbeat_interval_secs)
@@ -203,8 +203,12 @@ class PHXChannelsClient:
                     self.logger.debug("Heartbeat loop stopping: no connection")
                     break
 
-                # Don't send a new heartbeat if we're still waiting for a response
-                # This matches the Phoenix JS client behavior
+                # Don't send a new heartbeat if we're still waiting for a response.
+                # This matches the Phoenix JS client behavior.
+                # Note: After clearing the pending ref, if a late response arrives for
+                # the old heartbeat, it won't be recognized (the ref won't match).
+                # This is intentional and matches JS client behavior - we don't track
+                # multiple outstanding heartbeats.
                 if self._pending_heartbeat_ref is not None:
                     self.logger.warning(
                         "Heartbeat timeout: no response to heartbeat ref=%s",

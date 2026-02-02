@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Callable
 import pytest
 from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
@@ -10,6 +11,30 @@ from phoenix_channels_python_client.exceptions import PHXTopicError
 from .conftest import FakePhoenixServerV2
 
 logger = logging.getLogger(__name__)
+
+
+async def wait_for_condition(
+    condition: Callable[[], bool],
+    timeout: float = 1.0,
+    interval: float = 0.05,
+) -> bool:
+    """
+    Poll for a condition to become true, with timeout.
+
+    Args:
+        condition: A callable that returns True when the condition is met.
+        timeout: Maximum time to wait in seconds.
+        interval: Time between polls in seconds.
+
+    Returns:
+        True if condition was met, False if timeout occurred.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        if condition():
+            return True
+        await asyncio.sleep(interval)
+    return False
 
 
 @pytest.mark.asyncio
@@ -454,27 +479,36 @@ async def test_run_forever_exits_when_connection_closes(
 @pytest.mark.asyncio
 async def test_heartbeat_is_sent_and_acknowledged(
     phoenix_server: FakePhoenixServerV2,
+    caplog,
 ):
     """Test that heartbeat messages are sent and acknowledged by the server."""
+    import logging
 
-    async with PHXChannelsClient(
-        phoenix_server.url,
-        api_key="test_key",
-        protocol_version=PhoenixChannelsProtocolVersion.V2,
-        heartbeat_interval_secs=0.1,  # Short interval for testing
-    ) as client:
-        # Verify heartbeat task is running
-        assert client._heartbeat_task is not None
-        assert not client._heartbeat_task.done()
+    with caplog.at_level(logging.DEBUG):
+        async with PHXChannelsClient(
+            phoenix_server.url,
+            api_key="test_key",
+            protocol_version=PhoenixChannelsProtocolVersion.V2,
+            heartbeat_interval_secs=0.1,  # Short interval for testing
+        ) as client:
+            # Verify heartbeat task is running
+            assert client._heartbeat_task is not None
+            assert not client._heartbeat_task.done()
 
-        # Wait for at least one heartbeat cycle
-        await asyncio.sleep(0.15)
+            # Wait for heartbeat to be sent and acknowledged
+            # Poll until we see the acknowledgment in the logs (more robust than fixed sleep)
+            result = await wait_for_condition(
+                lambda: any(
+                    "heartbeat acknowledged" in record.message.lower()
+                    for record in caplog.records
+                ),
+                timeout=1.0,
+                interval=0.02,
+            )
+            assert result, "Heartbeat was not acknowledged within timeout"
 
-        # At this point, a heartbeat should have been sent and acknowledged
-        # The pending ref should be cleared after acknowledgment
-        # (We can't easily verify the exact message was sent without mocking,
-        # but we can verify the task is still running and no errors occurred)
-        assert not client._heartbeat_task.done()
+            # Verify heartbeat task is still running (no errors)
+            assert not client._heartbeat_task.done()
 
     # After shutdown, heartbeat task should be cancelled
     assert client._heartbeat_task is None or client._heartbeat_task.done()
@@ -523,8 +557,17 @@ async def test_heartbeat_timeout_warning_when_no_response(
             protocol_version=PhoenixChannelsProtocolVersion.V2,
             heartbeat_interval_secs=0.1,  # Short interval for testing
         ):
-            # Wait for two heartbeat cycles so the timeout warning is triggered
-            await asyncio.sleep(0.25)
+            # Poll until timeout warning is logged (more robust than fixed sleep)
+            # Need two heartbeat cycles: first sends heartbeat, second detects timeout
+            result = await wait_for_condition(
+                lambda: any(
+                    "heartbeat timeout" in record.message.lower()
+                    for record in caplog.records
+                ),
+                timeout=1.0,
+                interval=0.05,
+            )
+            assert result, "Heartbeat timeout warning was not logged within timeout"
 
     # Verify warning was logged
     assert any(

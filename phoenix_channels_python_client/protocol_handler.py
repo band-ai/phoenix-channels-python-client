@@ -8,6 +8,9 @@ from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
 from phoenix_channels_python_client.utils import make_message
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 
+# Type alias for message handler callbacks that return True if handled, False otherwise
+UnhandledMessageCallback = Callable[[ChannelMessage], bool]
+
 
 class PhoenixChannelsProtocolVersion(Enum):
     """Phoenix Channels protocol versions"""
@@ -122,7 +125,7 @@ class PHXProtocolHandler:
         self,
         connection: ClientConnection,
         topic_subscriptions: Dict[str, TopicSubscription],
-        on_unhandled_message: Optional[Callable[[ChannelMessage], bool]] = None,
+        on_unhandled_message: Optional[UnhandledMessageCallback] = None,
     ) -> None:
         """
         Process incoming WebSocket messages and route them to appropriate handlers.
