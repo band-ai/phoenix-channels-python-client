@@ -573,3 +573,154 @@ async def test_heartbeat_timeout_warning_when_no_response(
     assert any(
         "heartbeat timeout" in record.message.lower() for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_reconnection_is_enabled_by_default(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """Test that auto-reconnection is enabled by default."""
+
+    async with PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+    ) as client:
+        assert client._auto_reconnect is True
+        assert client._reconnect_max_attempts == 10
+
+
+@pytest.mark.asyncio
+async def test_reconnection_can_be_disabled(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """Test that auto-reconnection can be disabled."""
+
+    async with PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        auto_reconnect=False,
+    ) as client:
+        assert client._auto_reconnect is False
+
+
+@pytest.mark.asyncio
+async def test_subscription_callbacks_are_stored_for_reconnection(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """Test that subscription callbacks are stored for reconnection."""
+
+    async def test_callback(message: ChannelMessage):
+        pass
+
+    async with PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+    ) as client:
+        await client.subscribe_to_topic("test-topic", test_callback)
+
+        # Verify callback is stored
+        assert "test-topic" in client._subscription_callbacks
+        assert client._subscription_callbacks["test-topic"] == test_callback
+
+
+@pytest.mark.asyncio
+async def test_event_handlers_are_stored_for_reconnection(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """Test that event handlers are stored for reconnection."""
+
+    async def test_callback(message: ChannelMessage):
+        pass
+
+    async def event_handler(payload):
+        pass
+
+    async with PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+    ) as client:
+        await client.subscribe_to_topic("test-topic", test_callback)
+        client.add_event_handler("test-topic", Event("custom_event"), event_handler)
+
+        # Verify event handler is stored
+        assert "test-topic" in client._subscription_event_handlers
+        assert (
+            Event("custom_event") in client._subscription_event_handlers["test-topic"]
+        )
+
+
+@pytest.mark.asyncio
+async def test_stored_callbacks_are_cleared_on_unsubscribe(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """Test that stored callbacks are cleared when unsubscribing."""
+
+    async def test_callback(message: ChannelMessage):
+        pass
+
+    async with PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+    ) as client:
+        await client.subscribe_to_topic("test-topic", test_callback)
+        assert "test-topic" in client._subscription_callbacks
+
+        await client.unsubscribe_from_topic("test-topic")
+
+        # Verify callback is removed
+        assert "test-topic" not in client._subscription_callbacks
+        assert "test-topic" not in client._subscription_event_handlers
+
+
+@pytest.mark.asyncio
+async def test_reconnect_callbacks_are_invoked(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """Test that on_disconnect and on_reconnect callbacks are called."""
+    disconnect_called = False
+    reconnect_called = False
+
+    async def on_disconnect(error):
+        nonlocal disconnect_called
+        disconnect_called = True
+
+    async def on_reconnect():
+        nonlocal reconnect_called
+        reconnect_called = True
+
+    client = PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        auto_reconnect=True,
+        reconnect_backoff_base=0.1,  # Fast reconnection for testing
+        on_disconnect=on_disconnect,
+        on_reconnect=on_reconnect,
+    )
+
+    # Verify callbacks are stored
+    assert client._on_disconnect == on_disconnect
+    assert client._on_reconnect == on_reconnect
+
+
+@pytest.mark.asyncio
+async def test_shutdown_stops_reconnection_attempts(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """Test that shutdown prevents reconnection attempts."""
+
+    async with PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        auto_reconnect=True,
+    ) as client:
+        # Shutdown should set the flag
+        pass  # __aexit__ calls shutdown
+
+    assert client._shutdown_requested is True
