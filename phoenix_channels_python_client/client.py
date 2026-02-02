@@ -26,13 +26,11 @@ from phoenix_channels_python_client.topic_subscription import (
 from phoenix_channels_python_client.utils import make_message
 
 
-# Default heartbeat interval in seconds (matches Phoenix JS client default of 30s)
 DEFAULT_HEARTBEAT_INTERVAL_SECS = 30
 
-# Default reconnection settings
 DEFAULT_RECONNECT_MAX_ATTEMPTS = 10
-DEFAULT_RECONNECT_BACKOFF_BASE = 1.0  # seconds
-DEFAULT_RECONNECT_BACKOFF_MAX = 30.0  # seconds
+DEFAULT_RECONNECT_BACKOFF_BASE = 1.0
+DEFAULT_RECONNECT_BACKOFF_MAX = 30.0
 
 # Type alias for reconnection callbacks
 ReconnectCallback = Callable[[], Awaitable[None]]
