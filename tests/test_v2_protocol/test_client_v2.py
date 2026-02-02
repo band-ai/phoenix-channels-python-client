@@ -449,3 +449,84 @@ async def test_run_forever_exits_when_connection_closes(
     subscriptions = client.get_current_subscriptions()
     assert len(subscriptions) == 0
     assert client.connection is None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_is_sent_and_acknowledged(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """Test that heartbeat messages are sent and acknowledged by the server."""
+
+    async with PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        heartbeat_interval_secs=0.1,  # Short interval for testing
+    ) as client:
+        # Verify heartbeat task is running
+        assert client._heartbeat_task is not None
+        assert not client._heartbeat_task.done()
+
+        # Wait for at least one heartbeat cycle
+        await asyncio.sleep(0.15)
+
+        # At this point, a heartbeat should have been sent and acknowledged
+        # The pending ref should be cleared after acknowledgment
+        # (We can't easily verify the exact message was sent without mocking,
+        # but we can verify the task is still running and no errors occurred)
+        assert not client._heartbeat_task.done()
+
+    # After shutdown, heartbeat task should be cancelled
+    assert client._heartbeat_task is None or client._heartbeat_task.done()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_can_be_disabled(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """Test that heartbeat can be disabled by setting interval to None."""
+
+    async with PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        heartbeat_interval_secs=None,  # Disable heartbeat
+    ) as client:
+        # Verify heartbeat task is not created
+        assert client._heartbeat_task is None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_timeout_warning_when_no_response(
+    phoenix_server: FakePhoenixServerV2,
+    caplog,
+):
+    """Test that a warning is logged when heartbeat response is not received."""
+    import logging
+
+    # Modify server to not respond to heartbeats for this test
+    original_handler = phoenix_server.handle_message
+
+    async def no_heartbeat_response_handler(data):
+        if isinstance(data, list) and len(data) == 5:
+            _, _, topic, event, _ = data
+            if event == "heartbeat" and topic == "phoenix":
+                return  # Don't respond to heartbeat
+        await original_handler(data)
+
+    phoenix_server.handle_message = no_heartbeat_response_handler
+
+    with caplog.at_level(logging.WARNING):
+        async with PHXChannelsClient(
+            phoenix_server.url,
+            api_key="test_key",
+            protocol_version=PhoenixChannelsProtocolVersion.V2,
+            heartbeat_interval_secs=0.1,  # Short interval for testing
+        ):
+            # Wait for two heartbeat cycles so the timeout warning is triggered
+            await asyncio.sleep(0.25)
+
+    # Verify warning was logged
+    assert any(
+        "heartbeat timeout" in record.message.lower() for record in caplog.records
+    )

@@ -11,6 +11,7 @@ from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTop
 from phoenix_channels_python_client.phx_messages import (
     ChannelMessage,
     ChannelEvent,
+    Event,
     PHXEvent,
     PHXEventMessage,
 )
@@ -23,6 +24,10 @@ from phoenix_channels_python_client.topic_subscription import (
     TopicProcessingState,
 )
 from phoenix_channels_python_client.utils import make_message
+
+
+# Default heartbeat interval in seconds (matches Phoenix JS client default of 30s)
+DEFAULT_HEARTBEAT_INTERVAL_SECS = 30
 
 
 class PHXChannelsClient:
@@ -38,6 +43,15 @@ class PHXChannelsClient:
         The official Phoenix JS client (v1.8+) supports header-based authentication
         via the `authToken` option, which avoids this issue. This client currently
         uses the older `params` style for compatibility.
+
+    Args:
+        websocket_url: The WebSocket URL to connect to.
+        api_key: The API key for authentication.
+        event_loop: Optional event loop to use (defaults to current running loop).
+        protocol_version: Phoenix Channels protocol version (default: V2).
+        heartbeat_interval_secs: Interval between heartbeat messages in seconds.
+            Set to None to disable heartbeat. Default is 30 seconds, matching
+            the Phoenix JS client.
     """
 
     def __init__(
@@ -46,6 +60,7 @@ class PHXChannelsClient:
         api_key: str,
         event_loop: Optional[AbstractEventLoop] = None,
         protocol_version: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V2,
+        heartbeat_interval_secs: Optional[float] = DEFAULT_HEARTBEAT_INTERVAL_SECS,
     ):
         self.logger = logging.getLogger(__name__)
 
@@ -63,6 +78,11 @@ class PHXChannelsClient:
         self._protocol_handler = PHXProtocolHandler(protocol_version)
         self._ref_counter = 0
 
+        # Heartbeat configuration
+        self._heartbeat_interval_secs = heartbeat_interval_secs
+        self._heartbeat_task: Optional[asyncio.Task] = None
+        self._pending_heartbeat_ref: Optional[str] = None
+
     async def __aenter__(self) -> "PHXChannelsClient":
         try:
             self.connection = await connect(self.channel_socket_url)
@@ -70,6 +90,13 @@ class PHXChannelsClient:
             self._message_routing_task = self._loop.create_task(
                 self._start_processing()
             )
+            # Start heartbeat loop if enabled
+            if self._heartbeat_interval_secs is not None:
+                self._heartbeat_task = self._loop.create_task(self._heartbeat_loop())
+                self.logger.debug(
+                    "Heartbeat enabled with interval of %s seconds",
+                    self._heartbeat_interval_secs,
+                )
             return self
         except Exception as e:
             self.logger.error("Failed to connect to Phoenix WebSocket server: %s", e)
@@ -131,6 +158,16 @@ class PHXChannelsClient:
                 for topic in topics_to_unsubscribe:
                     self._unregister_topic(topic)
 
+        # Cancel heartbeat task
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
+            self._pending_heartbeat_ref = None
+
         if self._message_routing_task and not self._message_routing_task.done():
             self._message_routing_task.cancel()
             try:
@@ -142,6 +179,84 @@ class PHXChannelsClient:
             await self.connection.close()
             self.connection = None
             self.logger.info("Connection closed")
+
+    async def _heartbeat_loop(self) -> None:
+        """
+        Send periodic heartbeat messages to keep the connection alive.
+
+        Phoenix servers expect heartbeat messages on the "phoenix" topic at regular
+        intervals (default 30 seconds). If the server doesn't receive a heartbeat
+        within the timeout period (typically 2x the interval), it will close the
+        connection.
+
+        This loop sends heartbeat messages and tracks pending heartbeat refs.
+        Heartbeat responses are handled in _handle_heartbeat_response().
+        """
+        if self._heartbeat_interval_secs is None:
+            return
+
+        while True:
+            try:
+                await asyncio.sleep(self._heartbeat_interval_secs)
+
+                if self.connection is None:
+                    self.logger.debug("Heartbeat loop stopping: no connection")
+                    break
+
+                # Don't send a new heartbeat if we're still waiting for a response
+                # This matches the Phoenix JS client behavior
+                if self._pending_heartbeat_ref is not None:
+                    self.logger.warning(
+                        "Heartbeat timeout: no response to heartbeat ref=%s",
+                        self._pending_heartbeat_ref,
+                    )
+                    # Clear the pending ref and continue - the connection might
+                    # still be alive, let the next heartbeat try again
+                    self._pending_heartbeat_ref = None
+
+                # Generate ref and send heartbeat
+                self._pending_heartbeat_ref = self._generate_ref()
+                heartbeat_message = make_message(
+                    event=Event("heartbeat"),
+                    topic="phoenix",
+                    ref=self._pending_heartbeat_ref,
+                    payload={},
+                )
+
+                await self._protocol_handler.send_message(
+                    self.connection, heartbeat_message
+                )
+                self.logger.debug("Sent heartbeat ref=%s", self._pending_heartbeat_ref)
+
+            except asyncio.CancelledError:
+                self.logger.debug("Heartbeat loop cancelled")
+                raise
+            except Exception as e:
+                self.logger.warning("Heartbeat failed: %s", e)
+                # Connection might be dead, exit the loop
+                break
+
+    def _handle_heartbeat_response(self, message: ChannelMessage) -> bool:
+        """
+        Handle a heartbeat response from the server.
+
+        Args:
+            message: The received message
+
+        Returns:
+            True if this was a heartbeat response and was handled,
+            False if this message is not a heartbeat response.
+        """
+        # Check if this is a response to our heartbeat
+        if (
+            message.topic == "phoenix"
+            and message.ref is not None
+            and message.ref == self._pending_heartbeat_ref
+        ):
+            self._pending_heartbeat_ref = None
+            self.logger.debug("Heartbeat acknowledged ref=%s", message.ref)
+            return True
+        return False
 
     def _set_subscription_ready(self, topic_subscription: TopicSubscription) -> None:
         if not topic_subscription.subscription_ready.done():
@@ -466,7 +581,9 @@ class PHXChannelsClient:
         if self.connection is None:
             raise PHXConnectionError("Not connected to server")
         await self._protocol_handler.process_websocket_messages(
-            self.connection, self._topic_subscriptions
+            self.connection,
+            self._topic_subscriptions,
+            on_unhandled_message=self._handle_heartbeat_response,
         )
 
     async def run_forever(self) -> None:

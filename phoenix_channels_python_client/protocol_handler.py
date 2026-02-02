@@ -1,6 +1,6 @@
 import logging
 from enum import Enum
-from typing import Any, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
 from websockets import ClientConnection
 
 import json
@@ -122,19 +122,39 @@ class PHXProtocolHandler:
         self,
         connection: ClientConnection,
         topic_subscriptions: Dict[str, TopicSubscription],
+        on_unhandled_message: Optional[Callable[[ChannelMessage], bool]] = None,
     ) -> None:
+        """
+        Process incoming WebSocket messages and route them to appropriate handlers.
+
+        Args:
+            connection: The WebSocket connection to read messages from.
+            topic_subscriptions: Dictionary mapping topic names to their subscriptions.
+            on_unhandled_message: Optional callback for messages that don't match any
+                subscribed topic (e.g., heartbeat responses on "phoenix" topic).
+                The callback should return True if it handled the message, False otherwise.
+        """
         async for socket_message in connection:
             phx_message = self.parse_message(socket_message)
             topic = phx_message.topic
 
-            if topic in topic_subscriptions:
-                topic_subscription = topic_subscriptions[topic]
-                if (
-                    self.protocol_version == "2.0"
-                    and topic_subscription.join_ref != phx_message.join_ref
-                ):
-                    self.logger.warning(
-                        "Ignoring message for topic %s with mismatched join_ref", topic
-                    )
-                    continue
-                await topic_subscription.queue.put(phx_message)
+            # First, check if this is a message for an unsubscribed topic
+            # that should be handled specially (e.g., heartbeat responses)
+            if topic not in topic_subscriptions:
+                if on_unhandled_message is not None:
+                    handled = on_unhandled_message(phx_message)
+                    if handled:
+                        continue
+                # Message for unknown topic, skip it
+                continue
+
+            topic_subscription = topic_subscriptions[topic]
+            if (
+                self.protocol_version == "2.0"
+                and topic_subscription.join_ref != phx_message.join_ref
+            ):
+                self.logger.warning(
+                    "Ignoring message for topic %s with mismatched join_ref", topic
+                )
+                continue
+            await topic_subscription.queue.put(phx_message)

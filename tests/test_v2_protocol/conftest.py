@@ -62,6 +62,16 @@ class FakePhoenixServerV2:
                     {"status": "error", "response": {"reason": "unmatched topic"}},
                 ]
             await self.client_websocket.send(json.dumps(reply))
+        elif event == "heartbeat" and topic == "phoenix":
+            # Respond to heartbeat messages on the "phoenix" topic
+            reply = [
+                join_ref,
+                msg_ref,
+                "phoenix",
+                "phx_reply",
+                {"status": "ok", "response": {}},
+            ]
+            await self.client_websocket.send(json.dumps(reply))
         elif event == "phx_leave":
             # Send successful leave reply
             reply = [
