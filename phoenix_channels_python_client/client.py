@@ -195,9 +195,13 @@ class PHXChannelsClient:
         Note: This task is only created when heartbeat_interval_secs is not None,
         so no None check is needed here.
         """
+        # Assert for type checker - this task is only created when interval is not None
+        assert self._heartbeat_interval_secs is not None
+        interval = self._heartbeat_interval_secs
+
         while True:
             try:
-                await asyncio.sleep(self._heartbeat_interval_secs)
+                await asyncio.sleep(interval)
 
                 if self.connection is None:
                     self.logger.debug("Heartbeat loop stopping: no connection")
