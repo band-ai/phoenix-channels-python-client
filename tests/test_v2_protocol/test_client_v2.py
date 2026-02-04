@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 import logging
-from typing import Callable
+from collections.abc import Callable
+
 import pytest
 from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
@@ -724,3 +727,153 @@ async def test_shutdown_stops_reconnection_attempts(
         pass  # __aexit__ calls shutdown
 
     assert client._shutdown_requested is True
+
+
+@pytest.mark.asyncio
+async def test_full_reconnection_flow(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """
+    Test the complete reconnection flow:
+    1. Connect and subscribe to a topic
+    2. Simulate connection drop
+    3. Verify on_disconnect is called
+    4. Verify reconnection occurs
+    5. Verify on_reconnect is called
+    6. Verify topic is re-subscribed
+    """
+    disconnect_called = asyncio.Event()
+    reconnect_called = asyncio.Event()
+    disconnect_error = None
+    received_messages: list[ChannelMessage] = []
+    message_received = asyncio.Event()
+
+    async def on_disconnect(error):
+        nonlocal disconnect_error
+        disconnect_error = error
+        disconnect_called.set()
+
+    async def on_reconnect():
+        reconnect_called.set()
+
+    async def message_callback(message: ChannelMessage):
+        received_messages.append(message)
+        message_received.set()
+
+    client = PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        auto_reconnect=True,
+        reconnect_backoff_base=0.05,  # Very fast reconnection for testing
+        reconnect_max_attempts=3,
+        on_disconnect=on_disconnect,
+        on_reconnect=on_reconnect,
+    )
+
+    try:
+        await client.__aenter__()
+
+        # Subscribe to a topic
+        await client.subscribe_to_topic("test-topic", message_callback)
+        assert "test-topic" in client.get_current_subscriptions()
+
+        # Simulate connection drop by closing the server-side websocket
+        assert phoenix_server.client_websocket is not None
+        await phoenix_server.client_websocket.close()
+
+        # Wait for disconnect callback
+        result = await wait_for_condition(
+            lambda: disconnect_called.is_set(),
+            timeout=2.0,
+            interval=0.05,
+        )
+        assert result, "on_disconnect was not called"
+
+        # Wait for reconnection to succeed
+        result = await wait_for_condition(
+            lambda: reconnect_called.is_set(),
+            timeout=2.0,
+            interval=0.05,
+        )
+        assert result, "on_reconnect was not called"
+
+        # Verify topic was re-subscribed
+        assert "test-topic" in client.get_current_subscriptions()
+
+        # Verify we can still receive messages after reconnection
+        message_received.clear()
+        # Get the new join_ref after reconnection
+        topic_sub = client.get_current_subscriptions()["test-topic"]
+        await phoenix_server.simulate_server_event(
+            "test-topic",
+            "test_event",
+            {"data": "after_reconnect"},
+            join_ref=topic_sub.join_ref,
+        )
+
+        result = await wait_for_condition(
+            lambda: message_received.is_set(),
+            timeout=1.0,
+            interval=0.05,
+        )
+        assert result, "Message was not received after reconnection"
+        assert len(received_messages) == 1
+        assert received_messages[0].payload["data"] == "after_reconnect"
+
+    finally:
+        await client.shutdown("test cleanup")
+
+
+@pytest.mark.asyncio
+async def test_reconnection_gives_up_after_max_attempts(
+    phoenix_server: FakePhoenixServerV2,
+    caplog,
+):
+    """Test that reconnection stops after max attempts are exceeded."""
+    import logging
+
+    disconnect_called = asyncio.Event()
+
+    async def on_disconnect(_error):
+        disconnect_called.set()
+
+    # Stop the server to make reconnection impossible
+    await phoenix_server.stop()
+
+    # Create a client that was previously connected (simulate this by setting up state)
+    client = PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        auto_reconnect=True,
+        reconnect_backoff_base=0.01,  # Very fast for testing
+        reconnect_max_attempts=2,
+        on_disconnect=on_disconnect,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        # Manually trigger reconnection loop to test max attempts
+        client._is_reconnecting = False
+        client._shutdown_requested = False
+
+        # Start reconnection loop
+        reconnect_task = asyncio.create_task(client._reconnect_loop())
+
+        # Wait for max attempts to be reached
+        result = await wait_for_condition(
+            lambda: any(
+                "max reconnection attempts" in record.message.lower()
+                for record in caplog.records
+            ),
+            timeout=2.0,
+            interval=0.05,
+        )
+        assert result, "Max reconnection attempts message was not logged"
+
+        # Ensure task completes
+        await asyncio.wait_for(reconnect_task, timeout=1.0)
+
+        # Verify reconnection stopped
+        assert client._is_reconnecting is False
+        assert client._reconnect_attempt > client._reconnect_max_attempts

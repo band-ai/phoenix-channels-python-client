@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import signal
 from asyncio import AbstractEventLoop, Queue
 from types import TracebackType
-from typing import Callable, Optional, Type, Awaitable, Dict, Any
+from typing import Callable, Type, Awaitable, Dict, Any
 
 from websockets import connect
 
@@ -34,7 +36,7 @@ DEFAULT_RECONNECT_BACKOFF_MAX = 30.0
 
 # Type alias for reconnection callbacks
 ReconnectCallback = Callable[[], Awaitable[None]]
-DisconnectCallback = Callable[[Optional[Exception]], Awaitable[None]]
+DisconnectCallback = Callable[[Exception | None], Awaitable[None]]
 
 
 class PHXChannelsClient:
@@ -76,15 +78,15 @@ class PHXChannelsClient:
         self,
         websocket_url: str,
         api_key: str,
-        event_loop: Optional[AbstractEventLoop] = None,
+        event_loop: AbstractEventLoop | None = None,
         protocol_version: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V2,
-        heartbeat_interval_secs: Optional[float] = DEFAULT_HEARTBEAT_INTERVAL_SECS,
+        heartbeat_interval_secs: float | None = DEFAULT_HEARTBEAT_INTERVAL_SECS,
         auto_reconnect: bool = True,
         reconnect_max_attempts: int = DEFAULT_RECONNECT_MAX_ATTEMPTS,
         reconnect_backoff_base: float = DEFAULT_RECONNECT_BACKOFF_BASE,
         reconnect_backoff_max: float = DEFAULT_RECONNECT_BACKOFF_MAX,
-        on_reconnect: Optional["ReconnectCallback"] = None,
-        on_disconnect: Optional["DisconnectCallback"] = None,
+        on_reconnect: ReconnectCallback | None = None,
+        on_disconnect: DisconnectCallback | None = None,
     ):
         self.logger = logging.getLogger(__name__)
 
@@ -104,8 +106,8 @@ class PHXChannelsClient:
 
         # Heartbeat configuration
         self._heartbeat_interval_secs = heartbeat_interval_secs
-        self._heartbeat_task: Optional[asyncio.Task] = None
-        self._pending_heartbeat_ref: Optional[str] = None
+        self._heartbeat_task: asyncio.Task | None = None
+        self._pending_heartbeat_ref: str | None = None
 
         # Reconnection configuration
         self._auto_reconnect = auto_reconnect
@@ -116,14 +118,14 @@ class PHXChannelsClient:
         self._on_disconnect = on_disconnect
 
         # Reconnection state
-        self._reconnect_task: Optional[asyncio.Task] = None
+        self._reconnect_task: asyncio.Task | None = None
         self._reconnect_attempt = 0
         self._is_reconnecting = False
         self._shutdown_requested = False
 
         # Store subscription info for reconnection (topic -> callback)
         self._subscription_callbacks: Dict[
-            str, Optional[Callable[[ChannelMessage], Awaitable[None]]]
+            str, Callable[[ChannelMessage], Awaitable[None]] | None
         ] = {}
         self._subscription_event_handlers: Dict[
             str, Dict[ChannelEvent, Callable[[Dict[str, Any]], Awaitable[None]]]
@@ -178,7 +180,7 @@ class PHXChannelsClient:
                 self.logger.warning("Connection closed unexpectedly")
                 await self._handle_disconnection(None)
 
-    async def _handle_disconnection(self, error: Optional[Exception]) -> None:
+    async def _handle_disconnection(self, error: Exception | None) -> None:
         """
         Handle disconnection by notifying callback and starting reconnection if enabled.
         """
@@ -296,12 +298,16 @@ class PHXChannelsClient:
 
         self.logger.info("Re-subscribing to %d topic(s)...", len(topics_to_resubscribe))
 
-        for topic in topics_to_resubscribe:
-            try:
-                callback = self._subscription_callbacks.get(topic)
-                event_handlers = self._subscription_event_handlers.get(topic, {})
+        subscriptions_snapshot = {
+            topic: (
+                self._subscription_callbacks.get(topic),
+                self._subscription_event_handlers.get(topic, {}).copy(),
+            )
+            for topic in topics_to_resubscribe
+        }
 
-                # Clear old subscription state
+        for topic, (callback, event_handlers) in subscriptions_snapshot.items():
+            try:
                 if topic in self._topic_subscriptions:
                     self._unregister_topic(topic)
 
@@ -319,9 +325,9 @@ class PHXChannelsClient:
 
     async def __aexit__(
         self,
-        exc_type: Optional[Type[BaseException]] = None,
-        exc_value: Optional[BaseException] = None,
-        traceback: Optional[TracebackType] = None,
+        exc_type: Type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
     ) -> None:
         await self.shutdown("Client context exiting")
 
@@ -477,6 +483,10 @@ class PHXChannelsClient:
     def _handle_heartbeat_response(self, message: ChannelMessage) -> bool:
         """
         Handle a heartbeat response from the server.
+
+        This method is intentionally synchronous because it only performs simple
+        attribute access and comparison - no I/O or blocking operations. Keeping
+        it sync avoids unnecessary async overhead for this hot path.
 
         Args:
             message: The received message
@@ -663,7 +673,7 @@ class PHXChannelsClient:
     async def subscribe_to_topic(
         self,
         topic: str,
-        async_callback: Optional[Callable[[ChannelMessage], Awaitable[None]]] = None,
+        async_callback: Callable[[ChannelMessage], Awaitable[None]] | None = None,
     ) -> None:
         if topic in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} already subscribed")
@@ -769,7 +779,7 @@ class PHXChannelsClient:
 
     def get_event_handler(
         self, topic: str, event: ChannelEvent
-    ) -> Optional[Callable[[Dict[str, Any]], Awaitable[None]]]:
+    ) -> Callable[[Dict[str, Any]], Awaitable[None]] | None:
         """Get the handler for a specific event type on a topic."""
         if topic not in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} not subscribed")
@@ -815,7 +825,7 @@ class PHXChannelsClient:
 
     def get_message_handler(
         self, topic: str
-    ) -> Optional[Callable[[ChannelMessage], Awaitable[None]]]:
+    ) -> Callable[[ChannelMessage], Awaitable[None]] | None:
         """Get the current message handler for a topic."""
         if topic not in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} not subscribed")

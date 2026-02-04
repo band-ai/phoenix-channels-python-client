@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import logging
 from enum import Enum
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Union
 from websockets import ClientConnection
 
 import json
@@ -40,9 +42,9 @@ class PHXProtocolHandler:
 
                 topic: str = parsed_data[2]
                 event_str: str = parsed_data[3]
-                ref: Optional[str] = parsed_data[1]
+                ref: str | None = parsed_data[1]
                 payload: dict[str, Any] = parsed_data[4] or {}
-                join_ref: Optional[str] = parsed_data[0]
+                join_ref: str | None = parsed_data[0]
                 return make_message(
                     event=Event(event_str),
                     topic=topic,
@@ -125,7 +127,7 @@ class PHXProtocolHandler:
         self,
         connection: ClientConnection,
         topic_subscriptions: Dict[str, TopicSubscription],
-        on_unhandled_message: Optional[UnhandledMessageCallback] = None,
+        on_unhandled_message: UnhandledMessageCallback | None = None,
     ) -> None:
         """
         Process incoming WebSocket messages and route them to appropriate handlers.
@@ -145,9 +147,14 @@ class PHXProtocolHandler:
             # that should be handled specially (e.g., heartbeat responses)
             if topic not in topic_subscriptions:
                 if on_unhandled_message is not None:
-                    handled = on_unhandled_message(phx_message)
-                    if handled:
-                        continue
+                    try:
+                        handled = on_unhandled_message(phx_message)
+                        if handled:
+                            continue
+                    except Exception as e:
+                        self.logger.warning(
+                            "Error in unhandled message callback: %s", e
+                        )
                 # Message for unknown topic, skip it
                 continue
 
