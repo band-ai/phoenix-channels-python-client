@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import signal
 from asyncio import AbstractEventLoop, Queue
 from types import TracebackType
-from typing import Callable, Optional, Type, Awaitable, Dict, Any
+from typing import Callable, Type, Awaitable, Dict, Any
 
 from websockets import connect
 
@@ -11,6 +13,7 @@ from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTop
 from phoenix_channels_python_client.phx_messages import (
     ChannelMessage,
     ChannelEvent,
+    Event,
     PHXEvent,
     PHXEventMessage,
 )
@@ -23,6 +26,17 @@ from phoenix_channels_python_client.topic_subscription import (
     TopicProcessingState,
 )
 from phoenix_channels_python_client.utils import make_message
+
+
+DEFAULT_HEARTBEAT_INTERVAL_SECS = 30
+
+DEFAULT_RECONNECT_MAX_ATTEMPTS = 10
+DEFAULT_RECONNECT_BACKOFF_BASE = 1.0
+DEFAULT_RECONNECT_BACKOFF_MAX = 30.0
+
+# Type alias for reconnection callbacks
+ReconnectCallback = Callable[[], Awaitable[None]]
+DisconnectCallback = Callable[[Exception | None], Awaitable[None]]
 
 
 class PHXChannelsClient:
@@ -38,14 +52,41 @@ class PHXChannelsClient:
         The official Phoenix JS client (v1.8+) supports header-based authentication
         via the `authToken` option, which avoids this issue. This client currently
         uses the older `params` style for compatibility.
+
+    Args:
+        websocket_url: The WebSocket URL to connect to.
+        api_key: The API key for authentication.
+        event_loop: Optional event loop to use (defaults to current running loop).
+        protocol_version: Phoenix Channels protocol version (default: V2).
+        heartbeat_interval_secs: Interval between heartbeat messages in seconds.
+            Set to None to disable heartbeat. Default is 30 seconds, matching
+            the Phoenix JS client.
+        auto_reconnect: Whether to automatically reconnect on connection loss.
+            Default is True.
+        reconnect_max_attempts: Maximum number of reconnection attempts before
+            giving up. Default is 10. Set to 0 for unlimited attempts.
+        reconnect_backoff_base: Base delay in seconds for exponential backoff.
+            Default is 1.0 second.
+        reconnect_backoff_max: Maximum delay in seconds between reconnection
+            attempts. Default is 30 seconds.
+        on_reconnect: Optional async callback called after successful reconnection.
+        on_disconnect: Optional async callback called when disconnection is detected.
+            Receives the exception that caused the disconnect (if any).
     """
 
     def __init__(
         self,
         websocket_url: str,
         api_key: str,
-        event_loop: Optional[AbstractEventLoop] = None,
+        event_loop: AbstractEventLoop | None = None,
         protocol_version: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V2,
+        heartbeat_interval_secs: float | None = DEFAULT_HEARTBEAT_INTERVAL_SECS,
+        auto_reconnect: bool = True,
+        reconnect_max_attempts: int = DEFAULT_RECONNECT_MAX_ATTEMPTS,
+        reconnect_backoff_base: float = DEFAULT_RECONNECT_BACKOFF_BASE,
+        reconnect_backoff_max: float = DEFAULT_RECONNECT_BACKOFF_MAX,
+        on_reconnect: ReconnectCallback | None = None,
+        on_disconnect: DisconnectCallback | None = None,
     ):
         self.logger = logging.getLogger(__name__)
 
@@ -63,25 +104,230 @@ class PHXChannelsClient:
         self._protocol_handler = PHXProtocolHandler(protocol_version)
         self._ref_counter = 0
 
+        # Heartbeat configuration
+        self._heartbeat_interval_secs = heartbeat_interval_secs
+        self._heartbeat_task: asyncio.Task | None = None
+        self._pending_heartbeat_ref: str | None = None
+
+        # Reconnection configuration
+        self._auto_reconnect = auto_reconnect
+        self._reconnect_max_attempts = reconnect_max_attempts
+        self._reconnect_backoff_base = reconnect_backoff_base
+        self._reconnect_backoff_max = reconnect_backoff_max
+        self._on_reconnect = on_reconnect
+        self._on_disconnect = on_disconnect
+
+        # Reconnection state
+        self._reconnect_task: asyncio.Task | None = None
+        self._reconnect_attempt = 0
+        self._is_reconnecting = False
+        self._shutdown_requested = False
+
+        # Store subscription info for reconnection (topic -> callback)
+        self._subscription_callbacks: Dict[
+            str, Callable[[ChannelMessage], Awaitable[None]] | None
+        ] = {}
+        self._subscription_event_handlers: Dict[
+            str, Dict[ChannelEvent, Callable[[Dict[str, Any]], Awaitable[None]]]
+        ] = {}
+
     async def __aenter__(self) -> "PHXChannelsClient":
+        await self._connect()
+        return self
+
+    async def _connect(self) -> None:
+        """
+        Establish WebSocket connection and start background tasks.
+
+        This is an internal method used by both initial connection and reconnection.
+        """
         try:
             self.connection = await connect(self.channel_socket_url)
             self.logger.info("Connected to Phoenix WebSocket server")
             self._message_routing_task = self._loop.create_task(
-                self._start_processing()
+                self._start_processing_with_reconnect()
             )
-            return self
+            # Start heartbeat loop if enabled
+            if self._heartbeat_interval_secs is not None:
+                self._heartbeat_task = self._loop.create_task(self._heartbeat_loop())
+                self.logger.debug(
+                    "Heartbeat enabled with interval of %s seconds",
+                    self._heartbeat_interval_secs,
+                )
+            # Reset reconnection state on successful connection
+            self._reconnect_attempt = 0
+            self._is_reconnecting = False
         except Exception as e:
             self.logger.error("Failed to connect to Phoenix WebSocket server: %s", e)
             raise PHXConnectionError(
                 f"Failed to connect to {self.channel_socket_url}: {e}"
             ) from e
 
+    async def _start_processing_with_reconnect(self) -> None:
+        """
+        Wrapper around _start_processing that handles disconnection and triggers reconnection.
+        """
+        try:
+            await self._start_processing()
+        except Exception as e:
+            # Connection closed or error occurred
+            if not self._shutdown_requested:
+                self.logger.warning("Connection lost: %s", e)
+                await self._handle_disconnection(e)
+        finally:
+            # If processing ended without exception (clean close)
+            if not self._shutdown_requested and not self._is_reconnecting:
+                self.logger.warning("Connection closed unexpectedly")
+                await self._handle_disconnection(None)
+
+    async def _handle_disconnection(self, error: Exception | None) -> None:
+        """
+        Handle disconnection by notifying callback and starting reconnection if enabled.
+        """
+        # Notify disconnect callback
+        if self._on_disconnect:
+            try:
+                await self._on_disconnect(error)
+            except Exception as cb_error:
+                self.logger.error("Error in on_disconnect callback: %s", cb_error)
+
+        # Clean up current connection state
+        await self._cleanup_connection()
+
+        # Start reconnection if enabled and not shutting down
+        if self._auto_reconnect and not self._shutdown_requested:
+            self._reconnect_task = self._loop.create_task(self._reconnect_loop())
+
+    async def _cleanup_connection(self) -> None:
+        """
+        Clean up connection-related resources without full shutdown.
+        """
+        # Cancel heartbeat task
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
+            self._pending_heartbeat_ref = None
+
+        # Close connection if still open
+        if self.connection:
+            try:
+                await self.connection.close()
+            except Exception:
+                pass
+            self.connection = None
+
+    async def _reconnect_loop(self) -> None:
+        """
+        Attempt to reconnect with exponential backoff.
+        """
+        self._is_reconnecting = True
+
+        while not self._shutdown_requested:
+            self._reconnect_attempt += 1
+
+            # Check max attempts (0 = unlimited)
+            if (
+                self._reconnect_max_attempts > 0
+                and self._reconnect_attempt > self._reconnect_max_attempts
+            ):
+                self.logger.error(
+                    "Max reconnection attempts (%d) reached. Giving up.",
+                    self._reconnect_max_attempts,
+                )
+                self._is_reconnecting = False
+                return
+
+            # Calculate backoff delay with exponential increase
+            delay = min(
+                self._reconnect_backoff_base * (2 ** (self._reconnect_attempt - 1)),
+                self._reconnect_backoff_max,
+            )
+
+            self.logger.info(
+                "Reconnection attempt %d/%s in %.1f seconds...",
+                self._reconnect_attempt,
+                self._reconnect_max_attempts
+                if self._reconnect_max_attempts > 0
+                else "∞",
+                delay,
+            )
+
+            await asyncio.sleep(delay)
+
+            if self._shutdown_requested:
+                break
+
+            try:
+                await self._connect()
+                self.logger.info("Reconnected successfully!")
+
+                # Re-subscribe to all topics
+                await self._resubscribe_topics()
+
+                # Notify reconnect callback
+                if self._on_reconnect:
+                    try:
+                        await self._on_reconnect()
+                    except Exception as cb_error:
+                        self.logger.error(
+                            "Error in on_reconnect callback: %s", cb_error
+                        )
+
+                self._is_reconnecting = False
+                return
+
+            except Exception as e:
+                self.logger.warning(
+                    "Reconnection attempt %d failed: %s", self._reconnect_attempt, e
+                )
+
+        self._is_reconnecting = False
+
+    async def _resubscribe_topics(self) -> None:
+        """
+        Re-subscribe to all topics after reconnection.
+        """
+        topics_to_resubscribe = list(self._subscription_callbacks.keys())
+
+        if not topics_to_resubscribe:
+            return
+
+        self.logger.info("Re-subscribing to %d topic(s)...", len(topics_to_resubscribe))
+
+        subscriptions_snapshot = {
+            topic: (
+                self._subscription_callbacks.get(topic),
+                self._subscription_event_handlers.get(topic, {}).copy(),
+            )
+            for topic in topics_to_resubscribe
+        }
+
+        for topic, (callback, event_handlers) in subscriptions_snapshot.items():
+            try:
+                if topic in self._topic_subscriptions:
+                    self._unregister_topic(topic)
+
+                # Re-subscribe
+                await self.subscribe_to_topic(topic, callback)
+
+                # Restore event handlers
+                for event, handler in event_handlers.items():
+                    self.add_event_handler(topic, event, handler)
+
+                self.logger.info("Re-subscribed to topic: %s", topic)
+
+            except Exception as e:
+                self.logger.error("Failed to re-subscribe to topic %s: %s", topic, e)
+
     async def __aexit__(
         self,
-        exc_type: Optional[Type[BaseException]] = None,
-        exc_value: Optional[BaseException] = None,
-        traceback: Optional[TracebackType] = None,
+        exc_type: Type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
     ) -> None:
         await self.shutdown("Client context exiting")
 
@@ -93,9 +339,10 @@ class PHXChannelsClient:
         Gracefully shutdown the client connection.
 
         This method will:
-        1. Unsubscribe from all topics (with 5 second timeout)
-        2. Cancel the message routing task
-        3. Close the WebSocket connection
+        1. Stop reconnection attempts (if any)
+        2. Unsubscribe from all topics (with 5 second timeout)
+        3. Cancel the message routing task
+        4. Close the WebSocket connection
 
         Args:
             reason: Human-readable reason for shutdown (for logging)
@@ -104,6 +351,22 @@ class PHXChannelsClient:
         the async context manager. You can also call it explicitly.
         """
         self.logger.info("Shutting down client: %s", reason)
+
+        # Signal that shutdown is requested (prevents reconnection)
+        self._shutdown_requested = True
+
+        # Cancel reconnection task if running
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except asyncio.CancelledError:
+                pass
+            self._reconnect_task = None
+
+        # Clear stored subscription info (won't need it after shutdown)
+        self._subscription_callbacks.clear()
+        self._subscription_event_handlers.clear()
 
         topics_to_unsubscribe = list(self._topic_subscriptions.keys())
         if topics_to_unsubscribe:
@@ -131,6 +394,16 @@ class PHXChannelsClient:
                 for topic in topics_to_unsubscribe:
                     self._unregister_topic(topic)
 
+        # Cancel heartbeat task
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
+            self._pending_heartbeat_ref = None
+
         if self._message_routing_task and not self._message_routing_task.done():
             self._message_routing_task.cancel()
             try:
@@ -142,6 +415,96 @@ class PHXChannelsClient:
             await self.connection.close()
             self.connection = None
             self.logger.info("Connection closed")
+
+    async def _heartbeat_loop(self) -> None:
+        """
+        Send periodic heartbeat messages to keep the connection alive.
+
+        Phoenix servers expect heartbeat messages on the "phoenix" topic at regular
+        intervals (default 30 seconds). The Phoenix server's default timeout is
+        typically configured to 60 seconds (2x the heartbeat interval), after which
+        it will close connections that haven't sent a heartbeat.
+
+        This loop sends heartbeat messages and tracks pending heartbeat refs.
+        Heartbeat responses are handled in _handle_heartbeat_response().
+
+        Note: This task is only created when heartbeat_interval_secs is not None,
+        so no None check is needed here.
+        """
+        # Assert for type checker - this task is only created when interval is not None
+        assert self._heartbeat_interval_secs is not None
+        interval = self._heartbeat_interval_secs
+
+        while True:
+            try:
+                await asyncio.sleep(interval)
+
+                if self.connection is None:
+                    self.logger.debug("Heartbeat loop stopping: no connection")
+                    break
+
+                # Don't send a new heartbeat if we're still waiting for a response.
+                # This matches the Phoenix JS client behavior.
+                # Note: After clearing the pending ref, if a late response arrives for
+                # the old heartbeat, it won't be recognized (the ref won't match).
+                # This is intentional and matches JS client behavior - we don't track
+                # multiple outstanding heartbeats.
+                if self._pending_heartbeat_ref is not None:
+                    self.logger.warning(
+                        "Heartbeat timeout: no response to heartbeat ref=%s",
+                        self._pending_heartbeat_ref,
+                    )
+                    # Clear the pending ref and continue - the connection might
+                    # still be alive, let the next heartbeat try again
+                    self._pending_heartbeat_ref = None
+
+                # Generate ref and send heartbeat
+                self._pending_heartbeat_ref = self._generate_ref()
+                heartbeat_message = make_message(
+                    event=Event("heartbeat"),
+                    topic="phoenix",
+                    ref=self._pending_heartbeat_ref,
+                    payload={},
+                )
+
+                await self._protocol_handler.send_message(
+                    self.connection, heartbeat_message
+                )
+                self.logger.debug("Sent heartbeat ref=%s", self._pending_heartbeat_ref)
+
+            except asyncio.CancelledError:
+                self.logger.debug("Heartbeat loop cancelled")
+                raise
+            except Exception as e:
+                self.logger.warning("Heartbeat failed: %s", e)
+                # Connection might be dead, exit the loop
+                break
+
+    def _handle_heartbeat_response(self, message: ChannelMessage) -> bool:
+        """
+        Handle a heartbeat response from the server.
+
+        This method is intentionally synchronous because it only performs simple
+        attribute access and comparison - no I/O or blocking operations. Keeping
+        it sync avoids unnecessary async overhead for this hot path.
+
+        Args:
+            message: The received message
+
+        Returns:
+            True if this was a heartbeat response and was handled,
+            False if this message is not a heartbeat response.
+        """
+        # Check if this is a response to our heartbeat
+        if (
+            message.topic == "phoenix"
+            and message.ref is not None
+            and message.ref == self._pending_heartbeat_ref
+        ):
+            self._pending_heartbeat_ref = None
+            self.logger.debug("Heartbeat acknowledged ref=%s", message.ref)
+            return True
+        return False
 
     def _set_subscription_ready(self, topic_subscription: TopicSubscription) -> None:
         if not topic_subscription.subscription_ready.done():
@@ -310,7 +673,7 @@ class PHXChannelsClient:
     async def subscribe_to_topic(
         self,
         topic: str,
-        async_callback: Optional[Callable[[ChannelMessage], Awaitable[None]]] = None,
+        async_callback: Callable[[ChannelMessage], Awaitable[None]] | None = None,
     ) -> None:
         if topic in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} already subscribed")
@@ -340,6 +703,10 @@ class PHXChannelsClient:
 
         try:
             await subscription_ready_future
+            # Store callback for reconnection
+            self._subscription_callbacks[topic] = async_callback
+            if topic not in self._subscription_event_handlers:
+                self._subscription_event_handlers[topic] = {}
         except Exception as e:
             self.logger.error("Failed to subscribe to %s: %s", topic, e)
             self._unregister_topic(topic)
@@ -376,6 +743,9 @@ class PHXChannelsClient:
             raise
         finally:
             self._unregister_topic(topic)
+            # Remove stored subscription info
+            self._subscription_callbacks.pop(topic, None)
+            self._subscription_event_handlers.pop(topic, None)
 
     def add_event_handler(
         self,
@@ -390,6 +760,11 @@ class PHXChannelsClient:
         topic_subscription = self._topic_subscriptions[topic]
         topic_subscription.add_event_handler(event, handler)
 
+        # Store for reconnection
+        if topic not in self._subscription_event_handlers:
+            self._subscription_event_handlers[topic] = {}
+        self._subscription_event_handlers[topic][event] = handler
+
     def remove_event_handler(self, topic: str, event: ChannelEvent) -> None:
         """Remove an event handler for a specific event type on a topic."""
         if topic not in self._topic_subscriptions:
@@ -398,9 +773,13 @@ class PHXChannelsClient:
         topic_subscription = self._topic_subscriptions[topic]
         topic_subscription.remove_event_handler(event)
 
+        # Remove from stored handlers
+        if topic in self._subscription_event_handlers:
+            self._subscription_event_handlers[topic].pop(event, None)
+
     def get_event_handler(
         self, topic: str, event: ChannelEvent
-    ) -> Optional[Callable[[Dict[str, Any]], Awaitable[None]]]:
+    ) -> Callable[[Dict[str, Any]], Awaitable[None]] | None:
         """Get the handler for a specific event type on a topic."""
         if topic not in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} not subscribed")
@@ -446,7 +825,7 @@ class PHXChannelsClient:
 
     def get_message_handler(
         self, topic: str
-    ) -> Optional[Callable[[ChannelMessage], Awaitable[None]]]:
+    ) -> Callable[[ChannelMessage], Awaitable[None]] | None:
         """Get the current message handler for a topic."""
         if topic not in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} not subscribed")
@@ -466,7 +845,9 @@ class PHXChannelsClient:
         if self.connection is None:
             raise PHXConnectionError("Not connected to server")
         await self._protocol_handler.process_websocket_messages(
-            self.connection, self._topic_subscriptions
+            self.connection,
+            self._topic_subscriptions,
+            on_unhandled_message=self._handle_heartbeat_response,
         )
 
     async def run_forever(self) -> None:
