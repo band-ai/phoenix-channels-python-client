@@ -4,4 +4,4 @@
 *.log
 *.pyc
 build/
-*.egg-info/
+*.egg-info/.claude/
