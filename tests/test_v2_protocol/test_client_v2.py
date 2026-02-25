@@ -800,7 +800,8 @@ async def test_full_reconnection_flow(
 
         # Wait for reconnection to succeed
         result = await wait_for_condition(
-            lambda: client.connection is not None and "test-topic" in client.get_current_subscriptions(),
+            lambda: client.connection is not None
+            and "test-topic" in client.get_current_subscriptions(),
             timeout=2.0,
             interval=0.05,
         )

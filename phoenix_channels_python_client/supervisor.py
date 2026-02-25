@@ -44,7 +44,9 @@ class SupervisorMixin:
     _transition_state: Any
     shutdown: Any
 
-    async def _start_processing(self, connection: ClientConnection, conn_generation: int) -> None:
+    async def _start_processing(
+        self, connection: ClientConnection, conn_generation: int
+    ) -> None:
         await self._protocol_handler.process_websocket_messages(
             connection,
             self._topic_subscriptions,
@@ -72,7 +74,9 @@ class SupervisorMixin:
                             )
                         )
                     if not self.auto_reconnect:
-                        self.logger.error("Connection failed and auto_reconnect=False: %s", exc)
+                        self.logger.error(
+                            "Connection failed and auto_reconnect=False: %s", exc
+                        )
                         break
 
                     self._record_disconnect(connection_uptime_s=0.0)
@@ -108,7 +112,10 @@ class SupervisorMixin:
                 except Exception:
                     self.logger.exception("Unexpected error while rejoining topics")
 
-                if self._initial_connection_future and not self._initial_connection_future.done():
+                if (
+                    self._initial_connection_future
+                    and not self._initial_connection_future.done()
+                ):
                     self._initial_connection_future.set_result(None)
 
                 try:
@@ -179,9 +186,14 @@ class SupervisorMixin:
                 delay = self._apply_disconnect_delay_override(delay, decision)
                 await self._wait_for_shutdown_or_timeout(delay)
 
-            if self._initial_connection_future and not self._initial_connection_future.done():
+            if (
+                self._initial_connection_future
+                and not self._initial_connection_future.done()
+            ):
                 self._initial_connection_future.set_exception(
-                    PHXConnectionError("Connection supervisor stopped before connecting")
+                    PHXConnectionError(
+                        "Connection supervisor stopped before connecting"
+                    )
                 )
 
         finally:
@@ -215,7 +227,9 @@ class SupervisorMixin:
 
     async def run_forever(self) -> None:
         if self._supervisor_task is None:
-            raise PHXConnectionError("Client is not connected. Use 'async with' context manager.")
+            raise PHXConnectionError(
+                "Client is not connected. Use 'async with' context manager."
+            )
 
         shutdown_signal = asyncio.Event()
 

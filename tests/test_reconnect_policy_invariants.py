@@ -55,7 +55,9 @@ def test_close_code_classification_uses_expected_semantics() -> None:
     assert try_again_later.max_delay_s == 4.0
 
 
-def test_linear_rapid_cooldown_floor_is_monotonic_until_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_linear_rapid_cooldown_floor_is_monotonic_until_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     policy = ReconnectPolicy(
         base_delay_s=0.01,
         factor=2.0,
@@ -84,7 +86,9 @@ def test_linear_rapid_cooldown_floor_is_monotonic_until_cap(monkeypatch: pytest.
     assert delay_3 <= delay_4 <= delay_5
 
 
-def test_hold_down_jitter_respects_configured_band(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_hold_down_jitter_respects_configured_band(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     policy = ReconnectPolicy(
         base_delay_s=0.01,
         factor=2.0,

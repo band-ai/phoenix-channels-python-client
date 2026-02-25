@@ -50,9 +50,13 @@ class PHXProtocolHandler:
 
                 join_ref, ref, topic, event, payload = parsed_data
                 if not isinstance(topic, str) or not topic:
-                    raise TypeError("Protocol v2 message topic must be a non-empty string")
+                    raise TypeError(
+                        "Protocol v2 message topic must be a non-empty string"
+                    )
                 if not isinstance(event, str) or not event:
-                    raise TypeError("Protocol v2 message event must be a non-empty string")
+                    raise TypeError(
+                        "Protocol v2 message event must be a non-empty string"
+                    )
                 if payload is None or not isinstance(payload, dict):
                     payload = {}
 
@@ -122,7 +126,9 @@ class PHXProtocolHandler:
             self.logger.exception("Failed to serialize message")
             raise TypeError(f"Cannot serialize message: {exc}") from exc
 
-    async def send_message(self, websocket: ClientConnection, message: ChannelMessage) -> None:
+    async def send_message(
+        self, websocket: ClientConnection, message: ChannelMessage
+    ) -> None:
         self.logger.debug("Serialising %s to Phoenix Channels v2 format", message)
         text_message = self.serialize_message(message)
 
@@ -135,7 +141,9 @@ class PHXProtocolHandler:
         topic_subscriptions: dict[str, TopicSubscription],
         conn_generation: int,
     ) -> None:
-        self.logger.debug("Starting websocket message loop for generation %s", conn_generation)
+        self.logger.debug(
+            "Starting websocket message loop for generation %s", conn_generation
+        )
         async for socket_message in connection:
             phx_message = self.parse_message(socket_message)
             self.logger.debug("Processing message - %s", phx_message)
@@ -178,7 +186,8 @@ class PHXProtocolHandler:
                         )
                 except asyncio.QueueEmpty:
                     self.logger.debug(
-                        "Queue became empty before drop on topic %s; skipping drop", topic
+                        "Queue became empty before drop on topic %s; skipping drop",
+                        topic,
                     )
 
             await topic_subscription.queue.put(phx_message)

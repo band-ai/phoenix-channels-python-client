@@ -29,8 +29,8 @@ class TopicSubscription:
     current_join_ready: Future[None] = field(default_factory=asyncio.Future)
     unsubscribe_completed: Future[None] = field(default_factory=asyncio.Future)
     leave_requested: asyncio.Event = field(default_factory=asyncio.Event)
-    event_handlers: dict[ChannelEvent, Callable[[dict[str, Any]], Awaitable[None]]] = field(
-        default_factory=dict
+    event_handlers: dict[ChannelEvent, Callable[[dict[str, Any]], Awaitable[None]]] = (
+        field(default_factory=dict)
     )
     conn_generation: int = 0
     dropped_message_count: int = 0

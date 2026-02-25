@@ -111,7 +111,9 @@ class _TopicRuntimeHarness(TopicRuntimeMixin):
         self._ref_counter = 0
         self._conn_generation = 1
         self._topic_subscriptions: dict[str, TopicSubscription] = {}
-        self._protocol_handler = _FakeTopicProtocolHandler(PhoenixChannelsProtocolVersion.V2)
+        self._protocol_handler = _FakeTopicProtocolHandler(
+            PhoenixChannelsProtocolVersion.V2
+        )
         self._topics_lock = asyncio.Lock()
         self._shutdown_event = asyncio.Event()
         self.join_timeout_s = 0.01
@@ -174,7 +176,9 @@ class _SupervisorHarness(SupervisorMixin):
         del connection, routing_error
         return self.extract_close_result
 
-    def _classify_disconnect(self, close_code: int | None, close_reason: str) -> ReconnectDecision:
+    def _classify_disconnect(
+        self, close_code: int | None, close_reason: str
+    ) -> ReconnectDecision:
         del close_code, close_reason
         return self.disconnect_decision
 
@@ -198,7 +202,10 @@ class _SupervisorHarness(SupervisorMixin):
 
 
 def test_transition_client_state_allows_noop_and_rejects_invalid() -> None:
-    assert transition_client_state(ClientState.CLOSED, ClientState.CLOSED) == ClientState.CLOSED
+    assert (
+        transition_client_state(ClientState.CLOSED, ClientState.CLOSED)
+        == ClientState.CLOSED
+    )
     with pytest.raises(RuntimeError):
         transition_client_state(ClientState.CLOSED, ClientState.CONNECTED)
 
@@ -223,10 +230,15 @@ def test_transition_client_state_allows_noop_and_rejects_invalid() -> None:
         {"rapid_cooldown_max_s": 0, "rapid_cooldown_base_s": 1},
         {"rapid_suppress_disconnect_count": -1},
         {"rapid_hold_down_jitter_low_ratio": -1},
-        {"rapid_hold_down_jitter_high_ratio": 0.1, "rapid_hold_down_jitter_low_ratio": 0.2},
+        {
+            "rapid_hold_down_jitter_high_ratio": 0.1,
+            "rapid_hold_down_jitter_low_ratio": 0.2,
+        },
     ],
 )
-def test_reconnect_policy_is_invalid_covers_all_invalid_guards(kwargs: dict[str, Any]) -> None:
+def test_reconnect_policy_is_invalid_covers_all_invalid_guards(
+    kwargs: dict[str, Any],
+) -> None:
     policy = ReconnectPolicy(**kwargs)
     assert reconnect_policy_is_invalid(policy) is True
 
@@ -244,7 +256,9 @@ def test_protocol_handler_parse_v2_and_v1_success() -> None:
 
     v1 = PHXProtocolHandler(PhoenixChannelsProtocolVersion.V1)
     msg1 = v1.parse_message(
-        json.dumps({"topic": "test-topic", "event": "hello", "ref": "1", "payload": {"x": 1}})
+        json.dumps(
+            {"topic": "test-topic", "event": "hello", "ref": "1", "payload": {"x": 1}}
+        )
     )
     assert msg1.topic == "test-topic"
     assert str(msg1.event) == "hello"
@@ -254,14 +268,26 @@ def test_protocol_handler_parse_v2_and_v1_success() -> None:
 @pytest.mark.parametrize(
     "handler,raw,expected_exception",
     [
-        (PHXProtocolHandler(PhoenixChannelsProtocolVersion.V2), json.dumps({"bad": "shape"}), TypeError),
-        (PHXProtocolHandler(PhoenixChannelsProtocolVersion.V2), json.dumps([1, 2, 3]), ValueError),
+        (
+            PHXProtocolHandler(PhoenixChannelsProtocolVersion.V2),
+            json.dumps({"bad": "shape"}),
+            TypeError,
+        ),
+        (
+            PHXProtocolHandler(PhoenixChannelsProtocolVersion.V2),
+            json.dumps([1, 2, 3]),
+            ValueError,
+        ),
         (
             PHXProtocolHandler(PhoenixChannelsProtocolVersion.V2),
             json.dumps([None, None, "", "evt", {}]),
             TypeError,
         ),
-        (PHXProtocolHandler(PhoenixChannelsProtocolVersion.V1), json.dumps([1, 2, 3]), TypeError),
+        (
+            PHXProtocolHandler(PhoenixChannelsProtocolVersion.V1),
+            json.dumps([1, 2, 3]),
+            TypeError,
+        ),
         (
             PHXProtocolHandler(PhoenixChannelsProtocolVersion.V1),
             json.dumps({"topic": "", "event": "x", "payload": {}}),
@@ -281,20 +307,26 @@ def test_protocol_handler_parse_invalid_shapes_raise(
         handler.parse_message(raw)
 
 
-def test_protocol_handler_parse_unexpected_exception_wrapped(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_protocol_handler_parse_unexpected_exception_wrapped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     handler = PHXProtocolHandler(PhoenixChannelsProtocolVersion.V2)
 
     def _boom(_: str | bytes) -> Any:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("phoenix_channels_python_client.protocol_handler.json.loads", _boom)
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.protocol_handler.json.loads", _boom
+    )
     with pytest.raises(ValueError):
         handler.parse_message("ignored")
 
 
 def test_protocol_handler_serialize_and_send_message() -> None:
     handler = PHXProtocolHandler(PhoenixChannelsProtocolVersion.V2)
-    message = handler.parse_message(json.dumps(["jr", "r1", "test-topic", "evt", {"x": 1}]))
+    message = handler.parse_message(
+        json.dumps(["jr", "r1", "test-topic", "evt", {"x": 1}])
+    )
     serialized = handler.serialize_message(message)
     assert serialized.startswith("[")
 
@@ -350,7 +382,9 @@ async def test_process_websocket_messages_filters_stale_generation() -> None:
     )
     msg = json.dumps(["jr", "1", "test-topic", "evt", {"x": 1}])
     connection = _FakeConnection(messages=[msg])
-    await handler.process_websocket_messages(cast(ClientConnection, connection), {"test-topic": sub}, 1)
+    await handler.process_websocket_messages(
+        cast(ClientConnection, connection), {"test-topic": sub}, 1
+    )
     assert queue.qsize() == 0
 
 
@@ -370,7 +404,9 @@ async def test_process_websocket_messages_drop_path_handles_queueempty() -> None
 
     msg = json.dumps(["jr", "1", "test-topic", "evt", {"x": 1}])
     connection = _FakeConnection(messages=[msg])
-    await handler.process_websocket_messages(cast(ClientConnection, connection), {"test-topic": sub}, 1)
+    await handler.process_websocket_messages(
+        cast(ClientConnection, connection), {"test-topic": sub}, 1
+    )
     assert sub.dropped_message_count == 99
 
 
@@ -436,7 +472,9 @@ async def test_topic_runtime_processing_state_and_join_leave_error_paths() -> No
     await runtime._handle_leave_mode(leave_topic, non_reply_leave)
     assert leave_topic.unsubscribe_completed.done() is False
 
-    failed_leave_reply = make_message(PHXEvent.reply, "room:lobby", payload={"status": "error"})
+    failed_leave_reply = make_message(
+        PHXEvent.reply, "room:lobby", payload={"status": "error"}
+    )
     await runtime._handle_leave_mode(leave_topic, failed_leave_reply)
     assert isinstance(leave_topic.unsubscribe_completed.exception(), PHXTopicError)
 
@@ -527,7 +565,9 @@ async def test_topic_runtime_subscribe_unsubscribe_and_rejoin_edge_cases() -> No
     )
     runtime._topic_subscriptions = {shutting_down.name: shutting_down}
     runtime.connection = cast(ClientConnection, _FakeSocket())
-    cast(_FakeTopicProtocolHandler, runtime._protocol_handler).raise_on_send = RuntimeError("send fail")
+    cast(
+        _FakeTopicProtocolHandler, runtime._protocol_handler
+    ).raise_on_send = RuntimeError("send fail")
     runtime._shutdown_event.set()
     runtime._state = ClientState.SHUTTING_DOWN
     await runtime._rejoin_topics(generation=3)
@@ -535,7 +575,9 @@ async def test_topic_runtime_subscribe_unsubscribe_and_rejoin_edge_cases() -> No
 
 
 @pytest.mark.asyncio
-async def test_topic_runtime_process_topic_messages_special_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_topic_runtime_process_topic_messages_special_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime = _TopicRuntimeHarness()
 
     await runtime._process_topic_messages("missing-topic")
@@ -552,7 +594,9 @@ async def test_topic_runtime_process_topic_messages_special_paths(monkeypatch: p
     runtime._topic_subscriptions[topic.name] = topic
 
     stale = make_message(PHXEvent.reply, topic.name, payload={}, join_ref="old")
-    leave_ok = make_message(PHXEvent.reply, topic.name, payload={"status": "ok"}, join_ref=topic.join_ref)
+    leave_ok = make_message(
+        PHXEvent.reply, topic.name, payload={"status": "ok"}, join_ref=topic.join_ref
+    )
     topic.queue.put_nowait(stale)
     topic.queue.put_nowait(leave_ok)
     await asyncio.wait_for(runtime._process_topic_messages(topic.name), timeout=0.2)
@@ -578,7 +622,12 @@ async def test_topic_runtime_process_topic_messages_special_paths(monkeypatch: p
     )
     runtime._topic_subscriptions[topic2.name] = topic2
     topic2.queue.put_nowait(
-        make_message(PHXEvent.reply, topic2.name, payload={"status": "ok"}, join_ref=topic2.join_ref)
+        make_message(
+            PHXEvent.reply,
+            topic2.name,
+            payload={"status": "ok"},
+            join_ref=topic2.join_ref,
+        )
     )
     await asyncio.wait_for(runtime._process_topic_messages(topic2.name), timeout=0.2)
     assert called["name"] == topic2.name
@@ -609,7 +658,9 @@ async def test_topic_runtime_missing_topic_handler_guards() -> None:
 
 
 @pytest.mark.asyncio
-async def test_topic_runtime_existing_topic_handlers_and_rejoin_skip_leave_requested() -> None:
+async def test_topic_runtime_existing_topic_handlers_and_rejoin_skip_leave_requested() -> (
+    None
+):
     runtime = _TopicRuntimeHarness()
     topic = TopicSubscription(
         name="room:existing",
@@ -656,14 +707,20 @@ async def test_supervisor_connect_failures_and_terminal_suppression(
     async def fail_connect(_: str) -> ClientConnection:
         raise RuntimeError("connect fail")
 
-    monkeypatch.setattr("phoenix_channels_python_client.supervisor.connect", fail_connect)
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.connect", fail_connect
+    )
     await harness._supervisor_loop()
     assert harness._initial_connection_future is not None
-    assert isinstance(harness._initial_connection_future.exception(), PHXConnectionError)
+    assert isinstance(
+        harness._initial_connection_future.exception(), PHXConnectionError
+    )
 
     suppressed = _SupervisorHarness()
     suppressed.suppress_values = [True]
-    monkeypatch.setattr("phoenix_channels_python_client.supervisor.connect", fail_connect)
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.connect", fail_connect
+    )
     await suppressed._supervisor_loop()
     assert isinstance(suppressed._terminal_error, PHXConnectionError)
 
@@ -673,7 +730,9 @@ async def test_supervisor_routing_failure_disconnect_decisions_and_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = _SupervisorHarness()
-    harness._protocol_handler = _FakeRoutingProtocolHandler(error=RuntimeError("routing boom"))
+    harness._protocol_handler = _FakeRoutingProtocolHandler(
+        error=RuntimeError("routing boom")
+    )
     harness.rejoin_error = RuntimeError("rejoin boom")
     harness._rapid_disconnects.extend([1.0, 2.0])  # type: ignore[attr-defined]
 
@@ -682,7 +741,9 @@ async def test_supervisor_routing_failure_disconnect_decisions_and_cleanup(
     async def connect_once(_: str) -> ClientConnection:
         return cast(ClientConnection, socket)
 
-    monkeypatch.setattr("phoenix_channels_python_client.supervisor.connect", connect_once)
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.connect", connect_once
+    )
     await harness._supervisor_loop()
 
     assert harness.connection is None
@@ -707,7 +768,9 @@ async def test_supervisor_initial_future_stop_and_cleanup_exceptions() -> None:
     harness._shutdown_event.set()
     await harness._supervisor_loop()
     assert harness._initial_connection_future is not None
-    assert isinstance(harness._initial_connection_future.exception(), PHXConnectionError)
+    assert isinstance(
+        harness._initial_connection_future.exception(), PHXConnectionError
+    )
 
     cleanup = _SupervisorHarness()
     cleanup.connection = cast(ClientConnection, _FakeSocket(close_raises=True))
@@ -731,11 +794,15 @@ async def test_supervisor_run_forever_paths(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(loop, "add_signal_handler", lambda *_args: None)
     monkeypatch.setattr(loop, "remove_signal_handler", lambda *_args: None)
 
-    async def wait_signal_first(tasks: Any, return_when: Any) -> tuple[set[Any], set[Any]]:
+    async def wait_signal_first(
+        tasks: Any, return_when: Any
+    ) -> tuple[set[Any], set[Any]]:
         del return_when
         return {tasks[0]}, {tasks[1]}
 
-    monkeypatch.setattr("phoenix_channels_python_client.supervisor.asyncio.wait", wait_signal_first)
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.asyncio.wait", wait_signal_first
+    )
     await signaled.run_forever()
     assert signaled.shutdown_reasons == ["Signal received"]
 
@@ -743,10 +810,14 @@ async def test_supervisor_run_forever_paths(monkeypatch: pytest.MonkeyPatch) -> 
     errored._supervisor_task = asyncio.create_task(asyncio.sleep(0))
     errored._terminal_error = PHXConnectionError("terminal")
 
-    async def wait_supervisor_first(tasks: Any, return_when: Any) -> tuple[set[Any], set[Any]]:
+    async def wait_supervisor_first(
+        tasks: Any, return_when: Any
+    ) -> tuple[set[Any], set[Any]]:
         del return_when
         return {tasks[1]}, {tasks[0]}
 
-    monkeypatch.setattr("phoenix_channels_python_client.supervisor.asyncio.wait", wait_supervisor_first)
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.asyncio.wait", wait_supervisor_first
+    )
     with pytest.raises(PHXConnectionError):
         await errored.run_forever()

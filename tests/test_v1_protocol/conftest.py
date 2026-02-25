@@ -92,7 +92,9 @@ class FakePhoenixServerV1:
             self._client_path.pop(websocket, None)
             self._client_api_key.pop(websocket, None)
 
-    async def handle_message(self, websocket: ServerConnection, data: dict[str, object]) -> None:
+    async def handle_message(
+        self, websocket: ServerConnection, data: dict[str, object]
+    ) -> None:
         if not isinstance(data, dict):
             return
 
@@ -111,7 +113,10 @@ class FakePhoenixServerV1:
                     "topic": topic,
                     "event": "phx_reply",
                     "ref": ref,
-                    "payload": {"status": "error", "response": {"reason": "forced join failure"}},
+                    "payload": {
+                        "status": "error",
+                        "response": {"reason": "forced join failure"},
+                    },
                 }
                 await websocket.send(json.dumps(reply))
                 return
@@ -128,7 +133,10 @@ class FakePhoenixServerV1:
                     "topic": topic,
                     "event": "phx_reply",
                     "ref": ref,
-                    "payload": {"status": "error", "response": {"reason": "unmatched topic"}},
+                    "payload": {
+                        "status": "error",
+                        "response": {"reason": "unmatched topic"},
+                    },
                 }
             await websocket.send(json.dumps(reply))
 
@@ -174,7 +182,12 @@ class FakePhoenixServerV1:
                     targets = [websocket]
                     break
 
-        message = {"topic": topic, "event": event, "ref": None, "payload": dict(payload)}
+        message = {
+            "topic": topic,
+            "event": event,
+            "ref": None,
+            "payload": dict(payload),
+        }
         for websocket in targets:
             await websocket.send(json.dumps(message))
 

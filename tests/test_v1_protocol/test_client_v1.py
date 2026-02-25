@@ -19,7 +19,9 @@ def _event_name(message: Message) -> str:
     return str(message.event)
 
 
-async def _wait_until(predicate, *, timeout_s: float = 2.0, interval_s: float = 0.01) -> None:
+async def _wait_until(
+    predicate, *, timeout_s: float = 2.0, interval_s: float = 0.01
+) -> None:
     deadline = asyncio.get_running_loop().time() + timeout_s
     while True:
         if predicate():
@@ -227,7 +229,9 @@ async def test_unsubscribe_from_topic_gracefully_allows_callback_to_finish_but_i
         topic_subscription = subscriptions["test-topic"]
         assert topic_subscription.queue.qsize() == event_count - 1
 
-        unsubscribe_task = asyncio.create_task(client.unsubscribe_from_topic("test-topic"))
+        unsubscribe_task = asyncio.create_task(
+            client.unsubscribe_from_topic("test-topic")
+        )
 
         await asyncio.sleep(0)
 
@@ -267,7 +271,9 @@ async def test_two_topics_with_different_callbacks(phoenix_server: FakePhoenixSe
         payload_a = {"topic_id": "a"}
         payload_b = {"topic_id": "b"}
 
-        await phoenix_server.simulate_server_event("test-topic", "event1", payload_a, join_ref="1")
+        await phoenix_server.simulate_server_event(
+            "test-topic", "event1", payload_a, join_ref="1"
+        )
         await phoenix_server.simulate_server_event(
             "test-topic-b", "event2", payload_b, join_ref="2"
         )
@@ -345,7 +351,9 @@ async def test_shutdown_unsubscribes_from_all_topics_and_cleans_up_resources(
         raise
 
 
-async def test_dynamic_event_handler_management_with_counter(phoenix_server: FakePhoenixServer):
+async def test_dynamic_event_handler_management_with_counter(
+    phoenix_server: FakePhoenixServer,
+):
     handler_count = 0
     message_handler_count = 0
     message_handler_event = asyncio.Event()
@@ -366,7 +374,9 @@ async def test_dynamic_event_handler_management_with_counter(phoenix_server: Fak
     async with PHXChannelsClient(phoenix_server.url, api_key="test_key") as client:
         await client.subscribe_to_topic("test-topic", message_handler)
 
-        await phoenix_server.simulate_server_event("test-topic", "count_me", {}, join_ref="1")
+        await phoenix_server.simulate_server_event(
+            "test-topic", "count_me", {}, join_ref="1"
+        )
         await message_handler_event.wait()
         message_handler_event.clear()
         assert handler_count == 0
@@ -418,12 +428,15 @@ async def test_reconnect_resubscribes_and_receives_messages(
         original_join_ref = client.get_current_subscriptions()["test-topic"].join_ref
 
         await _wait_until(
-            lambda: client.get_current_subscriptions()["test-topic"].join_ref != original_join_ref,
+            lambda: client.get_current_subscriptions()["test-topic"].join_ref
+            != original_join_ref,
             timeout_s=2.0,
         )
 
         await _wait_until(
-            lambda: client.get_current_subscriptions()["test-topic"].current_join_ready.done(),
+            lambda: client.get_current_subscriptions()[
+                "test-topic"
+            ].current_join_ready.done(),
             timeout_s=2.0,
         )
 
@@ -479,14 +492,17 @@ async def test_stale_queued_messages_are_dropped_after_reconnect(
         await phoenix_server.close_all_clients()
 
         await _wait_until(
-            lambda: client.get_current_subscriptions()["test-topic"].join_ref != old_join_ref,
+            lambda: client.get_current_subscriptions()["test-topic"].join_ref
+            != old_join_ref,
             timeout_s=3.0,
         )
 
         callback_gate.set()
 
         await _wait_until(
-            lambda: client.get_current_subscriptions()["test-topic"].current_join_ready.done(),
+            lambda: client.get_current_subscriptions()[
+                "test-topic"
+            ].current_join_ready.done(),
             timeout_s=2.0,
         )
 
@@ -534,11 +550,14 @@ async def test_reconnect_partial_recovery_unregisters_failed_topic_only(
             timeout_s=2.0,
         )
         await _wait_until(
-            lambda: client.get_current_subscriptions()["test-topic"].join_ref != old_join_ref,
+            lambda: client.get_current_subscriptions()["test-topic"].join_ref
+            != old_join_ref,
             timeout_s=2.0,
         )
         await _wait_until(
-            lambda: client.get_current_subscriptions()["test-topic"].current_join_ready.done(),
+            lambda: client.get_current_subscriptions()[
+                "test-topic"
+            ].current_join_ready.done(),
             timeout_s=2.0,
         )
 
@@ -593,11 +612,14 @@ async def test_transient_rejoin_failure_keeps_subscription_and_recovers(
         await phoenix_server.close_all_clients(code=1012, reason="service restart")
 
         await _wait_until(
-            lambda: client.get_current_subscriptions()["test-topic"].join_ref != old_join_ref,
+            lambda: client.get_current_subscriptions()["test-topic"].join_ref
+            != old_join_ref,
             timeout_s=3.0,
         )
         await _wait_until(
-            lambda: client.get_current_subscriptions()["test-topic"].current_join_ready.done(),
+            lambda: client.get_current_subscriptions()[
+                "test-topic"
+            ].current_join_ready.done(),
             timeout_s=3.0,
         )
 

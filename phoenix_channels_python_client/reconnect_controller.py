@@ -7,7 +7,10 @@ from collections import deque
 from websockets import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
-from phoenix_channels_python_client.client_types import ReconnectDecision, ReconnectPolicy
+from phoenix_channels_python_client.client_types import (
+    ReconnectDecision,
+    ReconnectPolicy,
+)
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 
 
@@ -35,7 +38,8 @@ class ReconnectControllerMixin:
     def _compute_reconnect_delay(self, attempt: int) -> float:
         base_delay = min(
             self.reconnect_policy.max_delay_s,
-            self.reconnect_policy.base_delay_s * (self.reconnect_policy.factor ** max(attempt, 0)),
+            self.reconnect_policy.base_delay_s
+            * (self.reconnect_policy.factor ** max(attempt, 0)),
         )
 
         rapid_count = len(self._rapid_disconnects)
@@ -79,11 +83,16 @@ class ReconnectControllerMixin:
                 return routing_error.sent.code, routing_error.sent.reason
         return connection.close_code, connection.close_reason or ""
 
-    def _classify_disconnect(self, close_code: int | None, close_reason: str) -> ReconnectDecision:
+    def _classify_disconnect(
+        self, close_code: int | None, close_reason: str
+    ) -> ReconnectDecision:
         if close_code is None:
             return ReconnectDecision(should_reconnect=True)
 
-        if close_code in {1000, 1001} and not self.reconnect_policy.reconnect_on_normal_close:
+        if (
+            close_code in {1000, 1001}
+            and not self.reconnect_policy.reconnect_on_normal_close
+        ):
             return ReconnectDecision(should_reconnect=False)
 
         if close_code == 1008 and self.reconnect_policy.policy_violation_is_terminal:

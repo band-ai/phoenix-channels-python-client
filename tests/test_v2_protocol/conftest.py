@@ -94,7 +94,9 @@ class FakePhoenixServer:
             self._client_path.pop(websocket, None)
             self._client_api_key.pop(websocket, None)
 
-    async def handle_message(self, websocket: ServerConnection, data: list[object]) -> None:
+    async def handle_message(
+        self, websocket: ServerConnection, data: list[object]
+    ) -> None:
         """Handle incoming Phoenix messages (array format: [join_ref, msg_ref, topic, event, payload])."""
         if not isinstance(data, list) or len(data) != 5:
             return
@@ -121,7 +123,13 @@ class FakePhoenixServer:
                 return
 
             if self.is_valid_topic(topic):
-                reply = [join_ref, msg_ref, topic, "phx_reply", {"status": "ok", "response": {}}]
+                reply = [
+                    join_ref,
+                    msg_ref,
+                    topic,
+                    "phx_reply",
+                    {"status": "ok", "response": {}},
+                ]
             else:
                 reply = [
                     join_ref,
@@ -140,7 +148,13 @@ class FakePhoenixServer:
                 )
 
         elif event == "phx_leave":
-            reply = [join_ref, msg_ref, topic, "phx_reply", {"status": "ok", "response": {}}]
+            reply = [
+                join_ref,
+                msg_ref,
+                topic,
+                "phx_reply",
+                {"status": "ok", "response": {}},
+            ]
             await websocket.send(json.dumps(reply))
 
             close_message = [join_ref, join_ref, topic, "phx_close", {}]

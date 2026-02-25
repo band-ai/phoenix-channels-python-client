@@ -48,6 +48,7 @@ class PHXEventMessage(BasePHXMessage):
     event: PHXEvent
     join_ref: str | None = None
 
+
 ChannelMessage = PHXMessage | PHXEventMessage
 # Compatibility alias for existing tests and call sites.
 Message = PHXMessage | PHXEventMessage

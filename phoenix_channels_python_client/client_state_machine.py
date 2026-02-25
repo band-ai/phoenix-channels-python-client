@@ -3,7 +3,9 @@ from __future__ import annotations
 from phoenix_channels_python_client.client_types import ClientState
 
 
-def transition_client_state(current: ClientState, new_state: ClientState) -> ClientState:
+def transition_client_state(
+    current: ClientState, new_state: ClientState
+) -> ClientState:
     if current == new_state:
         return current
 
@@ -29,6 +31,8 @@ def transition_client_state(current: ClientState, new_state: ClientState) -> Cli
     }
 
     if new_state not in allowed_transitions[current]:
-        raise RuntimeError(f"Invalid state transition {current.value} -> {new_state.value}")
+        raise RuntimeError(
+            f"Invalid state transition {current.value} -> {new_state.value}"
+        )
 
     return new_state

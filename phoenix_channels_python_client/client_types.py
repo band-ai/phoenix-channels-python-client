@@ -81,4 +81,7 @@ def reconnect_policy_is_invalid(policy: ReconnectPolicy) -> bool:
         return True
     if policy.rapid_hold_down_jitter_low_ratio < 0:
         return True
-    return policy.rapid_hold_down_jitter_high_ratio < policy.rapid_hold_down_jitter_low_ratio
+    return (
+        policy.rapid_hold_down_jitter_high_ratio
+        < policy.rapid_hold_down_jitter_low_ratio
+    )

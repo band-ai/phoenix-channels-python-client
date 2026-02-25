@@ -5,7 +5,9 @@ from dataclasses import dataclass
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
 from phoenix_channels_python_client.phx_messages import Message
-from phoenix_channels_python_client.protocol_handler import PhoenixChannelsProtocolVersion
+from phoenix_channels_python_client.protocol_handler import (
+    PhoenixChannelsProtocolVersion,
+)
 
 from .test_v2_protocol.conftest import FakePhoenixServer
 
@@ -94,7 +96,8 @@ async def _run_contention_trial(
         await asyncio.gather(*run_tasks, return_exceptions=True)
 
     attempts = [
-        phoenix_server.get_connection_attempts(f"/socket/stress-{idx}") for idx in range(clients_n)
+        phoenix_server.get_connection_attempts(f"/socket/stress-{idx}")
+        for idx in range(clients_n)
     ]
     rates = [attempt / duration_s for attempt in attempts]
 
