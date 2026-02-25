@@ -72,8 +72,6 @@ jobs:
       - name: Publish to PyPI
         if: steps.check_pypi.outputs.exists == 'false'
         run: uv publish
-        env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
 
       - name: Publish release summary
         if: steps.check_pypi.outputs.exists == 'false'
