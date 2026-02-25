@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5](https://github.com/thenvoi/phoenix-channels-python-client-alpha/compare/phoenix-channels-python-client-alpha-v0.1.4...phoenix-channels-python-client-alpha-v0.1.5) (2026-02-25)
+
+
+### Bug Fixes
+
+* **deps:** bump requests from 2.32.4 to 2.32.5 in /.github/actions/GithubToken ([#25](https://github.com/thenvoi/phoenix-channels-python-client-alpha/issues/25)) ([6f097b3](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/6f097b31fcba19ed916ef109b7193f0fbdfd7ebb))
+* **deps:** bump requests in /.github/actions/GithubToken ([6f097b3](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/6f097b31fcba19ed916ef109b7193f0fbdfd7ebb))
+
+
+### Continuous Integration
+
+* add dependabot config and unhide all changelog sections ([#23](https://github.com/thenvoi/phoenix-channels-python-client-alpha/issues/23)) ([4e6ac31](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/4e6ac3135380255d39d76bab6f501c8d1b39bfbd))
+* add dependabot config with conventional commit prefixes and unhide all changelog sections ([4e6ac31](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/4e6ac3135380255d39d76bab6f501c8d1b39bfbd))
+* **deps:** bump actions/checkout from 4 to 6 ([#28](https://github.com/thenvoi/phoenix-channels-python-client-alpha/issues/28)) ([d0dde26](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/d0dde266f7a7cce78f422c3dda49739adcdbf601))
+* **deps:** bump actions/setup-python from 5 to 6 ([#27](https://github.com/thenvoi/phoenix-channels-python-client-alpha/issues/27)) ([97b6079](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/97b6079f9874eed8e6431a1eda73cdfb83c49b0f))
+* **deps:** bump amannn/action-semantic-pull-request from 5 to 6 ([#29](https://github.com/thenvoi/phoenix-channels-python-client-alpha/issues/29)) ([22e6e49](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/22e6e4957a4e15e2fd607f9d83276d099290a6ad))
+* **deps:** bump astral-sh/setup-uv from 4 to 7 ([#26](https://github.com/thenvoi/phoenix-channels-python-client-alpha/issues/26)) ([72051f6](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/72051f6ec63df3fdd617b1325da9e41da5d861e5))
+* switch PyPI publishing to trusted publisher and add badge ([#22](https://github.com/thenvoi/phoenix-channels-python-client-alpha/issues/22)) ([37d0ba5](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/37d0ba558ecc82c4871c6b8bc9fb6757ce10db48))
+
 ## [0.1.4](https://github.com/thenvoi/phoenix-channels-python-client-alpha/compare/phoenix-channels-python-client-alpha-v0.1.3...phoenix-channels-python-client-alpha-v0.1.4) (2026-02-25)
 
 
