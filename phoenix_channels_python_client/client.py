@@ -32,7 +32,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         websocket_url: str,
         api_key: str,
         *,
-        protocol_version: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V2,
+        protocol_version: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V1,
         auto_reconnect: bool = True,
         reconnect_policy: ReconnectPolicy | None = None,
         join_timeout_s: float = 10.0,
@@ -121,12 +121,16 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self,
         reason: str,
     ) -> None:
-        if self._state == ClientState.CLOSED:
+        if (
+            self._state == ClientState.CLOSED
+            and not self._topic_subscriptions
+            and self.connection is None
+        ):
             return
 
         self.logger.info("Event loop shutting down! reason=%s", reason)
 
-        if self._state != ClientState.SHUTTING_DOWN:
+        if self._state not in (ClientState.SHUTTING_DOWN, ClientState.CLOSED):
             self._transition_state(ClientState.SHUTTING_DOWN)
 
         self._shutdown_event.set()

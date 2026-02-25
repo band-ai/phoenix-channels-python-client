@@ -154,7 +154,10 @@ class PHXProtocolHandler:
                 )
                 continue
 
-            if topic_subscription.join_ref != phx_message.join_ref:
+            if (
+                self.protocol_version == PhoenixChannelsProtocolVersion.V2
+                and topic_subscription.join_ref != phx_message.join_ref
+            ):
                 self.logger.debug(
                     "Dropping message with stale join_ref on topic %s. got=%s expected=%s",
                     topic,

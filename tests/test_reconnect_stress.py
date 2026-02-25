@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
 from phoenix_channels_python_client.phx_messages import Message
+from phoenix_channels_python_client.protocol_handler import PhoenixChannelsProtocolVersion
 
 from .test_v2_protocol.conftest import FakePhoenixServer
 
@@ -74,6 +75,7 @@ async def _run_contention_trial(
             client = PHXChannelsClient(
                 f"ws://{phoenix_server.host}:{phoenix_server.port}/socket/stress-{idx}",
                 api_key="shared-agent",
+                protocol_version=PhoenixChannelsProtocolVersion.V2,
                 reconnect_policy=policy,
                 join_timeout_s=1.0,
                 leave_timeout_s=1.0,

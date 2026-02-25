@@ -12,7 +12,10 @@ from websockets import ClientConnection
 from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
 from phoenix_channels_python_client.phx_messages import ChannelMessage, Event, PHXEvent
-from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
+from phoenix_channels_python_client.protocol_handler import (
+    PHXProtocolHandler,
+    PhoenixChannelsProtocolVersion,
+)
 from phoenix_channels_python_client.topic_subscription import (
     TopicProcessingState,
     TopicSubscription,
@@ -81,7 +84,11 @@ class TopicRuntimeMixin:
             while True:
                 message = await topic.queue.get()
 
-                if message.join_ref != topic.join_ref:
+                if (
+                    self._protocol_handler.protocol_version
+                    == PhoenixChannelsProtocolVersion.V2
+                    and message.join_ref != topic.join_ref
+                ):
                     self.logger.debug(
                         "Dropping stale queued message for topic %s. got=%s expected=%s",
                         topic.name,
