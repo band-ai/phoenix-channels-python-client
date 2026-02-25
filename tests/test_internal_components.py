@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -11,14 +13,20 @@ from websockets import ClientConnection
 from phoenix_channels_python_client.client_state_machine import transition_client_state
 from phoenix_channels_python_client.client_types import (
     ClientState,
+    ReconnectDecision,
     ReconnectPolicy,
     reconnect_policy_is_invalid,
 )
+from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
+from phoenix_channels_python_client.phx_messages import PHXEvent, UserEvent
 from phoenix_channels_python_client.protocol_handler import (
     PHXProtocolHandler,
     PhoenixChannelsProtocolVersion,
 )
+from phoenix_channels_python_client.supervisor import SupervisorMixin
+from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
+from phoenix_channels_python_client.utils import make_message
 
 
 @dataclass
@@ -51,7 +59,142 @@ class _QueueRaisesOnDrop(asyncio.Queue[Any]):
         raise asyncio.QueueEmpty
 
     async def put(self, item: Any) -> None:
-        self._queue.append(item)
+        cast(Any, self)._queue.append(item)
+
+
+@dataclass
+class _FakeSocket:
+    close_code: int | None = None
+    close_reason: str | None = None
+    close_raises: bool = False
+
+    def __post_init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+        if self.close_raises:
+            raise RuntimeError("close boom")
+
+
+class _FakeRoutingProtocolHandler:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+
+    async def process_websocket_messages(
+        self,
+        connection: ClientConnection,
+        subscriptions: dict[str, TopicSubscription],
+        conn_generation: int,
+    ) -> None:
+        del connection, subscriptions, conn_generation
+        if self.error is not None:
+            raise self.error
+
+
+class _FakeTopicProtocolHandler(PHXProtocolHandler):
+    def __init__(self, protocol_version: PhoenixChannelsProtocolVersion) -> None:
+        super().__init__(protocol_version)
+        self.raise_on_send: Exception | None = None
+
+    async def send_message(self, websocket: ClientConnection, message: Any) -> None:
+        del websocket, message
+        if self.raise_on_send is not None:
+            raise self.raise_on_send
+
+
+class _TopicRuntimeHarness(TopicRuntimeMixin):
+    def __init__(self) -> None:
+        self.logger = logging.getLogger(__name__)
+        self.connection: ClientConnection | None = cast(ClientConnection, _FakeSocket())
+        self._state = ClientState.CONNECTED
+        self._ref_counter = 0
+        self._conn_generation = 1
+        self._topic_subscriptions: dict[str, TopicSubscription] = {}
+        self._protocol_handler = _FakeTopicProtocolHandler(PhoenixChannelsProtocolVersion.V2)
+        self._topics_lock = asyncio.Lock()
+        self._shutdown_event = asyncio.Event()
+        self.join_timeout_s = 0.01
+        self.leave_timeout_s = 0.01
+        self.max_topic_queue_size = 10
+        self.callback_drain_timeout_s = 0.01
+
+
+class _SupervisorHarness(SupervisorMixin):
+    def __init__(self) -> None:
+        self.logger = logging.getLogger(__name__)
+        self.channel_socket_url = "ws://unit-test/socket"
+        self.auto_reconnect = True
+        self.reconnect_policy = ReconnectPolicy(stable_reset_s=0.0)
+        self.connection: ClientConnection | None = None
+        self._topic_subscriptions: dict[str, TopicSubscription] = {}
+        self._protocol_handler: Any = _FakeRoutingProtocolHandler()
+        self._shutdown_event = asyncio.Event()
+        self._connected_event = asyncio.Event()
+        self._conn_generation = 0
+        self._state = ClientState.CONNECTING
+        self._supervisor_task: asyncio.Task[None] | None = None
+        self._message_routing_task: asyncio.Task[None] | None = None
+        self._initial_connection_future: asyncio.Future[None] | None = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._rapid_disconnects = deque[float]()
+        self._terminal_error: Exception | None = None
+
+        self.transition_history: list[ClientState] = []
+        self.disconnect_uptimes: list[float] = []
+        self.delay_attempts: list[int] = []
+        self.wait_delays: list[float] = []
+        self.shutdown_reasons: list[str] = []
+        self.suppress_values: list[bool] = []
+        self.disconnect_decision = ReconnectDecision(should_reconnect=True)
+        self.rejoin_error: Exception | None = None
+        self.extract_close_result: tuple[int | None, str] = (None, "")
+
+    async def _rejoin_topics(self, generation: int) -> None:
+        del generation
+        if self.rejoin_error is not None:
+            raise self.rejoin_error
+
+    def _record_disconnect(self, connection_uptime_s: float) -> None:
+        self.disconnect_uptimes.append(connection_uptime_s)
+
+    def _should_suppress_reconnect(self) -> bool:
+        if self.suppress_values:
+            return self.suppress_values.pop(0)
+        return False
+
+    def _compute_reconnect_delay(self, attempt: int) -> float:
+        self.delay_attempts.append(attempt)
+        return 0.001
+
+    def _extract_close_details(
+        self, *, connection: ClientConnection, routing_error: Exception | None
+    ) -> tuple[int | None, str]:
+        del connection, routing_error
+        return self.extract_close_result
+
+    def _classify_disconnect(self, close_code: int | None, close_reason: str) -> ReconnectDecision:
+        del close_code, close_reason
+        return self.disconnect_decision
+
+    def _apply_disconnect_delay_override(
+        self, computed_delay_s: float, decision: ReconnectDecision
+    ) -> float:
+        del decision
+        return computed_delay_s
+
+    def _transition_state(self, new_state: ClientState) -> None:
+        self._state = new_state
+        self.transition_history.append(new_state)
+
+    async def _wait_for_shutdown_or_timeout(self, delay_s: float) -> None:
+        self.wait_delays.append(delay_s)
+        self._shutdown_event.set()
+
+    async def shutdown(self, reason: str) -> None:
+        self.shutdown_reasons.append(reason)
+        self._shutdown_event.set()
 
 
 def test_transition_client_state_allows_noop_and_rejects_invalid() -> None:
@@ -229,3 +372,381 @@ async def test_process_websocket_messages_drop_path_handles_queueempty() -> None
     connection = _FakeConnection(messages=[msg])
     await handler.process_websocket_messages(cast(ClientConnection, connection), {"test-topic": sub}, 1)
     assert sub.dropped_message_count == 99
+
+
+@pytest.mark.asyncio
+async def test_topic_subscription_has_event_handler_false_when_missing() -> None:
+    subscription = TopicSubscription(
+        name="room:lobby",
+        async_callback=None,
+        queue=asyncio.Queue(),
+        join_ref="1",
+        process_topic_messages_task=None,
+    )
+    assert subscription.has_event_handler(PHXEvent.reply) is False
+
+
+@pytest.mark.asyncio
+async def test_topic_runtime_processing_state_and_join_leave_error_paths() -> None:
+    runtime = _TopicRuntimeHarness()
+    state_topic = TopicSubscription(
+        name="room:lobby",
+        async_callback=None,
+        queue=asyncio.Queue(),
+        join_ref="join-1",
+        process_topic_messages_task=None,
+    )
+
+    assert runtime._determine_processing_state(state_topic).value == "waiting_for_join"
+    state_topic.current_join_ready.set_result(None)
+    state_topic.leave_requested.set()
+    assert runtime._determine_processing_state(state_topic).value == "processing_leave"
+    state_topic.leave_requested.clear()
+    assert runtime._determine_processing_state(state_topic).value == "normal_processing"
+
+    join_topic = TopicSubscription(
+        name="room:join",
+        async_callback=None,
+        queue=asyncio.Queue(),
+        join_ref="join-2",
+        process_topic_messages_task=None,
+    )
+
+    non_reply = make_message(UserEvent("user:event"), "room:lobby", payload={})
+    await runtime._handle_join_response_mode(join_topic, non_reply)
+    assert join_topic.subscription_ready.done() is False
+
+    bad_join_reply = make_message(
+        PHXEvent.reply,
+        "room:lobby",
+        payload={"status": "error", "response": "not-a-dict"},
+    )
+    await runtime._handle_join_response_mode(join_topic, bad_join_reply)
+    assert isinstance(join_topic.current_join_ready.exception(), PHXTopicError)
+
+    leave_topic = TopicSubscription(
+        name="room:leave",
+        async_callback=None,
+        queue=asyncio.Queue(),
+        join_ref="join-3",
+        process_topic_messages_task=None,
+    )
+
+    non_reply_leave = make_message(UserEvent("user:event"), "room:lobby", payload={})
+    await runtime._handle_leave_mode(leave_topic, non_reply_leave)
+    assert leave_topic.unsubscribe_completed.done() is False
+
+    failed_leave_reply = make_message(PHXEvent.reply, "room:lobby", payload={"status": "error"})
+    await runtime._handle_leave_mode(leave_topic, failed_leave_reply)
+    assert isinstance(leave_topic.unsubscribe_completed.exception(), PHXTopicError)
+
+
+@pytest.mark.asyncio
+async def test_topic_runtime_normal_message_mode_and_unregister_helpers() -> None:
+    runtime = _TopicRuntimeHarness()
+    topic = TopicSubscription(
+        name="room:lobby",
+        async_callback=None,
+        queue=asyncio.Queue(),
+        join_ref="join-1",
+        process_topic_messages_task=None,
+    )
+    message = make_message(UserEvent("custom"), "room:lobby", payload={"x": 1})
+
+    await runtime._handle_normal_message_mode(topic, message)
+    assert topic.current_callback_task is None
+
+    async def failing_handler(_: Any) -> None:
+        raise RuntimeError("callback boom")
+
+    topic.async_callback = cast(Any, failing_handler)
+    await runtime._handle_normal_message_mode(topic, message)
+    assert topic.current_callback_task is None
+
+    ready_future = asyncio.get_running_loop().create_future()
+    ready_future.set_result(None)
+    runtime._set_future_exception(ready_future, PHXConnectionError("ignored"))
+    assert ready_future.result() is None
+
+    await runtime._unregister_topic("missing-topic")
+    runtime._drain_topic_queue(topic)
+    topic.queue.put_nowait(message)
+    runtime._drain_topic_queue(topic)
+    assert topic.queue.empty()
+
+    runtime._state = ClientState.CLOSED
+    runtime.connection = None
+    with pytest.raises(PHXConnectionError):
+        runtime._ensure_can_send("subscribe")
+
+
+@pytest.mark.asyncio
+async def test_topic_runtime_subscribe_unsubscribe_and_rejoin_edge_cases() -> None:
+    runtime = _TopicRuntimeHarness()
+
+    with pytest.raises(PHXTopicError):
+        await runtime.unsubscribe_from_topic("missing-topic")
+
+    with pytest.raises(PHXTopicError):
+        await runtime.subscribe_to_topic("room:lobby")
+
+    topic = TopicSubscription(
+        name="room:guard",
+        async_callback=None,
+        queue=asyncio.Queue(),
+        join_ref="join-guard",
+        process_topic_messages_task=None,
+    )
+    runtime._topic_subscriptions[topic.name] = topic
+    runtime._state = ClientState.CONNECTED
+    runtime.connection = None
+    runtime._ensure_can_send = lambda _: None  # type: ignore[method-assign]
+    await runtime.unsubscribe_from_topic(topic.name)
+    assert topic.name in runtime._topic_subscriptions
+
+    active = TopicSubscription(
+        name="room:active",
+        async_callback=None,
+        queue=asyncio.Queue(),
+        join_ref="join-active",
+        process_topic_messages_task=asyncio.create_task(asyncio.sleep(10)),
+    )
+    runtime._topic_subscriptions[active.name] = active
+    runtime._shutdown_event.clear()
+    runtime._state = ClientState.CONNECTED
+    runtime.connection = None
+    await runtime._rejoin_topics(generation=2)
+    assert active.name in runtime._topic_subscriptions
+
+    shutting_down = TopicSubscription(
+        name="room:shutdown",
+        async_callback=None,
+        queue=asyncio.Queue(),
+        join_ref="join-shutdown",
+        process_topic_messages_task=asyncio.create_task(asyncio.sleep(10)),
+    )
+    runtime._topic_subscriptions = {shutting_down.name: shutting_down}
+    runtime.connection = cast(ClientConnection, _FakeSocket())
+    cast(_FakeTopicProtocolHandler, runtime._protocol_handler).raise_on_send = RuntimeError("send fail")
+    runtime._shutdown_event.set()
+    runtime._state = ClientState.SHUTTING_DOWN
+    await runtime._rejoin_topics(generation=3)
+    assert shutting_down.name in runtime._topic_subscriptions
+
+
+@pytest.mark.asyncio
+async def test_topic_runtime_process_topic_messages_special_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _TopicRuntimeHarness()
+
+    await runtime._process_topic_messages("missing-topic")
+
+    topic = TopicSubscription(
+        name="room:queue",
+        async_callback=None,
+        queue=asyncio.Queue(),
+        join_ref="new",
+        process_topic_messages_task=None,
+    )
+    topic.current_join_ready.set_result(None)
+    topic.leave_requested.set()
+    runtime._topic_subscriptions[topic.name] = topic
+
+    stale = make_message(PHXEvent.reply, topic.name, payload={}, join_ref="old")
+    leave_ok = make_message(PHXEvent.reply, topic.name, payload={"status": "ok"}, join_ref=topic.join_ref)
+    topic.queue.put_nowait(stale)
+    topic.queue.put_nowait(leave_ok)
+    await asyncio.wait_for(runtime._process_topic_messages(topic.name), timeout=0.2)
+
+    called: dict[str, Any] = {}
+
+    async def fake_unregister(name: str, error: Exception | None = None) -> None:
+        called["name"] = name
+        called["error"] = error
+
+    def boom_state(_: TopicSubscription) -> Any:
+        raise RuntimeError("state boom")
+
+    monkeypatch.setattr(runtime, "_unregister_topic", fake_unregister)
+    monkeypatch.setattr(runtime, "_determine_processing_state", boom_state)
+
+    topic2 = TopicSubscription(
+        name="room:error",
+        async_callback=None,
+        queue=asyncio.Queue(),
+        join_ref="join-2",
+        process_topic_messages_task=None,
+    )
+    runtime._topic_subscriptions[topic2.name] = topic2
+    topic2.queue.put_nowait(
+        make_message(PHXEvent.reply, topic2.name, payload={"status": "ok"}, join_ref=topic2.join_ref)
+    )
+    await asyncio.wait_for(runtime._process_topic_messages(topic2.name), timeout=0.2)
+    assert called["name"] == topic2.name
+    assert isinstance(called["error"], RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_topic_runtime_missing_topic_handler_guards() -> None:
+    runtime = _TopicRuntimeHarness()
+    handler = cast(Any, lambda payload: payload)
+
+    with pytest.raises(PHXTopicError):
+        runtime.add_event_handler("missing", PHXEvent.reply, handler)
+    with pytest.raises(PHXTopicError):
+        runtime.remove_event_handler("missing", PHXEvent.reply)
+    with pytest.raises(PHXTopicError):
+        runtime.get_event_handler("missing", PHXEvent.reply)
+    assert runtime.has_event_handler("missing", PHXEvent.reply) is False
+    with pytest.raises(PHXTopicError):
+        runtime.list_event_handlers("missing")
+    with pytest.raises(PHXTopicError):
+        runtime.set_message_handler("missing", cast(Any, handler))
+    with pytest.raises(PHXTopicError):
+        runtime.remove_message_handler("missing")
+    with pytest.raises(PHXTopicError):
+        runtime.get_message_handler("missing")
+    assert runtime.has_message_handler("missing") is False
+
+
+@pytest.mark.asyncio
+async def test_topic_runtime_existing_topic_handlers_and_rejoin_skip_leave_requested() -> None:
+    runtime = _TopicRuntimeHarness()
+    topic = TopicSubscription(
+        name="room:existing",
+        async_callback=None,
+        queue=asyncio.Queue(),
+        join_ref="join-existing",
+        process_topic_messages_task=None,
+    )
+    topic.leave_requested.set()
+    runtime._topic_subscriptions[topic.name] = topic
+
+    async def event_handler(_: dict[str, Any]) -> None:
+        return None
+
+    async def message_handler(_: Any) -> None:
+        return None
+
+    runtime.add_event_handler(topic.name, PHXEvent.reply, event_handler)
+    assert runtime.get_event_handler(topic.name, PHXEvent.reply) is event_handler
+    assert runtime.has_event_handler(topic.name, PHXEvent.reply) is True
+
+    runtime.set_message_handler(topic.name, cast(Any, message_handler))
+    assert runtime.get_message_handler(topic.name) is message_handler
+    assert runtime.has_message_handler(topic.name) is True
+
+    runtime.remove_event_handler(topic.name, PHXEvent.reply)
+    assert runtime.has_event_handler(topic.name, PHXEvent.reply) is False
+
+    runtime.remove_message_handler(topic.name)
+    assert runtime.has_message_handler(topic.name) is False
+
+    original_join_ref = topic.join_ref
+    await runtime._rejoin_topics(generation=8)
+    assert topic.join_ref == original_join_ref
+
+
+@pytest.mark.asyncio
+async def test_supervisor_connect_failures_and_terminal_suppression(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _SupervisorHarness()
+    harness.auto_reconnect = False
+
+    async def fail_connect(_: str) -> ClientConnection:
+        raise RuntimeError("connect fail")
+
+    monkeypatch.setattr("phoenix_channels_python_client.supervisor.connect", fail_connect)
+    await harness._supervisor_loop()
+    assert harness._initial_connection_future is not None
+    assert isinstance(harness._initial_connection_future.exception(), PHXConnectionError)
+
+    suppressed = _SupervisorHarness()
+    suppressed.suppress_values = [True]
+    monkeypatch.setattr("phoenix_channels_python_client.supervisor.connect", fail_connect)
+    await suppressed._supervisor_loop()
+    assert isinstance(suppressed._terminal_error, PHXConnectionError)
+
+
+@pytest.mark.asyncio
+async def test_supervisor_routing_failure_disconnect_decisions_and_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _SupervisorHarness()
+    harness._protocol_handler = _FakeRoutingProtocolHandler(error=RuntimeError("routing boom"))
+    harness.rejoin_error = RuntimeError("rejoin boom")
+    harness._rapid_disconnects.extend([1.0, 2.0])  # type: ignore[attr-defined]
+
+    socket = _FakeSocket(close_code=1012, close_reason="restart")
+
+    async def connect_once(_: str) -> ClientConnection:
+        return cast(ClientConnection, socket)
+
+    monkeypatch.setattr("phoenix_channels_python_client.supervisor.connect", connect_once)
+    await harness._supervisor_loop()
+
+    assert harness.connection is None
+    assert harness.wait_delays
+    assert harness.disconnect_uptimes
+    assert not harness._rapid_disconnects  # type: ignore[attr-defined]
+
+    no_reconnect = _SupervisorHarness()
+    no_reconnect._protocol_handler = _FakeRoutingProtocolHandler()
+    no_reconnect.disconnect_decision = ReconnectDecision(should_reconnect=False)
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.connect",
+        lambda _: asyncio.sleep(0, result=cast(ClientConnection, _FakeSocket())),
+    )
+    await no_reconnect._supervisor_loop()
+    assert ClientState.CLOSED in no_reconnect.transition_history
+
+
+@pytest.mark.asyncio
+async def test_supervisor_initial_future_stop_and_cleanup_exceptions() -> None:
+    harness = _SupervisorHarness()
+    harness._shutdown_event.set()
+    await harness._supervisor_loop()
+    assert harness._initial_connection_future is not None
+    assert isinstance(harness._initial_connection_future.exception(), PHXConnectionError)
+
+    cleanup = _SupervisorHarness()
+    cleanup.connection = cast(ClientConnection, _FakeSocket(close_raises=True))
+    cleanup._message_routing_task = asyncio.create_task(asyncio.sleep(10))
+    await cleanup._cleanup_connection()
+    assert cleanup.connection is None
+    assert cleanup._message_routing_task is None
+
+
+@pytest.mark.asyncio
+async def test_supervisor_run_forever_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    harness = _SupervisorHarness()
+    harness._supervisor_task = None
+    with pytest.raises(PHXConnectionError):
+        await harness.run_forever()
+
+    signaled = _SupervisorHarness()
+    signaled._supervisor_task = asyncio.create_task(asyncio.sleep(10))
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", lambda *_args: None)
+    monkeypatch.setattr(loop, "remove_signal_handler", lambda *_args: None)
+
+    async def wait_signal_first(tasks: Any, return_when: Any) -> tuple[set[Any], set[Any]]:
+        del return_when
+        return {tasks[0]}, {tasks[1]}
+
+    monkeypatch.setattr("phoenix_channels_python_client.supervisor.asyncio.wait", wait_signal_first)
+    await signaled.run_forever()
+    assert signaled.shutdown_reasons == ["Signal received"]
+
+    errored = _SupervisorHarness()
+    errored._supervisor_task = asyncio.create_task(asyncio.sleep(0))
+    errored._terminal_error = PHXConnectionError("terminal")
+
+    async def wait_supervisor_first(tasks: Any, return_when: Any) -> tuple[set[Any], set[Any]]:
+        del return_when
+        return {tasks[1]}, {tasks[0]}
+
+    monkeypatch.setattr("phoenix_channels_python_client.supervisor.asyncio.wait", wait_supervisor_first)
+    with pytest.raises(PHXConnectionError):
+        await errored.run_forever()
