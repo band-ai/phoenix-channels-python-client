@@ -11,7 +11,11 @@ from websockets import ClientConnection
 
 from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from phoenix_channels_python_client.phx_messages import ChannelMessage, Event, PHXEvent
+from phoenix_channels_python_client.phx_messages import (
+    ChannelEvent,
+    ChannelMessage,
+    PHXEvent,
+)
 from phoenix_channels_python_client.protocol_handler import (
     PHXProtocolHandler,
     PhoenixChannelsProtocolVersion,
@@ -358,7 +362,7 @@ class TopicRuntimeMixin:
             await self._unregister_topic(topic)
 
     def add_event_handler(
-        self, topic: str, event: Event, handler: Callable[[dict[str, Any]], Awaitable[None]]
+        self, topic: str, event: ChannelEvent, handler: Callable[[dict[str, Any]], Awaitable[None]]
     ) -> None:
         if topic not in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} not subscribed")
@@ -367,7 +371,7 @@ class TopicRuntimeMixin:
         topic_subscription.add_event_handler(event, handler)
         self.logger.debug("Added event handler for %s on topic %s", event, topic)
 
-    def remove_event_handler(self, topic: str, event: Event) -> None:
+    def remove_event_handler(self, topic: str, event: ChannelEvent) -> None:
         if topic not in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} not subscribed")
 
@@ -376,7 +380,7 @@ class TopicRuntimeMixin:
         self.logger.debug("Removed event handler for %s on topic %s", event, topic)
 
     def get_event_handler(
-        self, topic: str, event: Event
+        self, topic: str, event: ChannelEvent
     ) -> Callable[[dict[str, Any]], Awaitable[None]] | None:
         if topic not in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} not subscribed")
@@ -384,7 +388,7 @@ class TopicRuntimeMixin:
         topic_subscription = self._topic_subscriptions[topic]
         return topic_subscription.get_event_handler(event)
 
-    def has_event_handler(self, topic: str, event: Event) -> bool:
+    def has_event_handler(self, topic: str, event: ChannelEvent) -> bool:
         if topic not in self._topic_subscriptions:
             return False
 
@@ -393,7 +397,7 @@ class TopicRuntimeMixin:
 
     def list_event_handlers(
         self, topic: str
-    ) -> dict[Event, Callable[[dict[str, Any]], Awaitable[None]]]:
+    ) -> dict[ChannelEvent, Callable[[dict[str, Any]], Awaitable[None]]]:
         if topic not in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} not subscribed")
 

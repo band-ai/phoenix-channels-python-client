@@ -10,7 +10,7 @@ from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
-from phoenix_channels_python_client.exceptions import PHXTopicError
+from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
 from .conftest import FakePhoenixServer as FakePhoenixServerV2
 
 logger = logging.getLogger(__name__)
@@ -348,6 +348,25 @@ async def test_shutdown_unsubscribes_from_all_topics_and_cleans_up_resources(
         phoenix_server.url,
         api_key="test_key",
         protocol_version=PhoenixChannelsProtocolVersion.V2,
+        reconnect_policy=ReconnectPolicy(
+            base_delay_s=0.01,
+            factor=2.0,
+            max_delay_s=0.05,
+            stable_reset_s=0.1,
+            service_restart_min_delay_s=0.01,
+            service_restart_max_delay_s=0.02,
+            try_again_later_min_delay_s=0.03,
+            try_again_later_max_delay_s=0.05,
+            rapid_disconnect_uptime_s=0.05,
+            rapid_window_s=1.0,
+            rapid_first_min_delay_s=0.01,
+            rapid_second_min_delay_s=0.02,
+            rapid_cooldown_base_s=0.03,
+            rapid_cooldown_step_s=0.01,
+            rapid_cooldown_max_s=0.05,
+            rapid_hold_down_jitter_low_ratio=0.5,
+            rapid_hold_down_jitter_high_ratio=1.0,
+        ),
     )
 
     try:
@@ -480,105 +499,116 @@ async def test_run_forever_exits_when_connection_closes(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="legacy heartbeat API is out of scope for INT-181 reconnect refactor")
-async def test_heartbeat_is_sent_and_acknowledged(
-    phoenix_server: FakePhoenixServerV2,
-    caplog,
-):
-    """Test that heartbeat messages are sent and acknowledged by the server."""
-    import logging
-
-    with caplog.at_level(logging.DEBUG):
-        async with PHXChannelsClient(
-            phoenix_server.url,
-            api_key="test_key",
-            protocol_version=PhoenixChannelsProtocolVersion.V2,
-            heartbeat_interval_secs=0.1,  # Short interval for testing
-        ) as client:
-            # Verify heartbeat task is running
-            assert client._heartbeat_task is not None
-            assert not client._heartbeat_task.done()
-
-            # Wait for heartbeat to be sent and acknowledged
-            # Poll until we see the acknowledgment in the logs (more robust than fixed sleep)
-            result = await wait_for_condition(
-                lambda: any(
-                    "heartbeat acknowledged" in record.message.lower()
-                    for record in caplog.records
-                ),
-                timeout=1.0,
-                interval=0.02,
-            )
-            assert result, "Heartbeat was not acknowledged within timeout"
-
-            # Verify heartbeat task is still running (no errors)
-            assert not client._heartbeat_task.done()
-
-    # After shutdown, heartbeat task should be cancelled
-    assert client._heartbeat_task is None or client._heartbeat_task.done()
-
-
-@pytest.mark.asyncio
-@pytest.mark.skip(reason="legacy heartbeat API is out of scope for INT-181 reconnect refactor")
-async def test_heartbeat_can_be_disabled(
+async def test_service_restart_close_triggers_reconnect_and_rejoin(
     phoenix_server: FakePhoenixServerV2,
 ):
-    """Test that heartbeat can be disabled by setting interval to None."""
+    reconnected_message = asyncio.Event()
 
-    async with PHXChannelsClient(
+    async def test_callback(message: ChannelMessage):
+        if message.event == Event("after_reconnect"):
+            reconnected_message.set()
+
+    client = PHXChannelsClient(
         phoenix_server.url,
         api_key="test_key",
         protocol_version=PhoenixChannelsProtocolVersion.V2,
-        heartbeat_interval_secs=None,  # Disable heartbeat
-    ) as client:
-        # Verify heartbeat task is not created
-        assert client._heartbeat_task is None
+    )
+
+    async with client:
+        await client.subscribe_to_topic("test-topic", test_callback)
+        await phoenix_server.close_all_clients(code=1012, reason="service restart")
+
+        async def _probe_after_reconnect() -> bool:
+            subscriptions = client.get_current_subscriptions()
+            topic_subscription = subscriptions.get("test-topic")
+            if client.connection is None or topic_subscription is None:
+                return False
+            await phoenix_server.simulate_server_event(
+                "test-topic",
+                "after_reconnect",
+                {"ok": True},
+                join_ref=topic_subscription.join_ref,
+            )
+            try:
+                await asyncio.wait_for(reconnected_message.wait(), timeout=0.1)
+                return True
+            except asyncio.TimeoutError:
+                return False
+
+        deadline = asyncio.get_running_loop().time() + 5.0
+        result = False
+        while asyncio.get_running_loop().time() < deadline:
+            if await _probe_after_reconnect():
+                result = True
+                break
+            await asyncio.sleep(0.05)
+
+        assert result, "Client did not reconnect after service restart"
+        assert "test-topic" in client.get_current_subscriptions()
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="legacy heartbeat API is out of scope for INT-181 reconnect refactor")
-async def test_heartbeat_timeout_warning_when_no_response(
+async def test_auto_reconnect_can_be_disabled_for_service_restart_close(
     phoenix_server: FakePhoenixServerV2,
-    caplog,
 ):
-    """Test that a warning is logged when heartbeat response is not received."""
-    import logging
+    async def test_callback(_: ChannelMessage):
+        pass
 
-    # Modify server to not respond to heartbeats for this test
-    original_handler = phoenix_server.handle_message
-
-    async def no_heartbeat_response_handler(data):
-        if isinstance(data, list) and len(data) == 5:
-            _, _, topic, event, _ = data
-            if event == "heartbeat" and topic == "phoenix":
-                return  # Don't respond to heartbeat
-        await original_handler(data)
-
-    phoenix_server.handle_message = no_heartbeat_response_handler
-
-    with caplog.at_level(logging.WARNING):
-        async with PHXChannelsClient(
-            phoenix_server.url,
-            api_key="test_key",
-            protocol_version=PhoenixChannelsProtocolVersion.V2,
-            heartbeat_interval_secs=0.1,  # Short interval for testing
-        ):
-            # Poll until timeout warning is logged (more robust than fixed sleep)
-            # Need two heartbeat cycles: first sends heartbeat, second detects timeout
-            result = await wait_for_condition(
-                lambda: any(
-                    "heartbeat timeout" in record.message.lower()
-                    for record in caplog.records
-                ),
-                timeout=1.0,
-                interval=0.05,
-            )
-            assert result, "Heartbeat timeout warning was not logged within timeout"
-
-    # Verify warning was logged
-    assert any(
-        "heartbeat timeout" in record.message.lower() for record in caplog.records
+    client = PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        auto_reconnect=False,
     )
+
+    async with client:
+        await client.subscribe_to_topic("test-topic", test_callback)
+        await phoenix_server.close_all_clients(code=1012, reason="service restart")
+        await asyncio.sleep(0.2)
+        assert client.connection is None
+
+
+@pytest.mark.asyncio
+async def test_try_again_later_close_code_uses_cooldown_override(
+    phoenix_server: FakePhoenixServerV2,
+):
+    async def test_callback(_: ChannelMessage):
+        pass
+
+    policy = ReconnectPolicy(
+        base_delay_s=0.01,
+        factor=2.0,
+        max_delay_s=0.05,
+        stable_reset_s=0.1,
+        service_restart_min_delay_s=0.01,
+        service_restart_max_delay_s=0.02,
+        try_again_later_min_delay_s=0.2,
+        try_again_later_max_delay_s=0.25,
+        rapid_disconnect_uptime_s=0.05,
+        rapid_window_s=1.0,
+        rapid_first_min_delay_s=0.01,
+        rapid_second_min_delay_s=0.02,
+        rapid_cooldown_base_s=0.03,
+        rapid_cooldown_step_s=0.01,
+        rapid_cooldown_max_s=0.05,
+        rapid_hold_down_jitter_low_ratio=0.5,
+        rapid_hold_down_jitter_high_ratio=1.0,
+    )
+
+    client = PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        reconnect_policy=policy,
+    )
+
+    async with client:
+        await client.subscribe_to_topic("test-topic", test_callback)
+        before = client._conn_generation
+        await phoenix_server.close_all_clients(code=1013, reason="try again later")
+        # cooldown should delay reconnect enough that generation doesn't change immediately
+        await asyncio.sleep(0.05)
+        assert client._conn_generation == before
 
 
 @pytest.mark.asyncio
@@ -677,35 +707,29 @@ async def test_stored_callbacks_are_cleared_on_unsubscribe(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="legacy callback wiring API is out of scope for INT-181 reconnect refactor")
-async def test_reconnect_callbacks_are_invoked(
+async def test_transient_rejoin_failure_keeps_subscription_registered(
     phoenix_server: FakePhoenixServerV2,
 ):
-    """Test that on_disconnect and on_reconnect callbacks are called."""
-    disconnect_called = False
-    reconnect_called = False
-
-    async def on_disconnect(error):
-        nonlocal disconnect_called
-        disconnect_called = True
-
-    async def on_reconnect():
-        nonlocal reconnect_called
-        reconnect_called = True
+    async def test_callback(_: ChannelMessage):
+        pass
 
     client = PHXChannelsClient(
         phoenix_server.url,
         api_key="test_key",
         protocol_version=PhoenixChannelsProtocolVersion.V2,
-        auto_reconnect=True,
-        reconnect_backoff_base=0.1,  # Fast reconnection for testing
-        on_disconnect=on_disconnect,
-        on_reconnect=on_reconnect,
     )
 
-    # Verify callbacks are stored
-    assert client._on_disconnect == on_disconnect
-    assert client._on_reconnect == on_reconnect
+    async with client:
+        await client.subscribe_to_topic("test-topic", test_callback)
+        target_id = phoenix_server.get_client_id_for_path("/socket/websocket")
+        assert target_id is not None
+        phoenix_server.fail_join_targets.add((target_id + 1, "test-topic"))
+
+        await phoenix_server.close_all_clients(code=1012, reason="service restart")
+        await asyncio.sleep(0.2)
+
+        # Topic remains registered even if one rejoin attempt fails.
+        assert "test-topic" in client.get_current_subscriptions()
 
 
 @pytest.mark.asyncio
@@ -810,55 +834,45 @@ async def test_full_reconnection_flow(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="legacy reconnect loop internals are out of scope for INT-181 refactor")
-async def test_reconnection_gives_up_after_max_attempts(
+async def test_rapid_disconnect_suppression_stops_reconnect_attempts(
     phoenix_server: FakePhoenixServerV2,
-    caplog,
 ):
-    """Test that reconnection stops after max attempts are exceeded."""
-    import logging
+    async def test_callback(_: ChannelMessage):
+        pass
 
-    disconnect_called = asyncio.Event()
+    policy = ReconnectPolicy(
+        base_delay_s=0.01,
+        factor=2.0,
+        max_delay_s=0.05,
+        stable_reset_s=0.1,
+        service_restart_min_delay_s=0.01,
+        service_restart_max_delay_s=0.02,
+        try_again_later_min_delay_s=0.03,
+        try_again_later_max_delay_s=0.05,
+        rapid_disconnect_uptime_s=0.05,
+        rapid_window_s=1.0,
+        rapid_first_min_delay_s=0.01,
+        rapid_second_min_delay_s=0.02,
+        rapid_cooldown_base_s=0.03,
+        rapid_cooldown_step_s=0.01,
+        rapid_cooldown_max_s=0.05,
+        rapid_suppress_disconnect_count=3,
+        rapid_hold_down_jitter_low_ratio=0.5,
+        rapid_hold_down_jitter_high_ratio=1.0,
+    )
 
-    async def on_disconnect(_error):
-        disconnect_called.set()
+    phoenix_server.close_on_join_ids.update({1, 2, 3, 4, 5})
+    phoenix_server.close_on_join_code = 1012
+    phoenix_server.close_on_join_reason = "forced close on join"
 
-    # Stop the server to make reconnection impossible
-    await phoenix_server.stop()
-
-    # Create a client that was previously connected (simulate this by setting up state)
     client = PHXChannelsClient(
         phoenix_server.url,
         api_key="test_key",
         protocol_version=PhoenixChannelsProtocolVersion.V2,
-        auto_reconnect=True,
-        reconnect_backoff_base=0.01,  # Very fast for testing
-        reconnect_max_attempts=2,
-        on_disconnect=on_disconnect,
+        reconnect_policy=policy,
     )
 
-    with caplog.at_level(logging.ERROR):
-        # Manually trigger reconnection loop to test max attempts
-        client._is_reconnecting = False
-        client._shutdown_requested = False
-
-        # Start reconnection loop
-        reconnect_task = asyncio.create_task(client._reconnect_loop())
-
-        # Wait for max attempts to be reached
-        result = await wait_for_condition(
-            lambda: any(
-                "max reconnection attempts" in record.message.lower()
-                for record in caplog.records
-            ),
-            timeout=2.0,
-            interval=0.05,
-        )
-        assert result, "Max reconnection attempts message was not logged"
-
-        # Ensure task completes
-        await asyncio.wait_for(reconnect_task, timeout=1.0)
-
-        # Verify reconnection stopped
-        assert client._is_reconnecting is False
-        assert client._reconnect_attempt > client._reconnect_max_attempts
+    with pytest.raises(PHXConnectionError):
+        async with client:
+            await client.subscribe_to_topic("test-topic", test_callback)
+            await client.run_forever()

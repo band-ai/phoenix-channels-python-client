@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
+from phoenix_channels_python_client.phx_messages import ChannelEvent, ChannelMessage
 
 
 class TopicProcessingState(Enum):
@@ -29,7 +29,7 @@ class TopicSubscription:
     current_join_ready: Future[None] = field(default_factory=asyncio.Future)
     unsubscribe_completed: Future[None] = field(default_factory=asyncio.Future)
     leave_requested: asyncio.Event = field(default_factory=asyncio.Event)
-    event_handlers: dict[Event, Callable[[dict[str, Any]], Awaitable[None]]] = field(
+    event_handlers: dict[ChannelEvent, Callable[[dict[str, Any]], Awaitable[None]]] = field(
         default_factory=dict
     )
     conn_generation: int = 0
@@ -37,15 +37,17 @@ class TopicSubscription:
     current_callback_task: Task[None] | None = None
 
     def add_event_handler(
-        self, event: Event, handler: Callable[[dict[str, Any]], Awaitable[None]]
+        self, event: ChannelEvent, handler: Callable[[dict[str, Any]], Awaitable[None]]
     ) -> None:
         self.event_handlers[event] = handler
 
-    def remove_event_handler(self, event: Event) -> None:
+    def remove_event_handler(self, event: ChannelEvent) -> None:
         self.event_handlers.pop(event, None)
 
-    def get_event_handler(self, event: Event) -> Callable[[dict[str, Any]], Awaitable[None]] | None:
+    def get_event_handler(
+        self, event: ChannelEvent
+    ) -> Callable[[dict[str, Any]], Awaitable[None]] | None:
         return self.event_handlers.get(event)
 
-    def has_event_handler(self, event: Event) -> bool:
+    def has_event_handler(self, event: ChannelEvent) -> bool:
         return event in self.event_handlers
