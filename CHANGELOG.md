@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3](https://github.com/thenvoi/phoenix-channels-python-client-alpha/compare/phoenix-channels-python-client-alpha-v0.1.2...phoenix-channels-python-client-alpha-v0.1.3) (2026-02-25)
+
+
+### Features
+
+* add Phoenix heartbeat to keep WebSocket connections alive ([#14](https://github.com/thenvoi/phoenix-channels-python-client-alpha/issues/14)) ([5491eba](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/5491ebaf961c3add0fb1c426dc994c6ff11e0d50))
+
+
+### Bug Fixes
+
+* **ci:** skip PR title validation for dependabot ([6f18108](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/6f181083b54555b6b05fd0cf08b34834296df48c))
+* **ci:** skip PR title validation for dependabot and add ci scope ([6187a9b](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/6187a9bfab1e1fd32c5ca5000541f6b766cbdd68))
+
+
+### Documentation
+
+* add naming conventions and PR title validation ([b36b997](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/b36b9972913123ade3194a6ffd7c29e8326cb85c))
+* add naming conventions and PR title validation ([58fb095](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/58fb0953cbab61c38ec7adbe833b4eb3820edee3))
+* Add shared Claude rules via git submodule ([#10](https://github.com/thenvoi/phoenix-channels-python-client-alpha/issues/10)) ([9a3221a](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/9a3221ab2a2bf3486166f9c1f0126327543bf724))
+
 ## [0.1.2](https://github.com/thenvoi/phoenix-channels-python-client-alpha/compare/phoenix-channels-python-client-alpha-v0.1.1...phoenix-channels-python-client-alpha-v0.1.2) (2026-01-12)
 
 
