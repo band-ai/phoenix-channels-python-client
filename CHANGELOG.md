@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4](https://github.com/thenvoi/phoenix-channels-python-client-alpha/compare/phoenix-channels-python-client-alpha-v0.1.3...phoenix-channels-python-client-alpha-v0.1.4) (2026-02-25)
+
+
+### Bug Fixes
+
+* add PyPI version badge to README ([#18](https://github.com/thenvoi/phoenix-channels-python-client-alpha/issues/18)) ([facf9d0](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/facf9d0ec77760648f329f51c3b3235225d1e756))
+
+
+### Documentation
+
+* add PyPI version badge to README ([facf9d0](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/facf9d0ec77760648f329f51c3b3235225d1e756))
+
 ## [0.1.3](https://github.com/thenvoi/phoenix-channels-python-client-alpha/compare/phoenix-channels-python-client-alpha-v0.1.2...phoenix-channels-python-client-alpha-v0.1.3) (2026-02-25)
 
 
