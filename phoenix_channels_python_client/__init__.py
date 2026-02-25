@@ -11,7 +11,7 @@ from phoenix_channels_python_client.protocol_handler import (
 )
 from phoenix_channels_python_client.utils import setup_logging
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 __author__ = "Phoenix Channels Python Client"
 
 __all__ = [
