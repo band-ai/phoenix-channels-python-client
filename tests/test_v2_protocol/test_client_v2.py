@@ -11,7 +11,7 @@ from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
 from phoenix_channels_python_client.exceptions import PHXTopicError
-from .conftest import FakePhoenixServerV2
+from .conftest import FakePhoenixServer as FakePhoenixServerV2
 
 logger = logging.getLogger(__name__)
 

@@ -1,170 +1,147 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from enum import Enum
-from typing import Any, Callable, Dict, Union
+
 from websockets import ClientConnection
 
-import json
-from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
-from phoenix_channels_python_client.utils import make_message
+from phoenix_channels_python_client.phx_messages import Message
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 
-# Type alias for message handler callbacks that return True if handled, False otherwise
-UnhandledMessageCallback = Callable[[ChannelMessage], bool]
+logger = logging.getLogger(__name__)
 
 
 class PhoenixChannelsProtocolVersion(Enum):
-    """Phoenix Channels protocol versions"""
-
     V1 = "1.0"
     V2 = "2.0"
 
 
 class PHXProtocolHandler:
-    def __init__(self, protocol_version: PhoenixChannelsProtocolVersion):
-        self.protocol_version = protocol_version.value
-        self.logger = logging.getLogger(f"{__name__}.ProtocolHandler")
+    def __init__(
+        self,
+        protocol_version: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V2,
+    ):
+        self.protocol_version = protocol_version
+        self.logger = logger.getChild("ProtocolHandler")
+        self.logger.debug(
+            "Initialized PHXProtocolHandler for protocol version %s",
+            self.protocol_version.value,
+        )
 
-    def parse_message(self, raw_message: Union[str, bytes]) -> ChannelMessage:
+    def parse_message(self, raw_message: str | bytes) -> Message:
+        self.logger.debug("Parsing raw message: %s", raw_message)
         try:
             parsed_data = json.loads(raw_message)
+            self.logger.debug("Decoded data: %s", parsed_data)
+            if self.protocol_version == PhoenixChannelsProtocolVersion.V2:
+                return Message.from_raw(parsed_data)
 
-            if self.protocol_version == PhoenixChannelsProtocolVersion.V2.value:
-                if not isinstance(parsed_data, list):
-                    raise ValueError(
-                        f"Protocol v{self.protocol_version} expects array format, got object"
-                    )
-                if len(parsed_data) != 5:
-                    raise ValueError(
-                        f"Protocol v{self.protocol_version} expects 5-element array, got {len(parsed_data)}"
-                    )
-
-                topic: str = parsed_data[2]
-                event_str: str = parsed_data[3]
-                ref: str | None = parsed_data[1]
-                payload: dict[str, Any] = parsed_data[4] or {}
-                join_ref: str | None = parsed_data[0]
-                return make_message(
-                    event=Event(event_str),
-                    topic=topic,
-                    ref=ref,
-                    payload=payload,
-                    join_ref=join_ref,
-                )
-            else:
-                if not isinstance(parsed_data, dict):
-                    raise ValueError(
-                        f"Protocol v{self.protocol_version} expects object format, got {type(parsed_data).__name__}"
-                    )
-
-                required_fields = ["topic", "event", "payload"]
-                for field in required_fields:
-                    if field not in parsed_data:
-                        raise ValueError(f"Missing required field '{field}'")
-
-                topic = str(parsed_data["topic"])
-                event_str = str(parsed_data["event"])
-                ref = parsed_data.get("ref")
-                payload = parsed_data.get("payload", {})
-                join_ref = parsed_data.get("join_ref")
-                return make_message(
-                    event=Event(event_str),
-                    topic=topic,
-                    ref=ref if ref is None else str(ref),
-                    payload=payload if isinstance(payload, dict) else {},
-                    join_ref=join_ref if join_ref is None else str(join_ref),
+            if not isinstance(parsed_data, dict):
+                raise TypeError(
+                    "Protocol v1 expects object format, "
+                    f"got {type(parsed_data).__name__}"
                 )
 
-        except Exception as e:
-            self.logger.error("Failed to parse message %s: %s", raw_message, e)
-            raise ValueError(f"Invalid message format: {e}") from e
+            topic = parsed_data.get("topic")
+            event = parsed_data.get("event")
+            payload = parsed_data.get("payload", {})
+            if not isinstance(topic, str) or not topic:
+                raise TypeError("Protocol v1 message topic must be a non-empty string")
+            if not isinstance(event, str) or not event:
+                raise TypeError("Protocol v1 message event must be a non-empty string")
+            if not isinstance(payload, dict):
+                payload = {}
 
-    def serialize_message(self, message: ChannelMessage) -> str:
+            return Message(
+                topic=topic,
+                event=event,
+                payload=payload,
+                ref=parsed_data.get("ref"),
+                join_ref=parsed_data.get("join_ref"),
+            )
+        except (TypeError, ValueError):
+            self.logger.exception("Failed to parse message")
+            raise
+        except Exception as exc:
+            self.logger.exception("Unexpected error parsing message")
+            raise ValueError(f"Invalid message format: {exc}") from exc
+
+    def serialize_message(self, message: Message) -> str:
+        self.logger.debug("Serializing message: %s", message)
         try:
-            if self.protocol_version == PhoenixChannelsProtocolVersion.V2.value:
-                join_ref = message.join_ref
-                msg_ref = message.ref
-                message_array = [
-                    join_ref,
-                    msg_ref,
-                    message.topic,
-                    str(message.event),
-                    message.payload,
-                ]
-                serialized = json.dumps(message_array)
+            if self.protocol_version == PhoenixChannelsProtocolVersion.V2:
+                serialized = json.dumps(message.to_raw())
             else:
-                v1_message = {
-                    "topic": message.topic,
-                    "event": str(message.event),
-                    "ref": message.ref,
-                    "payload": message.payload,
-                }
-                serialized = json.dumps(v1_message)
-
+                serialized = json.dumps(
+                    {
+                        "topic": message.topic,
+                        "event": str(message.event),
+                        "ref": message.ref,
+                        "payload": message.payload,
+                    }
+                )
+            self.logger.debug("Serialized to: %s", serialized)
             return serialized
+        except Exception as exc:
+            self.logger.exception("Failed to serialize message")
+            raise TypeError(f"Cannot serialize message: {exc}") from exc
 
-        except Exception as e:
-            self.logger.error("Failed to serialize message %s: %s", message, e)
-            raise TypeError(f"Cannot serialize message: {e}") from e
-
-    def get_protocol_version(self) -> str:
-        return self.protocol_version
-
-    def set_protocol_version(self, version: str) -> None:
-        self.logger.info(
-            "Changing protocol version from %s to %s", self.protocol_version, version
-        )
-        self.protocol_version = version
-
-    async def send_message(
-        self, websocket: ClientConnection, message: ChannelMessage
-    ) -> None:
+    async def send_message(self, websocket: ClientConnection, message: Message) -> None:
+        self.logger.debug("Serialising %s to Phoenix Channels v2 format", message)
         text_message = self.serialize_message(message)
+
+        self.logger.debug("Sending as TEXT frame: %s", text_message)
         await websocket.send(text_message)
 
     async def process_websocket_messages(
         self,
         connection: ClientConnection,
-        topic_subscriptions: Dict[str, TopicSubscription],
-        on_unhandled_message: UnhandledMessageCallback | None = None,
+        topic_subscriptions: dict[str, TopicSubscription],
+        conn_generation: int,
     ) -> None:
-        """
-        Process incoming WebSocket messages and route them to appropriate handlers.
-
-        Args:
-            connection: The WebSocket connection to read messages from.
-            topic_subscriptions: Dictionary mapping topic names to their subscriptions.
-            on_unhandled_message: Optional callback for messages that don't match any
-                subscribed topic (e.g., heartbeat responses on "phoenix" topic).
-                The callback should return True if it handled the message, False otherwise.
-        """
+        self.logger.debug("Starting websocket message loop for generation %s", conn_generation)
         async for socket_message in connection:
             phx_message = self.parse_message(socket_message)
+            self.logger.debug("Processing message - %s", phx_message)
             topic = phx_message.topic
 
-            # First, check if this is a message for an unsubscribed topic
-            # that should be handled specially (e.g., heartbeat responses)
             if topic not in topic_subscriptions:
-                if on_unhandled_message is not None:
-                    try:
-                        handled = on_unhandled_message(phx_message)
-                        if handled:
-                            continue
-                    except Exception as e:
-                        self.logger.warning(
-                            "Error in unhandled message callback: %s", e
-                        )
-                # Message for unknown topic, skip it
                 continue
 
             topic_subscription = topic_subscriptions[topic]
-            if (
-                self.protocol_version == "2.0"
-                and topic_subscription.join_ref != phx_message.join_ref
-            ):
-                self.logger.warning(
-                    "Ignoring message for topic %s with mismatched join_ref", topic
+            if topic_subscription.conn_generation != conn_generation:
+                self.logger.debug(
+                    "Dropping message for stale generation on topic %s. got=%s expected=%s",
+                    topic,
+                    conn_generation,
+                    topic_subscription.conn_generation,
                 )
                 continue
+
+            if topic_subscription.join_ref != phx_message.join_ref:
+                self.logger.debug(
+                    "Dropping message with stale join_ref on topic %s. got=%s expected=%s",
+                    topic,
+                    phx_message.join_ref,
+                    topic_subscription.join_ref,
+                )
+                continue
+
+            if topic_subscription.queue.full():
+                try:
+                    topic_subscription.queue.get_nowait()
+                    topic_subscription.dropped_message_count += 1
+                    if topic_subscription.dropped_message_count % 100 == 0:
+                        self.logger.warning(
+                            "Dropped %s queued messages for topic %s due to full queue",
+                            topic_subscription.dropped_message_count,
+                            topic,
+                        )
+                except asyncio.QueueEmpty:
+                    self.logger.debug(
+                        "Queue became empty before drop on topic %s; skipping drop", topic
+                    )
+
             await topic_subscription.queue.put(phx_message)

@@ -1,9 +1,13 @@
-from asyncio import Queue, Task, Future, Event
+from __future__ import annotations
+
+import asyncio
+from asyncio import Future, Queue, Task
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Awaitable, Optional, Dict, Any
+from typing import Any
 
-from phoenix_channels_python_client.phx_messages import ChannelMessage, ChannelEvent
+from phoenix_channels_python_client.phx_messages import Event, Message
 
 
 class TopicProcessingState(Enum):
@@ -14,33 +18,34 @@ class TopicProcessingState(Enum):
 
 @dataclass()
 class TopicSubscription:
-    """Represents a topic subscription with all necessary components for message handling"""
+    """Represents a topic subscription with all necessary components for message handling."""
 
     name: str
-    async_callback: Optional[Callable[[ChannelMessage], Awaitable[None]]]
-    queue: Queue[ChannelMessage]
-    subscription_ready: Future[None]
+    async_callback: Callable[[Message], Awaitable[None]] | None
+    queue: Queue[Message]
     join_ref: str
-    process_topic_messages_task: Optional[Task[None]] = None
-    leave_requested: Event = field(default_factory=Event)
-    unsubscribe_completed: Optional[Future[None]] = None
-    current_callback_task: Optional[Task[None]] = None
-    event_handlers: Dict[ChannelEvent, Callable[[Dict[str, Any]], Awaitable[None]]] = (
-        field(default_factory=dict)
+    process_topic_messages_task: Task[None] | None
+    subscription_ready: Future[None] = field(default_factory=asyncio.Future)
+    current_join_ready: Future[None] = field(default_factory=asyncio.Future)
+    unsubscribe_completed: Future[None] = field(default_factory=asyncio.Future)
+    leave_requested: asyncio.Event = field(default_factory=asyncio.Event)
+    event_handlers: dict[Event, Callable[[dict[str, Any]], Awaitable[None]]] = field(
+        default_factory=dict
     )
+    conn_generation: int = 0
+    dropped_message_count: int = 0
+    current_callback_task: Task[None] | None = None
 
     def add_event_handler(
-        self, event: ChannelEvent, handler: Callable[[Dict[str, Any]], Awaitable[None]]
+        self, event: Event, handler: Callable[[dict[str, Any]], Awaitable[None]]
     ) -> None:
         self.event_handlers[event] = handler
 
-    def remove_event_handler(self, event: ChannelEvent) -> None:
+    def remove_event_handler(self, event: Event) -> None:
         self.event_handlers.pop(event, None)
 
-    def get_event_handler(
-        self, event: ChannelEvent
-    ) -> Optional[Callable[[Dict[str, Any]], Awaitable[None]]]:
+    def get_event_handler(self, event: Event) -> Callable[[dict[str, Any]], Awaitable[None]] | None:
         return self.event_handlers.get(event)
 
-    def has_event_handler(self, event: ChannelEvent) -> bool:
+    def has_event_handler(self, event: Event) -> bool:
         return event in self.event_handlers
