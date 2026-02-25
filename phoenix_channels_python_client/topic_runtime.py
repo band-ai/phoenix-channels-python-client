@@ -11,12 +11,13 @@ from websockets import ClientConnection
 
 from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from phoenix_channels_python_client.phx_messages import Event, Message, PHXEvent
+from phoenix_channels_python_client.phx_messages import ChannelMessage, Event, PHXEvent
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.topic_subscription import (
     TopicProcessingState,
     TopicSubscription,
 )
+from phoenix_channels_python_client.utils import make_message
 
 
 class TopicRuntimeMixin:
@@ -116,7 +117,9 @@ class TopicRuntimeMixin:
             self.logger.exception("Error in topic message processor for %s", topic.name)
             await self._unregister_topic(topic.name, error=exc)
 
-    async def _handle_join_response_mode(self, topic: TopicSubscription, message: Message) -> None:
+    async def _handle_join_response_mode(
+        self, topic: TopicSubscription, message: ChannelMessage
+    ) -> None:
         self.logger.debug("Handling join response for topic %s: %s", topic.name, message)
 
         if message.event != PHXEvent.reply:
@@ -139,12 +142,16 @@ class TopicRuntimeMixin:
         self._set_subscription_error(topic, error)
         self.logger.error("Failed to subscribe to topic %s: %s", topic.name, error_message)
 
-    def _capture_handlers_atomically(self, topic: TopicSubscription, message: Message) -> tuple:
+    def _capture_handlers_atomically(
+        self, topic: TopicSubscription, message: ChannelMessage
+    ) -> tuple:
         message_handler = topic.async_callback
         event_handler = topic.get_event_handler(message.event)
         return message_handler, event_handler
 
-    async def _handle_normal_message_mode(self, topic: TopicSubscription, message: Message) -> None:
+    async def _handle_normal_message_mode(
+        self, topic: TopicSubscription, message: ChannelMessage
+    ) -> None:
         self.logger.debug("Processing normal message for topic %s: %s", topic.name, message)
 
         message_handler, event_handler = self._capture_handlers_atomically(topic, message)
@@ -173,7 +180,7 @@ class TopicRuntimeMixin:
         finally:
             topic.current_callback_task = None
 
-    async def _handle_leave_mode(self, topic: TopicSubscription, message: Message) -> None:
+    async def _handle_leave_mode(self, topic: TopicSubscription, message: ChannelMessage) -> None:
         self.logger.debug("Processing message during leave for topic %s: %s", topic.name, message)
 
         if message.event != PHXEvent.reply:
@@ -252,11 +259,11 @@ class TopicRuntimeMixin:
     async def subscribe_to_topic(
         self,
         topic: str,
-        async_callback: Callable[[Message], Awaitable[None]] | None = None,
+        async_callback: Callable[[ChannelMessage], Awaitable[None]] | None = None,
     ) -> None:
         self._ensure_can_send("subscribe")
 
-        topic_queue: Queue[Message] = Queue(maxsize=self.max_topic_queue_size)
+        topic_queue: Queue[ChannelMessage] = Queue(maxsize=self.max_topic_queue_size)
         join_ref = self._generate_ref()
 
         topic_subscription = TopicSubscription(
@@ -277,7 +284,7 @@ class TopicRuntimeMixin:
             self._process_topic_messages(topic)
         )
 
-        topic_join_message = Message(
+        topic_join_message = make_message(
             topic=topic,
             event=PHXEvent.join,
             payload={},
@@ -320,7 +327,7 @@ class TopicRuntimeMixin:
         try:
             if is_connected and self.connection is not None:
                 leave_ref = self._generate_ref()
-                topic_leave_message = Message(
+                topic_leave_message = make_message(
                     topic=topic,
                     event=PHXEvent.leave,
                     payload={},
@@ -387,7 +394,7 @@ class TopicRuntimeMixin:
         return topic_subscription.event_handlers.copy()
 
     def set_message_handler(
-        self, topic: str, handler: Callable[[Message], Awaitable[None]]
+        self, topic: str, handler: Callable[[ChannelMessage], Awaitable[None]]
     ) -> None:
         if topic not in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} not subscribed")
@@ -404,7 +411,9 @@ class TopicRuntimeMixin:
         topic_subscription.async_callback = None
         self.logger.debug("Removed message handler for topic %s", topic)
 
-    def get_message_handler(self, topic: str) -> Callable[[Message], Awaitable[None]] | None:
+    def get_message_handler(
+        self, topic: str
+    ) -> Callable[[ChannelMessage], Awaitable[None]] | None:
         if topic not in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} not subscribed")
 
@@ -458,7 +467,7 @@ class TopicRuntimeMixin:
                 self._process_topic_messages(topic_name)
             )
 
-            join_message = Message(
+            join_message = make_message(
                 topic=topic_subscription.name,
                 event=PHXEvent.join,
                 payload={},

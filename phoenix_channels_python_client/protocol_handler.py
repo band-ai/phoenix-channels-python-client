@@ -7,8 +7,9 @@ from enum import Enum
 
 from websockets import ClientConnection
 
-from phoenix_channels_python_client.phx_messages import Message
+from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
+from phoenix_channels_python_client.utils import make_message
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +31,38 @@ class PHXProtocolHandler:
             self.protocol_version.value,
         )
 
-    def parse_message(self, raw_message: str | bytes) -> Message:
+    def parse_message(self, raw_message: str | bytes) -> ChannelMessage:
         self.logger.debug("Parsing raw message: %s", raw_message)
         try:
             parsed_data = json.loads(raw_message)
             self.logger.debug("Decoded data: %s", parsed_data)
             if self.protocol_version == PhoenixChannelsProtocolVersion.V2:
-                return Message.from_raw(parsed_data)
+                if not isinstance(parsed_data, list):
+                    raise TypeError(
+                        "Protocol v2 expects array format, "
+                        f"got {type(parsed_data).__name__}"
+                    )
+                if len(parsed_data) != 5:
+                    raise ValueError(
+                        "Protocol v2 expects 5-element array "
+                        "[join_ref, ref, topic, event, payload]"
+                    )
+
+                join_ref, ref, topic, event, payload = parsed_data
+                if not isinstance(topic, str) or not topic:
+                    raise TypeError("Protocol v2 message topic must be a non-empty string")
+                if not isinstance(event, str) or not event:
+                    raise TypeError("Protocol v2 message event must be a non-empty string")
+                if payload is None or not isinstance(payload, dict):
+                    payload = {}
+
+                return make_message(
+                    topic=topic,
+                    event=Event(event),
+                    payload=payload,
+                    ref=ref if ref is None else str(ref),
+                    join_ref=join_ref if join_ref is None else str(join_ref),
+                )
 
             if not isinstance(parsed_data, dict):
                 raise TypeError(
@@ -54,9 +80,9 @@ class PHXProtocolHandler:
             if not isinstance(payload, dict):
                 payload = {}
 
-            return Message(
+            return make_message(
                 topic=topic,
-                event=event,
+                event=Event(event),
                 payload=payload,
                 ref=parsed_data.get("ref"),
                 join_ref=parsed_data.get("join_ref"),
@@ -68,11 +94,19 @@ class PHXProtocolHandler:
             self.logger.exception("Unexpected error parsing message")
             raise ValueError(f"Invalid message format: {exc}") from exc
 
-    def serialize_message(self, message: Message) -> str:
+    def serialize_message(self, message: ChannelMessage) -> str:
         self.logger.debug("Serializing message: %s", message)
         try:
             if self.protocol_version == PhoenixChannelsProtocolVersion.V2:
-                serialized = json.dumps(message.to_raw())
+                serialized = json.dumps(
+                    [
+                        message.join_ref,
+                        message.ref,
+                        message.topic,
+                        str(message.event),
+                        message.payload,
+                    ]
+                )
             else:
                 serialized = json.dumps(
                     {
@@ -88,7 +122,7 @@ class PHXProtocolHandler:
             self.logger.exception("Failed to serialize message")
             raise TypeError(f"Cannot serialize message: {exc}") from exc
 
-    async def send_message(self, websocket: ClientConnection, message: Message) -> None:
+    async def send_message(self, websocket: ClientConnection, message: ChannelMessage) -> None:
         self.logger.debug("Serialising %s to Phoenix Channels v2 format", message)
         text_message = self.serialize_message(message)
 

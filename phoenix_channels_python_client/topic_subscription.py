@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from phoenix_channels_python_client.phx_messages import Event, Message
+from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
 
 
 class TopicProcessingState(Enum):
@@ -21,8 +21,8 @@ class TopicSubscription:
     """Represents a topic subscription with all necessary components for message handling."""
 
     name: str
-    async_callback: Callable[[Message], Awaitable[None]] | None
-    queue: Queue[Message]
+    async_callback: Callable[[ChannelMessage], Awaitable[None]] | None
+    queue: Queue[ChannelMessage]
     join_ref: str
     process_topic_messages_task: Task[None] | None
     subscription_ready: Future[None] = field(default_factory=asyncio.Future)
