@@ -32,7 +32,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         websocket_url: str,
         api_key: str,
         *,
-        protocol_version: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V1,
+        protocol_version: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V2,
         auto_reconnect: bool = True,
         reconnect_policy: ReconnectPolicy | None = None,
         join_timeout_s: float = 10.0,

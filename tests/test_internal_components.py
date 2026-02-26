@@ -726,6 +726,42 @@ async def test_supervisor_connect_failures_and_terminal_suppression(
 
 
 @pytest.mark.asyncio
+async def test_supervisor_initial_connect_retries_before_failing_enter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _SupervisorHarness()
+    attempts = 0
+
+    async def fail_then_connect(_: str) -> ClientConnection:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient connect fail")
+        return cast(ClientConnection, _FakeSocket())
+
+    wait_calls = 0
+
+    async def wait_without_immediate_shutdown(delay_s: float) -> None:
+        del delay_s
+        nonlocal wait_calls
+        wait_calls += 1
+        if wait_calls >= 2:
+            harness._shutdown_event.set()
+
+    harness._wait_for_shutdown_or_timeout = wait_without_immediate_shutdown  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.connect", fail_then_connect
+    )
+
+    await harness._supervisor_loop()
+
+    assert attempts >= 2
+    assert harness._initial_connection_future is not None
+    assert harness._initial_connection_future.done() is True
+    assert harness._initial_connection_future.result() is None
+
+
+@pytest.mark.asyncio
 async def test_supervisor_routing_failure_disconnect_decisions_and_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

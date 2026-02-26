@@ -3,14 +3,23 @@ from __future__ import annotations
 import asyncio
 import math
 from contextlib import suppress
+from functools import partial
 
 import pytest
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
+from phoenix_channels_python_client.protocol_handler import (
+    PhoenixChannelsProtocolVersion,
+)
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
 from phoenix_channels_python_client.phx_messages import Message, PHXEvent, UserEvent
 
 from .conftest import FakePhoenixServerV1 as FakePhoenixServer
+
+
+V1Client = partial(
+    PHXChannelsClient, protocol_version=PhoenixChannelsProtocolVersion.V1
+)
 
 
 def _event_name(message: Message) -> str:
@@ -56,7 +65,7 @@ def _test_reconnect_policy() -> ReconnectPolicy:
 async def test_subscribe_to_topic_succeeds_when_subscribing_to_valid_topic(
     phoenix_server: FakePhoenixServer,
 ):
-    async with PHXChannelsClient(phoenix_server.url, api_key="test_key") as client:
+    async with V1Client(phoenix_server.url, api_key="test_key") as client:
 
         async def test_callback(message: Message) -> None:
             _ = message
@@ -77,7 +86,7 @@ async def test_subscribe_to_topic_succeeds_when_subscribing_to_valid_topic(
 async def test_subscribe_to_topic_raises_phxconnectionerror_when_disconnected(
     phoenix_server: FakePhoenixServer,
 ):
-    client = PHXChannelsClient(phoenix_server.url, api_key="test_key")
+    client = V1Client(phoenix_server.url, api_key="test_key")
 
     async def test_callback(message: Message) -> None:
         _ = message
@@ -89,7 +98,7 @@ async def test_subscribe_to_topic_raises_phxconnectionerror_when_disconnected(
 async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_unmatched_topic(
     phoenix_server: FakePhoenixServer,
 ):
-    async with PHXChannelsClient(phoenix_server.url, api_key="test_key") as client:
+    async with V1Client(phoenix_server.url, api_key="test_key") as client:
 
         async def test_callback(message: Message) -> None:
             _ = message
@@ -103,7 +112,7 @@ async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_unmat
 async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_already_subscribed_topic(
     phoenix_server: FakePhoenixServer,
 ):
-    async with PHXChannelsClient(phoenix_server.url, api_key="test_key") as client:
+    async with V1Client(phoenix_server.url, api_key="test_key") as client:
 
         async def test_callback(message: Message) -> None:
             _ = message
@@ -120,7 +129,7 @@ async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_alrea
 async def test_unsubscribe_from_topic_succeeds_when_unsubscribing_from_subscribed_topic(
     phoenix_server: FakePhoenixServer,
 ):
-    async with PHXChannelsClient(phoenix_server.url, api_key="test_key") as client:
+    async with V1Client(phoenix_server.url, api_key="test_key") as client:
 
         async def test_callback(message: Message) -> None:
             _ = message
@@ -139,7 +148,7 @@ async def test_unsubscribe_from_topic_succeeds_when_unsubscribing_from_subscribe
 async def test_unsubscribe_fail_fast_when_disconnected_keeps_subscription(
     phoenix_server: FakePhoenixServer,
 ):
-    async with PHXChannelsClient(
+    async with V1Client(
         phoenix_server.url,
         api_key="test_key",
         auto_reconnect=False,
@@ -171,7 +180,7 @@ async def test_callback_receives_message_when_server_sends_message_to_subscribed
         received_messages.append(message)
         callback_event.set()
 
-    async with PHXChannelsClient(phoenix_server.url, api_key="test_key") as client:
+    async with V1Client(phoenix_server.url, api_key="test_key") as client:
         await client.subscribe_to_topic("test-topic", test_callback)
 
         test_payload = {"user_id": 123, "message": "Hello from server!"}
@@ -211,7 +220,7 @@ async def test_unsubscribe_from_topic_gracefully_allows_callback_to_finish_but_i
         if len(received_messages) == 1:
             first_callback_completed.set()
 
-    async with PHXChannelsClient(phoenix_server.url, api_key="test_key") as client:
+    async with V1Client(phoenix_server.url, api_key="test_key") as client:
         await client.subscribe_to_topic("test-topic", test_callback)
 
         event_tasks = [
@@ -264,7 +273,7 @@ async def test_two_topics_with_different_callbacks(phoenix_server: FakePhoenixSe
         messages_b.append(message)
         callback_b_event.set()
 
-    async with PHXChannelsClient(phoenix_server.url, api_key="test_key") as client:
+    async with V1Client(phoenix_server.url, api_key="test_key") as client:
         await client.subscribe_to_topic("test-topic", callback_a)
         await client.subscribe_to_topic("test-topic-b", callback_b)
 
@@ -297,7 +306,7 @@ async def test_messages_are_handled_in_correct_order(phoenix_server: FakePhoenix
         if len(received_messages) == expected_message_count:
             all_messages_received.set()
 
-    async with PHXChannelsClient(phoenix_server.url, api_key="test_key") as client:
+    async with V1Client(phoenix_server.url, api_key="test_key") as client:
         await client.subscribe_to_topic("test-topic", ordered_callback)
 
         message_tasks = [
@@ -324,7 +333,7 @@ async def test_shutdown_unsubscribes_from_all_topics_and_cleans_up_resources(
     async def test_callback(message: Message) -> None:
         _ = message
 
-    client = PHXChannelsClient(phoenix_server.url, api_key="test_key")
+    client = V1Client(phoenix_server.url, api_key="test_key")
 
     try:
         await client.__aenter__()
@@ -371,7 +380,7 @@ async def test_dynamic_event_handler_management_with_counter(
         handler_count += 1
         specific_event.set()
 
-    async with PHXChannelsClient(phoenix_server.url, api_key="test_key") as client:
+    async with V1Client(phoenix_server.url, api_key="test_key") as client:
         await client.subscribe_to_topic("test-topic", message_handler)
 
         await phoenix_server.simulate_server_event(
@@ -415,7 +424,7 @@ async def test_reconnect_resubscribes_and_receives_messages(
             received_messages.append(message)
             callback_event.set()
 
-    async with PHXChannelsClient(
+    async with V1Client(
         phoenix_server.url,
         api_key="test_key",
         reconnect_policy=_test_reconnect_policy(),
@@ -469,7 +478,7 @@ async def test_stale_queued_messages_are_dropped_after_reconnect(
             first_started.set()
             await callback_gate.wait()
 
-    async with PHXChannelsClient(
+    async with V1Client(
         phoenix_server.url,
         api_key="test_key",
         reconnect_policy=_test_reconnect_policy(),
@@ -530,7 +539,7 @@ async def test_reconnect_partial_recovery_unregisters_failed_topic_only(
     async def callback_b(message: Message) -> None:
         _ = message
 
-    async with PHXChannelsClient(
+    async with V1Client(
         phoenix_server.url,
         api_key="test_key",
         reconnect_policy=_test_reconnect_policy(),
@@ -584,7 +593,7 @@ async def test_transient_rejoin_failure_keeps_subscription_and_recovers(
         if _event_name(message) == "after_recover":
             callback_event.set()
 
-    async with PHXChannelsClient(
+    async with V1Client(
         phoenix_server.url,
         api_key="test_key",
         reconnect_policy=_test_reconnect_policy(),
@@ -662,7 +671,7 @@ async def test_reconnect_is_suppressed_after_rapid_disconnect_threshold(
     async def callback(message: Message) -> None:
         _ = message
 
-    async with PHXChannelsClient(
+    async with V1Client(
         phoenix_server.url,
         api_key="test_key",
         reconnect_policy=policy,
@@ -681,7 +690,7 @@ async def test_topic_queue_drops_oldest_when_full(
     async def callback(message: Message) -> None:
         _ = message
 
-    async with PHXChannelsClient(
+    async with V1Client(
         phoenix_server.url,
         api_key="test_key",
         max_topic_queue_size=1,
@@ -724,7 +733,7 @@ async def test_close_code_1008_stops_reconnect_with_terminal_error(
     async def callback(message: Message) -> None:
         _ = message
 
-    async with PHXChannelsClient(
+    async with V1Client(
         phoenix_server.url,
         api_key="test_key",
         reconnect_policy=_test_reconnect_policy(),
@@ -746,7 +755,7 @@ async def test_normal_close_does_not_reconnect_by_default(
     async def callback(message: Message) -> None:
         _ = message
 
-    async with PHXChannelsClient(
+    async with V1Client(
         phoenix_server.url,
         api_key="test_key",
         reconnect_policy=_test_reconnect_policy(),
@@ -802,7 +811,7 @@ async def test_reconnect_contention_has_bounded_rate_and_fairness(
     async def callback(message: Message) -> None:
         _ = message
 
-    async with PHXChannelsClient(
+    async with V1Client(
         url_a,
         api_key="shared-agent",
         reconnect_policy=policy,
@@ -811,7 +820,7 @@ async def test_reconnect_contention_has_bounded_rate_and_fairness(
     ) as client_a:
         await client_a.subscribe_to_topic("test-topic", callback)
 
-        async with PHXChannelsClient(
+        async with V1Client(
             url_b,
             api_key="shared-agent",
             reconnect_policy=policy,

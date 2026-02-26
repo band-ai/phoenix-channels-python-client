@@ -64,16 +64,16 @@ class SupervisorMixin:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    if (
-                        self._initial_connection_future
-                        and not self._initial_connection_future.done()
-                    ):
-                        self._initial_connection_future.set_exception(
-                            PHXConnectionError(
-                                f"Failed to connect to {self.channel_socket_url}: {exc}"
-                            )
-                        )
                     if not self.auto_reconnect:
+                        if (
+                            self._initial_connection_future
+                            and not self._initial_connection_future.done()
+                        ):
+                            self._initial_connection_future.set_exception(
+                                PHXConnectionError(
+                                    f"Failed to connect to {self.channel_socket_url}: {exc}"
+                                )
+                            )
                         self.logger.error(
                             "Connection failed and auto_reconnect=False: %s", exc
                         )
