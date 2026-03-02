@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections import deque
 from types import TracebackType
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from websockets import ClientConnection
 
@@ -12,6 +13,7 @@ from phoenix_channels_python_client.client_types import (
     ClientState,
     ReconnectPolicy,
     reconnect_policy_is_invalid,
+    validate_reconnect_policy,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.protocol_handler import (
@@ -24,6 +26,42 @@ from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 
 logger = logging.getLogger(__name__)
+
+
+def _build_channel_socket_urls(
+    websocket_url: str, api_key: str, vsn: str
+) -> tuple[str, str]:
+    split_url = urlsplit(websocket_url)
+    query_params = parse_qsl(split_url.query, keep_blank_values=True)
+    filtered = [
+        (key, value) for key, value in query_params if key not in {"api_key", "vsn"}
+    ]
+    with_auth = [*filtered, ("api_key", api_key), ("vsn", vsn)]
+
+    connect_url = urlunsplit(
+        (
+            split_url.scheme,
+            split_url.netloc,
+            split_url.path,
+            urlencode(with_auth),
+            split_url.fragment,
+        )
+    )
+    redacted_url = urlunsplit(
+        (
+            split_url.scheme,
+            split_url.netloc,
+            split_url.path,
+            urlencode(
+                [
+                    (key, "***" if key == "api_key" else value)
+                    for key, value in with_auth
+                ]
+            ),
+            split_url.fragment,
+        )
+    )
+    return connect_url, redacted_url
 
 
 class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
@@ -50,15 +88,23 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
             raise ValueError("max_topic_queue_size must be > 0")
         if callback_drain_timeout_s <= 0:
             raise ValueError("callback_drain_timeout_s must be > 0")
-        if reconnect_policy_is_invalid(reconnect_policy or ReconnectPolicy()):
-            raise ValueError("Invalid reconnect policy configuration")
+        try:
+            validate_reconnect_policy(reconnect_policy or ReconnectPolicy())
+        except ValueError as exc:
+            raise ValueError("Invalid reconnect policy configuration") from exc
 
         vsn = (
             "2.0.0"
             if protocol_version == PhoenixChannelsProtocolVersion.V2
             else "1.0.0"
         )
-        self.channel_socket_url = f"{websocket_url}?api_key={api_key}&vsn={vsn}"
+        connect_url, redacted_url = _build_channel_socket_urls(
+            websocket_url=websocket_url,
+            api_key=api_key,
+            vsn=vsn,
+        )
+        self.channel_socket_url = connect_url
+        self.channel_socket_url_redacted = redacted_url
 
         self.auto_reconnect = auto_reconnect
         self.reconnect_policy = reconnect_policy or ReconnectPolicy()

@@ -161,9 +161,12 @@ class TopicRuntimeMixin:
             "Failed to subscribe to topic %s: %s", topic.name, error_message
         )
 
-    def _capture_handlers_atomically(
+    def _snapshot_handlers(
         self, topic: TopicSubscription, message: ChannelMessage
-    ) -> tuple:
+    ) -> tuple[
+        Callable[[ChannelMessage], Awaitable[None]] | None,
+        Callable[[dict[str, Any]], Awaitable[None]] | None,
+    ]:
         message_handler = topic.async_callback
         event_handler = topic.get_event_handler(message.event)
         return message_handler, event_handler
@@ -175,22 +178,20 @@ class TopicRuntimeMixin:
             "Processing normal message for topic %s: %s", topic.name, message
         )
 
-        message_handler, event_handler = self._capture_handlers_atomically(
-            topic, message
-        )
+        message_handler, event_handler = self._snapshot_handlers(topic, message)
 
         try:
             has_message_handler = message_handler is not None
             has_specific_handler = event_handler is not None
 
             if has_message_handler:
-                topic.current_callback_task = asyncio.create_task(
+                topic.current_callback_task = asyncio.ensure_future(
                     message_handler(message)
                 )
                 await topic.current_callback_task
 
             if has_specific_handler:
-                topic.current_callback_task = asyncio.create_task(
+                topic.current_callback_task = asyncio.ensure_future(
                     event_handler(message.payload)
                 )
                 await topic.current_callback_task
@@ -332,10 +333,10 @@ class TopicRuntimeMixin:
         )
 
         try:
-            assert self.connection is not None
-            await self._protocol_handler.send_message(
-                self.connection, topic_join_message
-            )
+            connection = self.connection
+            if connection is None:
+                raise PHXConnectionError("Connection lost before join could be sent")
+            await self._protocol_handler.send_message(connection, topic_join_message)
             await asyncio.wait_for(
                 topic_subscription.current_join_ready, timeout=self.join_timeout_s
             )

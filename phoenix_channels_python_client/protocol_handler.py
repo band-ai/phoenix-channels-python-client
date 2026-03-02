@@ -129,7 +129,11 @@ class PHXProtocolHandler:
     async def send_message(
         self, websocket: ClientConnection, message: ChannelMessage
     ) -> None:
-        self.logger.debug("Serialising %s to Phoenix Channels v2 format", message)
+        self.logger.debug(
+            "Serializing %s to Phoenix Channels %s format",
+            message,
+            self.protocol_version.value,
+        )
         text_message = self.serialize_message(message)
 
         self.logger.debug("Sending as TEXT frame: %s", text_message)
@@ -155,7 +159,7 @@ class PHXProtocolHandler:
             topic_subscription = topic_subscriptions[topic]
             if topic_subscription.conn_generation != conn_generation:
                 self.logger.debug(
-                    "Dropping message for stale generation on topic %s. got=%s expected=%s",
+                    "Dropping message for stale generation on topic %s. routing_gen=%s subscription_gen=%s",
                     topic,
                     conn_generation,
                     topic_subscription.conn_generation,
@@ -178,7 +182,10 @@ class PHXProtocolHandler:
                 try:
                     topic_subscription.queue.get_nowait()
                     topic_subscription.dropped_message_count += 1
-                    if topic_subscription.dropped_message_count % 100 == 0:
+                    if (
+                        topic_subscription.dropped_message_count == 1
+                        or topic_subscription.dropped_message_count % 100 == 0
+                    ):
                         self.logger.warning(
                             "Dropped %s queued messages for topic %s due to full queue",
                             topic_subscription.dropped_message_count,

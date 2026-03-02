@@ -46,42 +46,57 @@ class ReconnectDecision:
     terminal_error: PHXConnectionError | None = None
 
 
-def reconnect_policy_is_invalid(policy: ReconnectPolicy) -> bool:
+def validate_reconnect_policy(policy: ReconnectPolicy) -> None:
     if policy.base_delay_s < 0:
-        return True
+        raise ValueError("base_delay_s must be >= 0")
     if policy.factor <= 0:
-        return True
+        raise ValueError("factor must be > 0")
     if policy.max_delay_s < 0:
-        return True
+        raise ValueError("max_delay_s must be >= 0")
     if policy.stable_reset_s <= 0:
-        return True
+        raise ValueError("stable_reset_s must be > 0")
     if policy.service_restart_min_delay_s < 0:
-        return True
+        raise ValueError("service_restart_min_delay_s must be >= 0")
     if policy.service_restart_max_delay_s < policy.service_restart_min_delay_s:
-        return True
+        raise ValueError(
+            "service_restart_max_delay_s must be >= service_restart_min_delay_s"
+        )
     if policy.try_again_later_min_delay_s < 0:
-        return True
+        raise ValueError("try_again_later_min_delay_s must be >= 0")
     if policy.try_again_later_max_delay_s < policy.try_again_later_min_delay_s:
-        return True
+        raise ValueError(
+            "try_again_later_max_delay_s must be >= try_again_later_min_delay_s"
+        )
     if policy.rapid_disconnect_uptime_s < 0:
-        return True
+        raise ValueError("rapid_disconnect_uptime_s must be >= 0")
     if policy.rapid_window_s <= 0:
-        return True
+        raise ValueError("rapid_window_s must be > 0")
     if policy.rapid_first_min_delay_s < 0:
-        return True
+        raise ValueError("rapid_first_min_delay_s must be >= 0")
     if policy.rapid_second_min_delay_s < 0:
-        return True
+        raise ValueError("rapid_second_min_delay_s must be >= 0")
     if policy.rapid_cooldown_base_s < 0:
-        return True
+        raise ValueError("rapid_cooldown_base_s must be >= 0")
     if policy.rapid_cooldown_step_s < 0:
-        return True
+        raise ValueError("rapid_cooldown_step_s must be >= 0")
     if policy.rapid_cooldown_max_s < policy.rapid_cooldown_base_s:
-        return True
+        raise ValueError("rapid_cooldown_max_s must be >= rapid_cooldown_base_s")
     if policy.rapid_suppress_disconnect_count < 0:
-        return True
+        raise ValueError("rapid_suppress_disconnect_count must be >= 0")
     if policy.rapid_hold_down_jitter_low_ratio < 0:
-        return True
-    return (
+        raise ValueError("rapid_hold_down_jitter_low_ratio must be >= 0")
+    if (
         policy.rapid_hold_down_jitter_high_ratio
         < policy.rapid_hold_down_jitter_low_ratio
-    )
+    ):
+        raise ValueError(
+            "rapid_hold_down_jitter_high_ratio must be >= rapid_hold_down_jitter_low_ratio"
+        )
+
+
+def reconnect_policy_is_invalid(policy: ReconnectPolicy) -> bool:
+    try:
+        validate_reconnect_policy(policy)
+    except ValueError:
+        return True
+    return False

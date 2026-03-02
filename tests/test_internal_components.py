@@ -126,6 +126,7 @@ class _SupervisorHarness(SupervisorMixin):
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
         self.channel_socket_url = "ws://unit-test/socket"
+        self.channel_socket_url_redacted = "ws://unit-test/socket?api_key=***"
         self.auto_reconnect = True
         self.reconnect_policy = ReconnectPolicy(stable_reset_s=0.0)
         self.connection: ClientConnection | None = None
@@ -528,6 +529,13 @@ async def test_topic_runtime_subscribe_unsubscribe_and_rejoin_edge_cases() -> No
     with pytest.raises(PHXTopicError):
         await runtime.subscribe_to_topic("room:lobby")
 
+    runtime._ensure_can_send = lambda _: setattr(runtime, "connection", None)  # type: ignore[method-assign]
+    with pytest.raises(
+        PHXConnectionError, match="Connection lost before join could be sent"
+    ):
+        await runtime.subscribe_to_topic("room:race")
+    assert "room:race" not in runtime._topic_subscriptions
+
     topic = TopicSubscription(
         name="room:guard",
         async_callback=None,
@@ -841,6 +849,21 @@ async def test_supervisor_run_forever_paths(monkeypatch: pytest.MonkeyPatch) -> 
     )
     await signaled.run_forever()
     assert signaled.shutdown_reasons == ["Signal received"]
+
+    fallback = _SupervisorHarness()
+    fallback._supervisor_task = asyncio.create_task(asyncio.sleep(10))
+
+    monkeypatch.setattr(
+        loop,
+        "add_signal_handler",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("not-main-thread")),
+    )
+    monkeypatch.setattr(loop, "remove_signal_handler", lambda *_args: None)
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.asyncio.wait", wait_signal_first
+    )
+    await fallback.run_forever()
+    assert fallback.shutdown_reasons == ["Signal received"]
 
     errored = _SupervisorHarness()
     errored._supervisor_task = asyncio.create_task(asyncio.sleep(0))

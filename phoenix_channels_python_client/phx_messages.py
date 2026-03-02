@@ -19,8 +19,9 @@ class PHXEvent(Enum):
 
 
 UserEvent = NewType("UserEvent", str)
+# Compatibility alias for existing imports and call sites.
 Event = UserEvent
-ChannelEvent = PHXEvent | Event
+ChannelEvent = PHXEvent | UserEvent
 
 
 @dataclass(frozen=True)
@@ -51,4 +52,4 @@ class PHXEventMessage(BasePHXMessage):
 
 ChannelMessage = PHXMessage | PHXEventMessage
 # Compatibility alias for existing tests and call sites.
-Message = PHXMessage | PHXEventMessage
+Message = ChannelMessage

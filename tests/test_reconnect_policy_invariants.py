@@ -25,6 +25,13 @@ def test_invalid_reconnect_policy_is_rejected() -> None:
         _ = _make_client(bad_policy)
 
 
+def test_client_maintains_redacted_socket_url_for_logging() -> None:
+    client = _make_client()
+    assert "api_key=test-key" in client.channel_socket_url
+    assert "api_key=%2A%2A%2A" in client.channel_socket_url_redacted
+    assert "test-key" not in client.channel_socket_url_redacted
+
+
 def test_close_code_classification_uses_expected_semantics() -> None:
     policy = ReconnectPolicy(
         reconnect_on_normal_close=False,
