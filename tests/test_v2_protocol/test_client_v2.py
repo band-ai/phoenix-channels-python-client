@@ -877,3 +877,137 @@ async def test_rapid_disconnect_suppression_stops_reconnect_attempts(
         async with client:
             await client.subscribe_to_topic("test-topic", test_callback)
             await client.run_forever()
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_is_sent_periodically(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """Test that the client sends heartbeat messages at the configured interval."""
+    async with PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        heartbeat_interval_s=0.1,
+    ) as client:
+        # Wait long enough for at least 2 heartbeats to be sent and acknowledged
+        await asyncio.sleep(0.35)
+        # If heartbeats are working, the pending ref should be cleared
+        # (server responds with phx_reply)
+        assert client._pending_heartbeat_ref is None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_can_be_disabled(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """Test that heartbeats can be disabled by passing None."""
+    async with PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        heartbeat_interval_s=None,
+    ) as client:
+        assert client._heartbeat_interval_s is None
+        assert client._heartbeat_task is None
+        await asyncio.sleep(0.1)
+        # No heartbeat task should have been created
+        assert client._heartbeat_task is None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_task_is_cleaned_up_on_shutdown(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """Test that the heartbeat task is cancelled during shutdown."""
+    client = PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        heartbeat_interval_s=0.1,
+    )
+
+    async with client:
+        await asyncio.sleep(0.15)
+        assert client._heartbeat_task is not None
+
+    # After context exit, heartbeat task should be cleaned up
+    assert client._heartbeat_task is None
+    assert client._pending_heartbeat_ref is None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_invalid_interval_raises_valueerror():
+    """Test that a non-positive heartbeat interval raises ValueError."""
+    with pytest.raises(ValueError, match="heartbeat_interval_s must be > 0"):
+        PHXChannelsClient(
+            "ws://localhost:9999/socket/websocket",
+            api_key="test_key",
+            heartbeat_interval_s=0,
+        )
+
+    with pytest.raises(ValueError, match="heartbeat_interval_s must be > 0"):
+        PHXChannelsClient(
+            "ws://localhost:9999/socket/websocket",
+            api_key="test_key",
+            heartbeat_interval_s=-1.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_survives_reconnection(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """Test that heartbeat is restarted after reconnection."""
+    client = PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        heartbeat_interval_s=0.1,
+        reconnect_policy=ReconnectPolicy(
+            base_delay_s=0.01,
+            factor=2.0,
+            max_delay_s=0.05,
+            stable_reset_s=0.1,
+            service_restart_min_delay_s=0.01,
+            service_restart_max_delay_s=0.02,
+            try_again_later_min_delay_s=0.03,
+            try_again_later_max_delay_s=0.05,
+            rapid_disconnect_uptime_s=0.05,
+            rapid_window_s=1.0,
+            rapid_first_min_delay_s=0.01,
+            rapid_second_min_delay_s=0.02,
+            rapid_cooldown_base_s=0.03,
+            rapid_cooldown_step_s=0.01,
+            rapid_cooldown_max_s=0.05,
+            rapid_hold_down_jitter_low_ratio=0.5,
+            rapid_hold_down_jitter_high_ratio=1.0,
+        ),
+    )
+
+    async with client:
+        await asyncio.sleep(0.15)
+        assert client._heartbeat_task is not None
+
+        # Trigger reconnection
+        await phoenix_server.close_all_clients(code=1012, reason="service restart")
+
+        # Wait for reconnection
+        result = await wait_for_condition(
+            lambda: client.connection is not None,
+            timeout=2.0,
+            interval=0.05,
+        )
+        assert result, "Client did not reconnect after service restart"
+
+        # Heartbeat should be running again after reconnection
+        await asyncio.sleep(0.15)
+        assert client._heartbeat_task is not None
+        assert not client._heartbeat_task.done()
+        # Server is responding, so pending ref should be cleared
+        assert client._pending_heartbeat_ref is None

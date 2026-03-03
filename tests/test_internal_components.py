@@ -143,6 +143,10 @@ class _SupervisorHarness(SupervisorMixin):
         )
         self._rapid_disconnects = deque[float]()
         self._terminal_error: Exception | None = None
+        self._heartbeat_interval_s: float | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
+        self._pending_heartbeat_ref: str | None = None
+        self._ref_counter = 0
 
         self.transition_history: list[ClientState] = []
         self.disconnect_uptimes: list[float] = []

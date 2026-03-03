@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from enum import Enum
 
 from websockets import ClientConnection
@@ -144,6 +145,7 @@ class PHXProtocolHandler:
         connection: ClientConnection,
         topic_subscriptions: dict[str, TopicSubscription],
         conn_generation: int,
+        on_heartbeat_response: Callable[[ChannelMessage], None] | None = None,
     ) -> None:
         self.logger.debug(
             "Starting websocket message loop for generation %s", conn_generation
@@ -152,6 +154,11 @@ class PHXProtocolHandler:
             phx_message = self.parse_message(socket_message)
             self.logger.debug("Processing message - %s", phx_message)
             topic = phx_message.topic
+
+            if topic == "phoenix":
+                if on_heartbeat_response is not None:
+                    on_heartbeat_response(phx_message)
+                continue
 
             if topic not in topic_subscriptions:
                 continue

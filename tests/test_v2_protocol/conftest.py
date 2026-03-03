@@ -108,6 +108,17 @@ class FakePhoenixServer:
 
         client_id = self._client_ids.get(websocket)
 
+        if topic == "phoenix" and event == "heartbeat":
+            reply = [
+                join_ref,
+                msg_ref,
+                "phoenix",
+                "phx_reply",
+                {"status": "ok", "response": {}},
+            ]
+            await websocket.send(json.dumps(reply))
+            return
+
         if event == "phx_join":
             if client_id in self.fail_join_ids or (
                 client_id is not None and (client_id, topic) in self.fail_join_targets

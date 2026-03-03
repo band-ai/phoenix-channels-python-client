@@ -16,8 +16,10 @@ from phoenix_channels_python_client.client_types import (
     ReconnectPolicy,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError
+from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
+from phoenix_channels_python_client.utils import make_message
 
 
 class _SupervisorRuntimeDeps(Protocol):
@@ -56,6 +58,14 @@ class SupervisorMixin:
     _initial_connection_future: asyncio.Future[None] | None
     _rapid_disconnects: deque[float]
     _terminal_error: Exception | None
+    _heartbeat_interval_s: float | None
+    _heartbeat_task: asyncio.Task[None] | None
+    _pending_heartbeat_ref: str | None
+    _ref_counter: int
+
+    def _generate_heartbeat_ref(self) -> str:
+        self._ref_counter += 1
+        return str(self._ref_counter)
 
     async def _start_processing(
         self, connection: ClientConnection, conn_generation: int
@@ -64,7 +74,57 @@ class SupervisorMixin:
             connection,
             self._topic_subscriptions,
             conn_generation,
+            on_heartbeat_response=self._handle_heartbeat_response,
         )
+
+    def _handle_heartbeat_response(self, message: ChannelMessage) -> None:
+        if message.ref is not None and message.ref == self._pending_heartbeat_ref:
+            self.logger.debug("Heartbeat acknowledged (ref=%s)", message.ref)
+            self._pending_heartbeat_ref = None
+
+    async def _heartbeat_loop(self, connection: ClientConnection) -> None:
+        if self._heartbeat_interval_s is None:
+            return
+
+        self.logger.debug(
+            "Starting heartbeat loop (interval=%ss)", self._heartbeat_interval_s
+        )
+
+        try:
+            while not self._shutdown_event.is_set():
+                await self._wait_for_shutdown_or_timeout(self._heartbeat_interval_s)
+                if self._shutdown_event.is_set():
+                    break
+
+                if self._pending_heartbeat_ref is not None:
+                    self.logger.warning(
+                        "Heartbeat response not received for ref=%s; server may be unresponsive",
+                        self._pending_heartbeat_ref,
+                    )
+
+                ref = self._generate_heartbeat_ref()
+                self._pending_heartbeat_ref = ref
+
+                heartbeat_message = make_message(
+                    topic="phoenix",
+                    event=Event("heartbeat"),
+                    payload={},
+                    ref=ref,
+                )
+
+                try:
+                    await self._protocol_handler.send_message(
+                        connection, heartbeat_message
+                    )
+                    self.logger.debug("Sent heartbeat (ref=%s)", ref)
+                except Exception:
+                    self.logger.debug(
+                        "Failed to send heartbeat; connection likely closing"
+                    )
+                    break
+        except asyncio.CancelledError:
+            self.logger.debug("Heartbeat loop cancelled")
+            raise
 
     async def _supervisor_loop(self) -> None:
         attempt = 0
@@ -123,9 +183,14 @@ class SupervisorMixin:
                 runtime_deps._transition_state(ClientState.CONNECTED)
                 connected_since = asyncio.get_running_loop().time()
 
+                self._pending_heartbeat_ref = None
                 self._message_routing_task = asyncio.create_task(
                     self._start_processing(connection, generation)
                 )
+                if self._heartbeat_interval_s is not None:
+                    self._heartbeat_task = asyncio.create_task(
+                        self._heartbeat_loop(connection)
+                    )
 
                 try:
                     await runtime_deps._rejoin_topics(generation)
@@ -231,6 +296,13 @@ class SupervisorMixin:
         connection = self.connection
         self.connection = None
         self._connected_event.clear()
+
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._heartbeat_task
+        self._heartbeat_task = None
+        self._pending_heartbeat_ref = None
 
         if self._message_routing_task and not self._message_routing_task.done():
             self._message_routing_task.cancel()

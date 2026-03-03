@@ -77,8 +77,12 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         leave_timeout_s: float = 5.0,
         max_topic_queue_size: int = 1000,
         callback_drain_timeout_s: float = 2.0,
+        heartbeat_interval_s: float | None = 30.0,
     ):
         self.logger = logger
+
+        if heartbeat_interval_s is not None and heartbeat_interval_s <= 0:
+            raise ValueError("heartbeat_interval_s must be > 0 or None to disable")
 
         if join_timeout_s <= 0:
             raise ValueError("join_timeout_s must be > 0")
@@ -127,6 +131,9 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._initial_connection_future: asyncio.Future[None] | None = None
         self._rapid_disconnects: deque[float] = deque()
         self._terminal_error: Exception | None = None
+        self._heartbeat_interval_s = heartbeat_interval_s
+        self._heartbeat_task: asyncio.Task[None] | None = None
+        self._pending_heartbeat_ref: str | None = None
 
     @staticmethod
     def reconnect_policy_is_invalid(policy: ReconnectPolicy) -> bool:
