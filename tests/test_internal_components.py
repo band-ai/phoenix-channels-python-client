@@ -86,8 +86,9 @@ class _FakeRoutingProtocolHandler:
         connection: ClientConnection,
         subscriptions: dict[str, TopicSubscription],
         conn_generation: int,
+        **kwargs: Any,
     ) -> None:
-        del connection, subscriptions, conn_generation
+        del connection, subscriptions, conn_generation, kwargs
         if self.error is not None:
             raise self.error
 
@@ -886,3 +887,93 @@ async def test_supervisor_run_forever_paths(monkeypatch: pytest.MonkeyPatch) -> 
     )
     with pytest.raises(PHXConnectionError):
         await errored.run_forever()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_on_disconnect_callback_fires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _SupervisorHarness()
+    harness.auto_reconnect = False
+
+    disconnect_errors: list[Exception | None] = []
+
+    async def on_disconnect(error: Exception | None) -> None:
+        disconnect_errors.append(error)
+
+    harness._on_disconnect = on_disconnect
+
+    routing_error = RuntimeError("routing boom")
+    harness._protocol_handler = _FakeRoutingProtocolHandler(error=routing_error)
+
+    socket = _FakeSocket(close_code=1000, close_reason="normal")
+
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.connect",
+        lambda _: asyncio.sleep(0, result=cast(ClientConnection, socket)),
+    )
+    await harness._supervisor_loop()
+
+    assert len(disconnect_errors) == 1
+    assert disconnect_errors[0] is routing_error
+
+
+@pytest.mark.asyncio
+async def test_supervisor_on_reconnect_callback_fires_on_generation_gt_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _SupervisorHarness()
+
+    reconnect_count = 0
+    connect_count = 0
+
+    async def on_reconnect() -> None:
+        nonlocal reconnect_count
+        reconnect_count += 1
+
+    harness._on_reconnect = on_reconnect
+
+    async def connect_and_shutdown(_: str) -> ClientConnection:
+        nonlocal connect_count
+        connect_count += 1
+        if connect_count >= 2:
+            harness._shutdown_event.set()
+        return cast(ClientConnection, _FakeSocket())
+
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.connect", connect_and_shutdown
+    )
+    harness._wait_for_shutdown_or_timeout = lambda _: asyncio.sleep(0)  # type: ignore[method-assign,assignment]
+
+    await harness._supervisor_loop()
+
+    assert reconnect_count == 1
+
+
+@pytest.mark.asyncio
+async def test_supervisor_callback_exception_does_not_crash_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _SupervisorHarness()
+    harness.auto_reconnect = False
+
+    async def bad_disconnect(_: Exception | None) -> None:
+        raise ValueError("callback boom")
+
+    async def bad_reconnect() -> None:
+        raise ValueError("callback boom")
+
+    harness._on_disconnect = bad_disconnect
+    harness._on_reconnect = bad_reconnect
+
+    harness._protocol_handler = _FakeRoutingProtocolHandler(
+        error=RuntimeError("routing")
+    )
+
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.connect",
+        lambda _: asyncio.sleep(0, result=cast(ClientConnection, _FakeSocket())),
+    )
+
+    await harness._supervisor_loop()
+    assert harness.connection is None
