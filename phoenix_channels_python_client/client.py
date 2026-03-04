@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
+from collections.abc import Awaitable, Callable
 from types import TracebackType
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -26,6 +27,9 @@ from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 
 logger = logging.getLogger(__name__)
+
+ReconnectCallback = Callable[[], Awaitable[None]]
+DisconnectCallback = Callable[[Exception | None], Awaitable[None]]
 
 
 def _build_channel_socket_urls(
@@ -78,6 +82,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         max_topic_queue_size: int = 1000,
         callback_drain_timeout_s: float = 2.0,
         heartbeat_interval_s: float | None = 30.0,
+        on_reconnect: ReconnectCallback | None = None,
+        on_disconnect: DisconnectCallback | None = None,
     ):
         self.logger = logger
 
@@ -134,6 +140,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._heartbeat_interval_s = heartbeat_interval_s
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._pending_heartbeat_ref: str | None = None
+        self._on_reconnect = on_reconnect
+        self._on_disconnect = on_disconnect
 
     @staticmethod
     def reconnect_policy_is_invalid(policy: ReconnectPolicy) -> bool:

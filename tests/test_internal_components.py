@@ -147,6 +147,8 @@ class _SupervisorHarness(SupervisorMixin):
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._pending_heartbeat_ref: str | None = None
         self._ref_counter = 0
+        self._on_reconnect = None
+        self._on_disconnect = None
 
         self.transition_history: list[ClientState] = []
         self.disconnect_uptimes: list[float] = []

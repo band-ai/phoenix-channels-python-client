@@ -4,6 +4,7 @@ import asyncio
 import logging
 import signal
 from collections import deque
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Protocol, cast
 
@@ -61,11 +62,8 @@ class SupervisorMixin:
     _heartbeat_interval_s: float | None
     _heartbeat_task: asyncio.Task[None] | None
     _pending_heartbeat_ref: str | None
-    _ref_counter: int
-
-    def _generate_heartbeat_ref(self) -> str:
-        self._ref_counter += 1
-        return str(self._ref_counter)
+    _on_reconnect: Callable[[], Awaitable[None]] | None
+    _on_disconnect: Callable[[Exception | None], Awaitable[None]] | None
 
     async def _start_processing(
         self, connection: ClientConnection, conn_generation: int
@@ -102,7 +100,7 @@ class SupervisorMixin:
                         self._pending_heartbeat_ref,
                     )
 
-                ref = self._generate_heartbeat_ref()
+                ref = self._generate_ref()  # type: ignore[missing-attribute]  # provided by TopicRuntimeMixin
                 self._pending_heartbeat_ref = ref
 
                 heartbeat_message = make_message(
@@ -203,6 +201,12 @@ class SupervisorMixin:
                 ):
                     self._initial_connection_future.set_result(None)
 
+                if generation > 1 and self._on_reconnect is not None:
+                    try:
+                        await self._on_reconnect()
+                    except Exception:
+                        self.logger.exception("Error in on_reconnect callback")
+
                 try:
                     await self._message_routing_task
                 except asyncio.CancelledError:
@@ -226,6 +230,12 @@ class SupervisorMixin:
                 )
 
                 await self._cleanup_connection()
+
+                if self._on_disconnect is not None:
+                    try:
+                        await self._on_disconnect(routing_error)
+                    except Exception:
+                        self.logger.exception("Error in on_disconnect callback")
 
                 if self._shutdown_event.is_set():
                     break
