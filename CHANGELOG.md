@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1](https://github.com/thenvoi/phoenix-channels-python-client-alpha/compare/phoenix-channels-python-client-alpha-v0.2.0...phoenix-channels-python-client-alpha-v0.2.1) (2026-04-12)
+
+
+### Bug Fixes
+
+* **deps:** bump cryptography from 46.0.5 to 46.0.7 in /.github/actions/GithubToken ([#34](https://github.com/thenvoi/phoenix-channels-python-client-alpha/issues/34)) ([5c69b77](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/5c69b7776b871b8ebd083596d798d16c94035c42))
+* **deps:** bump cryptography in /.github/actions/GithubToken ([5c69b77](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/5c69b7776b871b8ebd083596d798d16c94035c42))
+* **deps:** bump requests from 2.32.5 to 2.33.1 in /.github/actions/GithubToken ([#32](https://github.com/thenvoi/phoenix-channels-python-client-alpha/issues/32)) ([dba44bf](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/dba44bf42273c07c86db6ee921b3760e86a90106))
+* **deps:** bump requests in /.github/actions/GithubToken ([dba44bf](https://github.com/thenvoi/phoenix-channels-python-client-alpha/commit/dba44bf42273c07c86db6ee921b3760e86a90106))
+
 ## [0.2.0](https://github.com/thenvoi/phoenix-channels-python-client-alpha/compare/phoenix-channels-python-client-alpha-v0.1.5...phoenix-channels-python-client-alpha-v0.2.0) (2026-03-06)
 
 
