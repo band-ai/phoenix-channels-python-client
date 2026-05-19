@@ -41,6 +41,26 @@ async def wait_for_condition(
 
 
 @pytest.mark.asyncio
+async def test_websocket_auth_uses_header_not_query_param(
+    phoenix_server: FakePhoenixServerV2,
+):
+    async with PHXChannelsClient(
+        f"{phoenix_server.url}?api_key=stale&debug=true",
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+    ):
+        pass
+
+    assert phoenix_server.list_request_api_keys() == ["test_key"]
+    paths = phoenix_server.list_request_paths()
+    assert len(paths) == 1
+    assert "debug=true" in paths[0]
+    assert "vsn=2.0.0" in paths[0]
+    assert "api_key" not in paths[0]
+    assert "test_key" not in paths[0]
+
+
+@pytest.mark.asyncio
 async def test_subscribe_to_topic_succeeds_when_subscribing_to_valid_topic(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -806,6 +826,14 @@ async def test_full_reconnection_flow(
             interval=0.05,
         )
         assert result, "Client did not reconnect and rejoin topic in time"
+        assert len(phoenix_server.list_request_paths()) >= 2
+        assert all(
+            "api_key" not in path for path in phoenix_server.list_request_paths()
+        )
+        assert all(
+            "test_key" not in path for path in phoenix_server.list_request_paths()
+        )
+        assert phoenix_server.list_request_api_keys()[-2:] == ["test_key", "test_key"]
 
         # Verify topic was re-subscribed
         assert "test-topic" in client.get_current_subscriptions()

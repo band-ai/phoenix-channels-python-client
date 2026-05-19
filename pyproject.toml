@@ -11,7 +11,7 @@ license = "MIT"
 authors = [{ name = "Phoenix Channels Python Client" }]
 requires-python = ">=3.11"
 dependencies = [
-    "websockets>=10.0",
+    "websockets>=16.0",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -36,6 +36,7 @@ test = [
     "pytest",
     "pytest-asyncio",
 ]
+examples = []
 
 # Package discovery for flat layout (phoenix_channels_python_client/ in root)
 [tool.setuptools.packages.find]

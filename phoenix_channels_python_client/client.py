@@ -32,40 +32,23 @@ ReconnectCallback = Callable[[], Awaitable[None]]
 DisconnectCallback = Callable[[Exception | None], Awaitable[None]]
 
 
-def _build_channel_socket_urls(
-    websocket_url: str, api_key: str, vsn: str
-) -> tuple[str, str]:
+def _build_channel_socket_url(websocket_url: str, vsn: str) -> str:
     split_url = urlsplit(websocket_url)
     query_params = parse_qsl(split_url.query, keep_blank_values=True)
     filtered = [
         (key, value) for key, value in query_params if key not in {"api_key", "vsn"}
     ]
-    with_auth = [*filtered, ("api_key", api_key), ("vsn", vsn)]
+    query = urlencode([*filtered, ("vsn", vsn)])
 
-    connect_url = urlunsplit(
+    return urlunsplit(
         (
             split_url.scheme,
             split_url.netloc,
             split_url.path,
-            urlencode(with_auth),
+            query,
             split_url.fragment,
         )
     )
-    redacted_url = urlunsplit(
-        (
-            split_url.scheme,
-            split_url.netloc,
-            split_url.path,
-            urlencode(
-                [
-                    (key, "***" if key == "api_key" else value)
-                    for key, value in with_auth
-                ]
-            ),
-            split_url.fragment,
-        )
-    )
-    return connect_url, redacted_url
 
 
 class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
@@ -108,13 +91,12 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
             if protocol_version == PhoenixChannelsProtocolVersion.V2
             else "1.0.0"
         )
-        connect_url, redacted_url = _build_channel_socket_urls(
+        self.channel_socket_url = _build_channel_socket_url(
             websocket_url=websocket_url,
-            api_key=api_key,
             vsn=vsn,
         )
-        self.channel_socket_url = connect_url
-        self.channel_socket_url_redacted = redacted_url
+        self.channel_socket_url_redacted = self.channel_socket_url
+        self.channel_socket_headers = {"x-api-key": api_key}
 
         self.auto_reconnect = auto_reconnect
         self.reconnect_policy = reconnect_policy or ReconnectPolicy()
