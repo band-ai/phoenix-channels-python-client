@@ -25,11 +25,26 @@ def test_invalid_reconnect_policy_is_rejected() -> None:
         _ = _make_client(bad_policy)
 
 
-def test_client_maintains_redacted_socket_url_for_logging() -> None:
+def test_client_keeps_api_key_out_of_socket_urls() -> None:
     client = _make_client()
-    assert "api_key=test-key" in client.channel_socket_url
-    assert "api_key=%2A%2A%2A" in client.channel_socket_url_redacted
+    assert "vsn=2.0.0" in client.channel_socket_url
+    assert "api_key" not in client.channel_socket_url
+    assert "test-key" not in client.channel_socket_url
+    assert "api_key" not in client.channel_socket_url_redacted
     assert "test-key" not in client.channel_socket_url_redacted
+    assert client.channel_socket_headers == {"x-api-key": "test-key"}
+
+
+def test_client_strips_stale_api_key_from_configured_socket_url() -> None:
+    client = PHXChannelsClient(
+        "ws://example.invalid/socket/websocket?api_key=stale-key&debug=true",
+        api_key="test-key",
+    )
+    assert "debug=true" in client.channel_socket_url
+    assert "vsn=2.0.0" in client.channel_socket_url
+    assert "api_key" not in client.channel_socket_url
+    assert "stale-key" not in client.channel_socket_url
+    assert "test-key" not in client.channel_socket_url
 
 
 def test_close_code_classification_uses_expected_semantics() -> None:

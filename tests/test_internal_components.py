@@ -126,8 +126,9 @@ class _TopicRuntimeHarness(TopicRuntimeMixin):
 class _SupervisorHarness(SupervisorMixin):
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
-        self.channel_socket_url = "ws://unit-test/socket"
-        self.channel_socket_url_redacted = "ws://unit-test/socket?api_key=***"
+        self.channel_socket_url = "ws://unit-test/socket?vsn=2.0.0"
+        self.channel_socket_url_redacted = "ws://unit-test/socket?vsn=2.0.0"
+        self.channel_socket_headers = {"x-api-key": "test-key"}
         self.auto_reconnect = True
         self.reconnect_policy = ReconnectPolicy(stable_reset_s=0.0)
         self.connection: ClientConnection | None = None
@@ -719,7 +720,7 @@ async def test_supervisor_connect_failures_and_terminal_suppression(
     harness = _SupervisorHarness()
     harness.auto_reconnect = False
 
-    async def fail_connect(_: str) -> ClientConnection:
+    async def fail_connect(_url: str, **_kwargs: object) -> ClientConnection:
         raise RuntimeError("connect fail")
 
     monkeypatch.setattr(
@@ -747,7 +748,7 @@ async def test_supervisor_initial_connect_retries_before_failing_enter(
     harness = _SupervisorHarness()
     attempts = 0
 
-    async def fail_then_connect(_: str) -> ClientConnection:
+    async def fail_then_connect(_url: str, **_kwargs: object) -> ClientConnection:
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -789,7 +790,7 @@ async def test_supervisor_routing_failure_disconnect_decisions_and_cleanup(
 
     socket = _FakeSocket(close_code=1012, close_reason="restart")
 
-    async def connect_once(_: str) -> ClientConnection:
+    async def connect_once(_url: str, **_kwargs: object) -> ClientConnection:
         return cast(ClientConnection, socket)
 
     monkeypatch.setattr(
@@ -807,7 +808,7 @@ async def test_supervisor_routing_failure_disconnect_decisions_and_cleanup(
     no_reconnect.disconnect_decision = ReconnectDecision(should_reconnect=False)
     monkeypatch.setattr(
         "phoenix_channels_python_client.supervisor.connect",
-        lambda _: asyncio.sleep(0, result=cast(ClientConnection, _FakeSocket())),
+        lambda _, **__: asyncio.sleep(0, result=cast(ClientConnection, _FakeSocket())),
     )
     await no_reconnect._supervisor_loop()
     assert ClientState.CLOSED in no_reconnect.transition_history
@@ -910,7 +911,7 @@ async def test_supervisor_on_disconnect_callback_fires(
 
     monkeypatch.setattr(
         "phoenix_channels_python_client.supervisor.connect",
-        lambda _: asyncio.sleep(0, result=cast(ClientConnection, socket)),
+        lambda _, **__: asyncio.sleep(0, result=cast(ClientConnection, socket)),
     )
     await harness._supervisor_loop()
 
@@ -933,7 +934,7 @@ async def test_supervisor_on_reconnect_callback_fires_on_generation_gt_1(
 
     harness._on_reconnect = on_reconnect
 
-    async def connect_and_shutdown(_: str) -> ClientConnection:
+    async def connect_and_shutdown(_url: str, **_kwargs: object) -> ClientConnection:
         nonlocal connect_count
         connect_count += 1
         if connect_count >= 2:
@@ -972,7 +973,7 @@ async def test_supervisor_callback_exception_does_not_crash_loop(
 
     monkeypatch.setattr(
         "phoenix_channels_python_client.supervisor.connect",
-        lambda _: asyncio.sleep(0, result=cast(ClientConnection, _FakeSocket())),
+        lambda _, **__: asyncio.sleep(0, result=cast(ClientConnection, _FakeSocket())),
     )
 
     await harness._supervisor_loop()

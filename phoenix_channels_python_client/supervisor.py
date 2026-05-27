@@ -45,6 +45,7 @@ class SupervisorMixin:
     logger: logging.Logger
     channel_socket_url: str
     channel_socket_url_redacted: str
+    channel_socket_headers: dict[str, str]
     auto_reconnect: bool
     reconnect_policy: ReconnectPolicy
     connection: ClientConnection | None
@@ -137,7 +138,10 @@ class SupervisorMixin:
                     self.channel_socket_url,
                 )
                 try:
-                    connection = await connect(self.channel_socket_url)
+                    connection = await connect(
+                        self.channel_socket_url,
+                        additional_headers=self.channel_socket_headers,
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:

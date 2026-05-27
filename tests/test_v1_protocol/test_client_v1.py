@@ -62,6 +62,24 @@ def _test_reconnect_policy() -> ReconnectPolicy:
     )
 
 
+async def test_websocket_auth_uses_header_not_query_param(
+    phoenix_server: FakePhoenixServer,
+):
+    async with V1Client(
+        f"{phoenix_server.url}?api_key=stale&debug=true",
+        api_key="test_key",
+    ):
+        pass
+
+    assert phoenix_server.list_request_api_keys() == ["test_key"]
+    paths = phoenix_server.list_request_paths()
+    assert len(paths) == 1
+    assert "debug=true" in paths[0]
+    assert "vsn=1.0.0" in paths[0]
+    assert "api_key" not in paths[0]
+    assert "test_key" not in paths[0]
+
+
 async def test_subscribe_to_topic_succeeds_when_subscribing_to_valid_topic(
     phoenix_server: FakePhoenixServer,
 ):
@@ -448,6 +466,14 @@ async def test_reconnect_resubscribes_and_receives_messages(
             ].current_join_ready.done(),
             timeout_s=2.0,
         )
+        assert len(phoenix_server.list_request_paths()) >= 2
+        assert all(
+            "api_key" not in path for path in phoenix_server.list_request_paths()
+        )
+        assert all(
+            "test_key" not in path for path in phoenix_server.list_request_paths()
+        )
+        assert phoenix_server.list_request_api_keys()[-2:] == ["test_key", "test_key"]
 
         current_join_ref = client.get_current_subscriptions()["test-topic"].join_ref
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator, Mapping
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 import pytest_asyncio
 from websockets.asyncio.server import Server, ServerConnection, serve
@@ -23,6 +23,8 @@ class FakePhoenixServer:
         self._client_ids: dict[ServerConnection, int] = {}
         self._client_path: dict[ServerConnection, str] = {}
         self._client_api_key: dict[ServerConnection, str] = {}
+        self._request_paths: list[str] = []
+        self._request_api_keys: list[str] = []
         self._next_client_id = 1
         self.close_on_join_ids: set[int] = set()
         self.close_on_join_code = 1012
@@ -46,13 +48,13 @@ class FakePhoenixServer:
         return str(getattr(request, "path", ""))
 
     @staticmethod
-    def _extract_api_key(request_path: str) -> str:
-        parsed = urlparse(request_path)
-        query = parse_qs(parsed.query)
-        values = query.get("api_key")
-        if not values:
+    def _extract_api_key(websocket: ServerConnection) -> str:
+        request = getattr(websocket, "request", None)
+        headers = getattr(request, "headers", None)
+        if headers is None:
             return ""
-        return values[0]
+        value = headers.get("x-api-key")
+        return value if isinstance(value, str) else ""
 
     async def handler(self, websocket: ServerConnection) -> None:
         """Handle WebSocket connections and messages."""
@@ -60,8 +62,10 @@ class FakePhoenixServer:
         self._next_client_id += 1
         request_path = self._extract_request_path(websocket)
         path_only = urlparse(request_path).path
-        api_key = self._extract_api_key(request_path)
+        api_key = self._extract_api_key(websocket)
 
+        self._request_paths.append(request_path)
+        self._request_api_keys.append(api_key)
         self.client_websocket = websocket
         self._clients.add(websocket)
         self._client_ids[websocket] = client_id
@@ -211,6 +215,12 @@ class FakePhoenixServer:
 
     def list_client_connections(self) -> list[ServerConnection]:
         return list(self._clients)
+
+    def list_request_paths(self) -> list[str]:
+        return list(self._request_paths)
+
+    def list_request_api_keys(self) -> list[str]:
+        return list(self._request_api_keys)
 
     def get_client_id_for_path(self, path: str) -> int | None:
         for websocket, websocket_path in self._client_path.items():
