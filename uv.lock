@@ -318,7 +318,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'test'" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "websockets", specifier = ">=10.0" },
+    { name = "websockets", specifier = ">=14.2" },
 ]
 provides-extras = ["dev", "test"]
 

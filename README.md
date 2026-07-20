@@ -43,7 +43,7 @@ pytest
 ### Dependencies
 
 - Python 3.11+
-- `websockets>=10.0`
+- `websockets>=14.2`
 
 ## Quick Start
 

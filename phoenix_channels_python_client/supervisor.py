@@ -138,10 +138,11 @@ class SupervisorMixin:
                     self.channel_socket_url,
                 )
                 try:
+                    connect_kwargs = {}
+                    if additional_headers := getattr(self, "additional_headers", None):
+                        connect_kwargs["additional_headers"] = additional_headers
                     connection = await connect(
-                        self.channel_socket_url,
-                        additional_headers=getattr(self, "additional_headers", None)
-                        or None,
+                        self.channel_socket_url, **connect_kwargs
                     )
                 except asyncio.CancelledError:
                     raise
