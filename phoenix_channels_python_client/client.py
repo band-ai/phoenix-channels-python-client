@@ -84,6 +84,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         heartbeat_interval_s: float | None = 30.0,
         on_reconnect: ReconnectCallback | None = None,
         on_disconnect: DisconnectCallback | None = None,
+        additional_headers: dict[str, str] | None = None,
     ):
         self.logger = logger
 
@@ -115,6 +116,12 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         )
         self.channel_socket_url = connect_url
         self.channel_socket_url_redacted = redacted_url
+
+        # Extra WebSocket handshake headers, re-sent on every (re)connect. Lets a
+        # caller send the API key as an ``x-api-key`` header instead of (or
+        # alongside) the URL query, so a trusted proxy can inject/replace it
+        # in-header and the credential stays out of URL/proxy logs.
+        self.additional_headers = dict(additional_headers or {})
 
         self.auto_reconnect = auto_reconnect
         self.reconnect_policy = reconnect_policy or ReconnectPolicy()

@@ -1011,3 +1011,32 @@ async def test_heartbeat_survives_reconnection(
         assert not client._heartbeat_task.done()
         # Server is responding, so pending ref should be cleared
         assert client._pending_heartbeat_ref is None
+
+
+@pytest.mark.asyncio
+async def test_additional_headers_are_sent_on_the_ws_handshake(
+    phoenix_server: FakePhoenixServerV2,
+):
+    """`additional_headers` ride the WebSocket handshake, so a caller can send the
+    API key as an `x-api-key` header (for proxy in-header injection) rather than
+    only in the URL query."""
+
+    async def _noop(_message: ChannelMessage) -> None:
+        return None
+
+    async with PHXChannelsClient(
+        phoenix_server.url,
+        api_key="test_key",
+        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        additional_headers={"x-api-key": "header-only-value"},
+    ) as client:
+        # subscribing forces a live connection, so the server sees the handshake
+        await client.subscribe_to_topic("test-topic", _noop)
+
+    server_ws = phoenix_server.client_websocket
+    assert server_ws is not None
+    request = server_ws.request
+    assert request is not None
+    assert request.headers["x-api-key"] == "header-only-value"
+    # the header is additive; the existing api_key query param is untouched
+    assert "api_key=test_key" in client.channel_socket_url
