@@ -1033,7 +1033,10 @@ async def test_additional_headers_are_sent_on_the_ws_handshake(
         # subscribing forces a live connection, so the server sees the handshake
         await client.subscribe_to_topic("test-topic", _noop)
 
-    request_headers = phoenix_server.client_websocket.request.headers
-    assert request_headers["x-api-key"] == "header-only-value"
+    server_ws = phoenix_server.client_websocket
+    assert server_ws is not None
+    request = server_ws.request
+    assert request is not None
+    assert request.headers["x-api-key"] == "header-only-value"
     # the header is additive; the existing api_key query param is untouched
     assert "api_key=test_key" in client.channel_socket_url
