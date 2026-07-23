@@ -1,7 +1,7 @@
 blank_issues_enabled: true
 contact_links:
   - name: Documentation
-    url: https://github.com/thenvoi/phoenix-channels-python-client-alpha#readme
+    url: https://github.com/band-ai/phoenix-channels-python-client#readme
     about: Check the README for usage instructions
   - name: Phoenix Channels Documentation
     url: https://hexdocs.pm/phoenix/channels.html

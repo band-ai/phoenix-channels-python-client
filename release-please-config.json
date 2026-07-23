@@ -3,7 +3,7 @@
   "release-type": "python",
   "packages": {
     ".": {
-      "package-name": "phoenix-channels-python-client-alpha",
+      "package-name": "phoenix-channels-python-client",
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
