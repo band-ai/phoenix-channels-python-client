@@ -8,14 +8,6 @@ updates:
       prefix: "fix"
       include: "scope"
 
-  - package-ecosystem: "pip"
-    directory: "/.github/actions/GithubToken"
-    schedule:
-      interval: "weekly"
-    commit-message:
-      prefix: "fix"
-      include: "scope"
-
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

@@ -14,12 +14,12 @@ Thank you for your interest in contributing to Phoenix Channels Python Client! T
 1. Fork the repository
 2. Clone your fork:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/phoenix-channels-python-client-alpha.git
-   cd phoenix-channels-python-client-alpha
+   git clone https://github.com/YOUR_USERNAME/phoenix-channels-python-client.git
+   cd phoenix-channels-python-client
    ```
 3. Add upstream remote:
    ```bash
-   git remote add upstream https://github.com/thenvoi/phoenix-channels-python-client-alpha.git
+   git remote add upstream https://github.com/band-ai/phoenix-channels-python-client.git
    ```
 4. Install dependencies:
    ```bash

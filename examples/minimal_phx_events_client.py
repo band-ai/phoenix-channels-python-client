@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Minimal Phoenix Events Client for Thenvoi Platform
+Minimal Phoenix Events Client for Band Platform
 
 This example demonstrates how to use the phx-events library to connect
-to the Thenvoi platform's WebSocket API and listen to real-time events.
+to the Band platform's WebSocket API and listen to real-time events.
 
 Usage:
     python examples/minimal_phx_events_client.py

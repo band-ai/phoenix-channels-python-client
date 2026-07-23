@@ -13,8 +13,8 @@ A modern, async Python client library for connecting to [Phoenix Channels](https
 Install from source:
 
 ```bash
-git clone https://github.com/your-org/phoenix_channels_python_client.git
-cd phoenix_channels_python_client
+git clone https://github.com/band-ai/phoenix-channels-python-client.git
+cd phoenix-channels-python-client
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install .
@@ -25,8 +25,8 @@ pip install .
 Set up development environment:
 
 ```bash
-git clone https://github.com/your-org/phoenix_channels_python_client.git
-cd phoenix_channels_python_client
+git clone https://github.com/band-ai/phoenix-channels-python-client.git
+cd phoenix-channels-python-client
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 python3 -m pip install -U pip

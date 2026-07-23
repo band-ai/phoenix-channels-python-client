@@ -8,74 +8,38 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  id-token: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    environment: release
     concurrency: release
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0
 
       - name: Generate GitHub App Token
-        id: app_token_generator
-        uses: ./.github/actions/GithubToken
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          app_id: ${{ secrets.APP_ID }}
-          installation_id: ${{ secrets.INSTALLATION_ID }}
-          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Release Please
-        uses: googleapis/release-please-action@v4
+        # Commit-pinned so a mutable release tag can't change the release
+        # workflow; Dependabot bumps this SHA with each v5 release.
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         id: release
         with:
-          token: ${{ steps.app_token_generator.outputs.token }}
+          token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          target-branch: main
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Get package version
-        id: version
-        run: echo "version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")" >> $GITHUB_OUTPUT
-
-      - name: Check if version exists on PyPI
-        id: check_pypi
-        run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://pypi.org/pypi/phoenix-channels-python-client/${{ steps.version.outputs.version }}/json)
-          if [ "$STATUS" = "200" ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Version ${{ steps.version.outputs.version }} already exists on PyPI, skipping publish"
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "Version ${{ steps.version.outputs.version }} not found on PyPI, will publish"
-          fi
-
-      - name: Install dependencies
-        if: steps.check_pypi.outputs.exists == 'false'
-        run: uv sync --all-groups
-
-      - name: Build package
-        if: steps.check_pypi.outputs.exists == 'false'
-        run: uv build
-
-      - name: Publish to PyPI
-        if: steps.check_pypi.outputs.exists == 'false'
-        run: uv publish
-
-      - name: Publish release summary
-        if: steps.check_pypi.outputs.exists == 'false'
-        run: |
-          echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+      # PyPI publishing is NOT a job here: it lives in publish.yml, triggered by
+      # the GitHub release this job publishes (the App token makes that event
+      # fire workflows). Keying it off the durable release means no failure in
+      # this run can strand a tagged release unpublished on PyPI.
