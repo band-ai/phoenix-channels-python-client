@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.2.2...phoenix-channels-python-client-v0.2.3) (2026-07-23)
+
+
+### Bug Fixes
+
+* match release-please component-prefixed tag in publish workflow ([#51](https://github.com/band-ai/phoenix-channels-python-client/issues/51)) ([dedb10c](https://github.com/band-ai/phoenix-channels-python-client/commit/dedb10cce3d60fa7a5cf62abec4ebcbe5323d317))
+
+
+### Miscellaneous Chores
+
+* prepare repo for band-ai org transfer and rename ([#48](https://github.com/band-ai/phoenix-channels-python-client/issues/48)) ([5298877](https://github.com/band-ai/phoenix-channels-python-client/commit/5298877cf96f5c0e976c29721ed6d2da2543e32b))
+
 ## [0.2.2](https://github.com/thenvoi/phoenix-channels-python-client-alpha/compare/phoenix-channels-python-client-alpha-v0.2.1...phoenix-channels-python-client-alpha-v0.2.2) (2026-07-20)
 
 
