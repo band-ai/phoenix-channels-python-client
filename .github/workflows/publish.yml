@@ -16,7 +16,8 @@
 # - The tag is validated as a main-anchored release whose version matches
 #   pyproject.toml, guarding a fat-fingered dispatch or a rogue release event;
 #   the malicious-ref case is stopped by the `release` environment's deployment
-#   policy (main + v* tags only), matched against GITHUB_REF before the job can
+#   policy (main + phoenix-channels-python-client-v* tags only), matched against
+#   GITHUB_REF before the job can
 #   reach the OIDC credential.
 #
 # The PyPI trusted publisher must reference this filename (publish.yml) with
@@ -31,7 +32,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to build and publish (e.g. v0.2.3)
+        description: Existing release tag to build and publish (e.g. phoenix-channels-python-client-v0.2.3)
         required: true
         type: string
 
@@ -57,8 +58,10 @@ jobs:
       - name: Validate the tag is a main-anchored release
         run: |
           set -euo pipefail
-          [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || {
-            echo "::error::'${TAG}' is not a vX.Y.Z release tag"; exit 1; }
+          # release-please tags this package as <package-name>-vX.Y.Z
+          # (the release-please-config package-name), not a bare vX.Y.Z.
+          [[ "$TAG" =~ ^phoenix-channels-python-client-v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || {
+            echo "::error::'${TAG}' is not a phoenix-channels-python-client-vX.Y.Z release tag"; exit 1; }
           tag_version="${BASH_REMATCH[1]}"
           git merge-base --is-ancestor HEAD origin/main || {
             echo "::error::${TAG} does not point at a commit on main"; exit 1; }
