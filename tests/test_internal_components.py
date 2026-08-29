@@ -1045,6 +1045,27 @@ async def test_handle_heartbeat_response_callback_exception_does_not_propagate()
 
 
 @pytest.mark.asyncio
+async def test_handle_heartbeat_response_rejects_async_callback() -> None:
+    harness = _SupervisorHarness()
+    harness._pending_heartbeat_ref = "5"
+
+    ran = False
+
+    async def async_on_heartbeat_ack() -> None:
+        nonlocal ran
+        ran = True
+
+    harness._on_heartbeat_ack = async_on_heartbeat_ack  # type: ignore[assignment]
+
+    harness._handle_heartbeat_response(
+        make_message(topic="phoenix", event=PHXEvent.reply, payload={}, ref="5")
+    )
+
+    assert harness._pending_heartbeat_ref is None
+    assert ran is False
+
+
+@pytest.mark.asyncio
 async def test_close_connection_closes_current_connection_for_reconnect() -> None:
     harness = _SupervisorHarness()
     socket = _FakeSocket()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import signal
 from collections import deque
@@ -17,7 +18,11 @@ from phoenix_channels_python_client.client_types import (
     ReconnectPolicy,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError
-from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
+from phoenix_channels_python_client.phx_messages import (
+    PHOENIX_TOPIC,
+    ChannelMessage,
+    Event,
+)
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 from phoenix_channels_python_client.utils import make_message
@@ -100,9 +105,23 @@ class SupervisorMixin:
             self._pending_heartbeat_ref = None
             if self._on_heartbeat_ack is not None:
                 try:
-                    self._on_heartbeat_ack()
+                    result = self._on_heartbeat_ack()
+                    if inspect.iscoroutine(result):
+                        result.close()
+                        raise TypeError(
+                            "on_heartbeat_ack must be synchronous; an async "
+                            "function was passed and its body never ran"
+                        )
                 except Exception:
                     self.logger.exception("Error in on_heartbeat_ack callback")
+
+    async def _invoke_callback_safely(
+        self, label: str, callback: Callable[..., Awaitable[None]], *args: object
+    ) -> None:
+        try:
+            await callback(*args)
+        except Exception:
+            self.logger.exception("Error in %s callback", label)
 
     async def close_connection(self, reason: str) -> None:
         """Force-close the current connection so the supervisor's own
@@ -140,7 +159,7 @@ class SupervisorMixin:
                 self._pending_heartbeat_ref = ref
 
                 heartbeat_message = make_message(
-                    topic="phoenix",
+                    topic=PHOENIX_TOPIC,
                     event=Event("heartbeat"),
                     payload={},
                     ref=ref,
@@ -243,10 +262,9 @@ class SupervisorMixin:
                     self._initial_connection_future.set_result(None)
 
                 if generation > 1 and self._on_reconnect is not None:
-                    try:
-                        await self._on_reconnect()
-                    except Exception:
-                        self.logger.exception("Error in on_reconnect callback")
+                    await self._invoke_callback_safely(
+                        "on_reconnect", self._on_reconnect
+                    )
 
                 try:
                     await self._message_routing_task
@@ -275,10 +293,9 @@ class SupervisorMixin:
                 await self._cleanup_connection()
 
                 if self._on_disconnect is not None:
-                    try:
-                        await self._on_disconnect(routing_error)
-                    except Exception:
-                        self.logger.exception("Error in on_disconnect callback")
+                    await self._invoke_callback_safely(
+                        "on_disconnect", self._on_disconnect, routing_error
+                    )
 
                 if self._shutdown_event.is_set():
                     break

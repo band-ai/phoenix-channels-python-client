@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 ReconnectCallback = Callable[[], Awaitable[None]]
 DisconnectCallback = Callable[[Exception | None], Awaitable[None]]
+# Must be synchronous and fast: unlike the callbacks above, this runs inline
+# on the message-routing hot path, so blocking work here stalls heartbeat
+# sends and message routing for every connection.
 HeartbeatAckCallback = Callable[[], None]
 
 
