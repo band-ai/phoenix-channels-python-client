@@ -1049,11 +1049,10 @@ async def test_handle_heartbeat_response_rejects_async_callback() -> None:
     harness = _SupervisorHarness()
     harness._pending_heartbeat_ref = "5"
 
-    ran = False
+    ran: list[bool] = []
 
     async def async_on_heartbeat_ack() -> None:
-        nonlocal ran
-        ran = True
+        ran.append(True)
 
     harness._on_heartbeat_ack = async_on_heartbeat_ack  # type: ignore[assignment]
 
@@ -1062,7 +1061,7 @@ async def test_handle_heartbeat_response_rejects_async_callback() -> None:
     )
 
     assert harness._pending_heartbeat_ref is None
-    assert ran is False
+    assert ran == []
 
 
 @pytest.mark.asyncio
