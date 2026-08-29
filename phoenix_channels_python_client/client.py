@@ -152,6 +152,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._on_reconnect = on_reconnect
         self._on_disconnect = on_disconnect
         self._on_heartbeat_ack = on_heartbeat_ack
+        self._forced_close_pending = False
 
     @staticmethod
     def reconnect_policy_is_invalid(policy: ReconnectPolicy) -> bool:

@@ -22,10 +22,21 @@ from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 from phoenix_channels_python_client.utils import make_message
 
-# RFC 6455 private-use range (3000-4999); outside _classify_disconnect's
-# specially-handled codes, so a forced close reconnects like any other
-# unclassified disconnect.
+# RFC 6455 §7.4.2 private-use range (4000-4999, unregistrable); outside
+# _classify_disconnect's specially-handled codes, so a forced close
+# reconnects like any other unclassified disconnect.
 _FORCED_CLOSE_CODE = 4000
+
+# RFC 6455 §5.5.1: control frames (including Close) cap at 125 bytes total;
+# 2 of those bytes are the close code, leaving 123 for the reason.
+_MAX_CLOSE_REASON_BYTES = 123
+
+
+def _truncate_close_reason(reason: str) -> str:
+    encoded = reason.encode("utf-8")
+    if len(encoded) <= _MAX_CLOSE_REASON_BYTES:
+        return reason
+    return encoded[:_MAX_CLOSE_REASON_BYTES].decode("utf-8", errors="ignore")
 
 
 class _SupervisorRuntimeDeps(Protocol):
@@ -71,6 +82,7 @@ class SupervisorMixin:
     _on_reconnect: Callable[[], Awaitable[None]] | None
     _on_disconnect: Callable[[Exception | None], Awaitable[None]] | None
     _on_heartbeat_ack: Callable[[], None] | None
+    _forced_close_pending: bool
 
     async def _start_processing(
         self, connection: ClientConnection, conn_generation: int
@@ -99,7 +111,9 @@ class SupervisorMixin:
         connection = self.connection
         if connection is None:
             return
+        reason = _truncate_close_reason(reason)
         self.logger.info("Forcing connection close: %s", reason)
+        self._forced_close_pending = True
         await connection.close(code=_FORCED_CLOSE_CODE, reason=reason)
 
     async def _heartbeat_loop(self, connection: ClientConnection) -> None:
@@ -255,6 +269,8 @@ class SupervisorMixin:
                     connection=connection,
                     routing_error=routing_error,
                 )
+                forced_close = self._forced_close_pending
+                self._forced_close_pending = False
 
                 await self._cleanup_connection()
 
@@ -270,7 +286,17 @@ class SupervisorMixin:
                 if not self.auto_reconnect:
                     break
 
-                decision = runtime_deps._classify_disconnect(close_code, close_reason)
+                if forced_close:
+                    # The remote's echoed close code isn't guaranteed to match
+                    # what we sent (websockets' close_code reflects the code
+                    # *received*, not sent), so classification would be
+                    # unreliable here; a forced close always reconnects like
+                    # any other unclassified disconnect.
+                    decision = ReconnectDecision(should_reconnect=True)
+                else:
+                    decision = runtime_deps._classify_disconnect(
+                        close_code, close_reason
+                    )
                 if decision.terminal_error is not None:
                     self._terminal_error = decision.terminal_error
                     self.logger.error("%s", self._terminal_error)

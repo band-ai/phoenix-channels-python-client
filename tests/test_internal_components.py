@@ -153,6 +153,7 @@ class _SupervisorHarness(SupervisorMixin):
         self._on_reconnect = None
         self._on_disconnect = None
         self._on_heartbeat_ack = None
+        self._forced_close_pending = False
 
         self.transition_history: list[ClientState] = []
         self.disconnect_uptimes: list[float] = []
@@ -1063,3 +1064,55 @@ async def test_close_connection_is_noop_when_not_connected() -> None:
     await harness.close_connection("dead threshold exceeded")
 
     assert harness.connection is None
+
+
+@pytest.mark.asyncio
+async def test_close_connection_truncates_oversized_reason() -> None:
+    harness = _SupervisorHarness()
+    socket = _FakeSocket()
+    harness.connection = cast(ClientConnection, socket)
+
+    await harness.close_connection("x" * 200)
+
+    assert socket.close_calls[0][0] == 4000
+    sent_reason = socket.close_calls[0][1]
+    assert len(sent_reason.encode("utf-8")) <= 123
+    assert sent_reason == "x" * 123
+
+
+@pytest.mark.asyncio
+async def test_disconnect_classification_applies_when_not_forced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _SupervisorHarness()
+    harness.disconnect_decision = ReconnectDecision(should_reconnect=False)
+
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.connect",
+        lambda _: asyncio.sleep(0, result=cast(ClientConnection, _FakeSocket())),
+    )
+
+    await harness._supervisor_loop()
+
+    assert harness.wait_delays == []
+
+
+@pytest.mark.asyncio
+async def test_forced_close_bypasses_disconnect_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _SupervisorHarness()
+    harness._forced_close_pending = True
+    # What the real _classify_disconnect would decide for whatever code the
+    # remote happened to echo back; the forced-close path must not consult it.
+    harness.disconnect_decision = ReconnectDecision(should_reconnect=False)
+
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.connect",
+        lambda _: asyncio.sleep(0, result=cast(ClientConnection, _FakeSocket())),
+    )
+
+    await harness._supervisor_loop()
+
+    assert harness.wait_delays == [0.001]
+    assert harness._forced_close_pending is False

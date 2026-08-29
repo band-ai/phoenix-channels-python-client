@@ -7,6 +7,7 @@ from collections import deque
 
 from websockets import ClientConnection
 from websockets.exceptions import ConnectionClosed
+from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client_types import (
     ReconnectDecision,
@@ -159,7 +160,7 @@ class ReconnectControllerMixin:
             return decision
 
         if (
-            close_code in {1000, 1001}
+            close_code in {CloseCode.NORMAL_CLOSURE, CloseCode.GOING_AWAY}
             and not self.reconnect_policy.reconnect_on_normal_close
         ):
             decision = ReconnectDecision(should_reconnect=False)
@@ -176,12 +177,15 @@ class ReconnectControllerMixin:
             )
             return decision
 
-        if close_code == 1008 and self.reconnect_policy.policy_violation_is_terminal:
+        if (
+            close_code == CloseCode.POLICY_VIOLATION
+            and self.reconnect_policy.policy_violation_is_terminal
+        ):
             reason = close_reason or "policy violation"
             decision = ReconnectDecision(
                 should_reconnect=False,
                 terminal_error=PHXConnectionError(
-                    f"Reconnect disabled due to terminal close code 1008 ({reason})"
+                    f"Reconnect disabled due to terminal close code {CloseCode.POLICY_VIOLATION} ({reason})"
                 ),
             )
             logger.debug(
@@ -199,7 +203,7 @@ class ReconnectControllerMixin:
             )
             return decision
 
-        if close_code == 1012:
+        if close_code == CloseCode.SERVICE_RESTART:
             decision = ReconnectDecision(
                 should_reconnect=True,
                 min_delay_s=self.reconnect_policy.service_restart_min_delay_s,
@@ -222,7 +226,7 @@ class ReconnectControllerMixin:
             )
             return decision
 
-        if close_code == 1013:
+        if close_code == CloseCode.TRY_AGAIN_LATER:
             decision = ReconnectDecision(
                 should_reconnect=True,
                 min_delay_s=self.reconnect_policy.try_again_later_min_delay_s,
