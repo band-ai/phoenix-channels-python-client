@@ -22,6 +22,11 @@ from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 from phoenix_channels_python_client.utils import make_message
 
+# RFC 6455 private-use range (3000-4999); outside _classify_disconnect's
+# specially-handled codes, so a forced close reconnects like any other
+# unclassified disconnect.
+_FORCED_CLOSE_CODE = 4000
+
 
 class _SupervisorRuntimeDeps(Protocol):
     async def _rejoin_topics(self, generation: int) -> None: ...
@@ -65,6 +70,7 @@ class SupervisorMixin:
     _pending_heartbeat_ref: str | None
     _on_reconnect: Callable[[], Awaitable[None]] | None
     _on_disconnect: Callable[[Exception | None], Awaitable[None]] | None
+    _on_heartbeat_ack: Callable[[], None] | None
 
     async def _start_processing(
         self, connection: ClientConnection, conn_generation: int
@@ -80,6 +86,21 @@ class SupervisorMixin:
         if message.ref is not None and message.ref == self._pending_heartbeat_ref:
             self.logger.debug("Heartbeat acknowledged (ref=%s)", message.ref)
             self._pending_heartbeat_ref = None
+            if self._on_heartbeat_ack is not None:
+                try:
+                    self._on_heartbeat_ack()
+                except Exception:
+                    self.logger.exception("Error in on_heartbeat_ack callback")
+
+    async def close_connection(self, reason: str) -> None:
+        """Force-close the current connection so the supervisor's own
+        disconnect handling decides whether to reconnect. No-op if not
+        currently connected."""
+        connection = self.connection
+        if connection is None:
+            return
+        self.logger.info("Forcing connection close: %s", reason)
+        await connection.close(code=_FORCED_CLOSE_CODE, reason=reason)
 
     async def _heartbeat_loop(self, connection: ClientConnection) -> None:
         if self._heartbeat_interval_s is None:
