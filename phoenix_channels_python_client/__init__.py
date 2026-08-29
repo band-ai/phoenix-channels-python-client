@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from phoenix_channels_python_client.client import (
     DisconnectCallback,
+    HeartbeatAckCallback,
     PHXChannelsClient,
     ReconnectCallback,
     ReconnectPolicy,
@@ -23,6 +24,7 @@ __author__ = "Phoenix Channels Python Client"
 
 __all__ = [
     "DisconnectCallback",
+    "HeartbeatAckCallback",
     "PHXChannelsClient",
     "PHXProtocolHandler",
     "PhoenixChannelsProtocolVersion",
