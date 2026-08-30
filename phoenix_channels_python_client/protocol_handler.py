@@ -8,7 +8,11 @@ from enum import Enum
 
 from websockets import ClientConnection
 
-from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
+from phoenix_channels_python_client.phx_messages import (
+    PHOENIX_TOPIC,
+    ChannelMessage,
+    Event,
+)
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 from phoenix_channels_python_client.utils import make_message
 
@@ -155,7 +159,7 @@ class PHXProtocolHandler:
             self.logger.debug("Processing message - %s", phx_message)
             topic = phx_message.topic
 
-            if topic == "phoenix":
+            if topic == PHOENIX_TOPIC:
                 if on_heartbeat_response is not None:
                     on_heartbeat_response(phx_message)
                 continue

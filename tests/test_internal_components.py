@@ -70,9 +70,11 @@ class _FakeSocket:
 
     def __post_init__(self) -> None:
         self.closed = False
+        self.close_calls: list[tuple[int | None, str]] = []
 
-    async def close(self) -> None:
+    async def close(self, code: int | None = None, reason: str = "") -> None:
         self.closed = True
+        self.close_calls.append((code, reason))
         if self.close_raises:
             raise RuntimeError("close boom")
 
@@ -150,6 +152,8 @@ class _SupervisorHarness(SupervisorMixin):
         self._ref_counter = 0
         self._on_reconnect = None
         self._on_disconnect = None
+        self._on_heartbeat_ack = None
+        self._forced_close_pending = False
 
         self.transition_history: list[ClientState] = []
         self.disconnect_uptimes: list[float] = []
@@ -977,3 +981,158 @@ async def test_supervisor_callback_exception_does_not_crash_loop(
 
     await harness._supervisor_loop()
     assert harness.connection is None
+
+
+@pytest.mark.asyncio
+async def test_handle_heartbeat_response_fires_on_heartbeat_ack_callback() -> None:
+    harness = _SupervisorHarness()
+    harness._pending_heartbeat_ref = "5"
+
+    ack_count = 0
+
+    def on_heartbeat_ack() -> None:
+        nonlocal ack_count
+        ack_count += 1
+
+    harness._on_heartbeat_ack = on_heartbeat_ack
+
+    harness._handle_heartbeat_response(
+        make_message(topic="phoenix", event=PHXEvent.reply, payload={}, ref="5")
+    )
+
+    assert ack_count == 1
+    assert harness._pending_heartbeat_ref is None
+
+
+@pytest.mark.asyncio
+async def test_handle_heartbeat_response_ignores_mismatched_ref() -> None:
+    harness = _SupervisorHarness()
+    harness._pending_heartbeat_ref = "5"
+
+    ack_count = 0
+
+    def on_heartbeat_ack() -> None:
+        nonlocal ack_count
+        ack_count += 1
+
+    harness._on_heartbeat_ack = on_heartbeat_ack
+
+    harness._handle_heartbeat_response(
+        make_message(topic="phoenix", event=PHXEvent.reply, payload={}, ref="not-5")
+    )
+
+    assert ack_count == 0
+    assert harness._pending_heartbeat_ref == "5"
+
+
+@pytest.mark.asyncio
+async def test_handle_heartbeat_response_callback_exception_does_not_propagate() -> (
+    None
+):
+    harness = _SupervisorHarness()
+    harness._pending_heartbeat_ref = "5"
+
+    def bad_heartbeat_ack() -> None:
+        raise ValueError("callback boom")
+
+    harness._on_heartbeat_ack = bad_heartbeat_ack
+
+    harness._handle_heartbeat_response(
+        make_message(topic="phoenix", event=PHXEvent.reply, payload={}, ref="5")
+    )
+
+    assert harness._pending_heartbeat_ref is None
+
+
+@pytest.mark.asyncio
+async def test_handle_heartbeat_response_rejects_async_callback() -> None:
+    harness = _SupervisorHarness()
+    harness._pending_heartbeat_ref = "5"
+
+    ran: list[bool] = []
+
+    async def async_on_heartbeat_ack() -> None:
+        ran.append(True)
+
+    harness._on_heartbeat_ack = async_on_heartbeat_ack  # type: ignore[assignment]
+
+    harness._handle_heartbeat_response(
+        make_message(topic="phoenix", event=PHXEvent.reply, payload={}, ref="5")
+    )
+
+    assert harness._pending_heartbeat_ref is None
+    assert ran == []
+
+
+@pytest.mark.asyncio
+async def test_close_connection_closes_current_connection_for_reconnect() -> None:
+    harness = _SupervisorHarness()
+    socket = _FakeSocket()
+    harness.connection = cast(ClientConnection, socket)
+
+    await harness.close_connection("dead threshold exceeded")
+
+    assert socket.closed
+    assert socket.close_calls == [(4000, "dead threshold exceeded")]
+
+
+@pytest.mark.asyncio
+async def test_close_connection_is_noop_when_not_connected() -> None:
+    harness = _SupervisorHarness()
+    harness.connection = None
+
+    await harness.close_connection("dead threshold exceeded")
+
+    assert harness.connection is None
+
+
+@pytest.mark.asyncio
+async def test_close_connection_truncates_oversized_reason() -> None:
+    harness = _SupervisorHarness()
+    socket = _FakeSocket()
+    harness.connection = cast(ClientConnection, socket)
+
+    await harness.close_connection("x" * 200)
+
+    assert socket.close_calls[0][0] == 4000
+    sent_reason = socket.close_calls[0][1]
+    assert len(sent_reason.encode("utf-8")) <= 123
+    assert sent_reason == "x" * 123
+
+
+@pytest.mark.asyncio
+async def test_disconnect_classification_applies_when_not_forced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _SupervisorHarness()
+    harness.disconnect_decision = ReconnectDecision(should_reconnect=False)
+
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.connect",
+        lambda _: asyncio.sleep(0, result=cast(ClientConnection, _FakeSocket())),
+    )
+
+    await harness._supervisor_loop()
+
+    assert harness.wait_delays == []
+
+
+@pytest.mark.asyncio
+async def test_forced_close_bypasses_disconnect_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _SupervisorHarness()
+    harness._forced_close_pending = True
+    # What the real _classify_disconnect would decide for whatever code the
+    # remote happened to echo back; the forced-close path must not consult it.
+    harness.disconnect_decision = ReconnectDecision(should_reconnect=False)
+
+    monkeypatch.setattr(
+        "phoenix_channels_python_client.supervisor.connect",
+        lambda _: asyncio.sleep(0, result=cast(ClientConnection, _FakeSocket())),
+    )
+
+    await harness._supervisor_loop()
+
+    assert harness.wait_delays == [0.001]
+    assert harness._forced_close_pending is False

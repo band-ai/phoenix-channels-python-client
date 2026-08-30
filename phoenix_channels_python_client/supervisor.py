@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import signal
 from collections import deque
@@ -17,10 +18,30 @@ from phoenix_channels_python_client.client_types import (
     ReconnectPolicy,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError
-from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
+from phoenix_channels_python_client.phx_messages import (
+    PHOENIX_TOPIC,
+    ChannelMessage,
+    Event,
+)
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 from phoenix_channels_python_client.utils import make_message
+
+# RFC 6455 §7.4.2 private-use range (4000-4999, unregistrable); outside
+# _classify_disconnect's specially-handled codes, so a forced close
+# reconnects like any other unclassified disconnect.
+_FORCED_CLOSE_CODE = 4000
+
+# RFC 6455 §5.5.1: control frames (including Close) cap at 125 bytes total;
+# 2 of those bytes are the close code, leaving 123 for the reason.
+_MAX_CLOSE_REASON_BYTES = 123
+
+
+def _truncate_close_reason(reason: str) -> str:
+    encoded = reason.encode("utf-8")
+    if len(encoded) <= _MAX_CLOSE_REASON_BYTES:
+        return reason
+    return encoded[:_MAX_CLOSE_REASON_BYTES].decode("utf-8", errors="ignore")
 
 
 class _SupervisorRuntimeDeps(Protocol):
@@ -65,6 +86,8 @@ class SupervisorMixin:
     _pending_heartbeat_ref: str | None
     _on_reconnect: Callable[[], Awaitable[None]] | None
     _on_disconnect: Callable[[Exception | None], Awaitable[None]] | None
+    _on_heartbeat_ack: Callable[[], None] | None
+    _forced_close_pending: bool
 
     async def _start_processing(
         self, connection: ClientConnection, conn_generation: int
@@ -80,6 +103,37 @@ class SupervisorMixin:
         if message.ref is not None and message.ref == self._pending_heartbeat_ref:
             self.logger.debug("Heartbeat acknowledged (ref=%s)", message.ref)
             self._pending_heartbeat_ref = None
+            if self._on_heartbeat_ack is not None:
+                try:
+                    result = self._on_heartbeat_ack()
+                    if inspect.iscoroutine(result):
+                        result.close()
+                        raise TypeError(
+                            "on_heartbeat_ack must be synchronous; an async "
+                            "function was passed and its body never ran"
+                        )
+                except Exception:
+                    self.logger.exception("Error in on_heartbeat_ack callback")
+
+    async def _invoke_callback_safely(
+        self, label: str, callback: Callable[..., Awaitable[None]], *args: object
+    ) -> None:
+        try:
+            await callback(*args)
+        except Exception:
+            self.logger.exception("Error in %s callback", label)
+
+    async def close_connection(self, reason: str) -> None:
+        """Force-close the current connection so the supervisor's own
+        disconnect handling decides whether to reconnect. No-op if not
+        currently connected."""
+        connection = self.connection
+        if connection is None:
+            return
+        reason = _truncate_close_reason(reason)
+        self.logger.info("Forcing connection close: %s", reason)
+        self._forced_close_pending = True
+        await connection.close(code=_FORCED_CLOSE_CODE, reason=reason)
 
     async def _heartbeat_loop(self, connection: ClientConnection) -> None:
         if self._heartbeat_interval_s is None:
@@ -105,7 +159,7 @@ class SupervisorMixin:
                 self._pending_heartbeat_ref = ref
 
                 heartbeat_message = make_message(
-                    topic="phoenix",
+                    topic=PHOENIX_TOPIC,
                     event=Event("heartbeat"),
                     payload={},
                     ref=ref,
@@ -208,10 +262,9 @@ class SupervisorMixin:
                     self._initial_connection_future.set_result(None)
 
                 if generation > 1 and self._on_reconnect is not None:
-                    try:
-                        await self._on_reconnect()
-                    except Exception:
-                        self.logger.exception("Error in on_reconnect callback")
+                    await self._invoke_callback_safely(
+                        "on_reconnect", self._on_reconnect
+                    )
 
                 try:
                     await self._message_routing_task
@@ -234,14 +287,15 @@ class SupervisorMixin:
                     connection=connection,
                     routing_error=routing_error,
                 )
+                forced_close = self._forced_close_pending
+                self._forced_close_pending = False
 
                 await self._cleanup_connection()
 
                 if self._on_disconnect is not None:
-                    try:
-                        await self._on_disconnect(routing_error)
-                    except Exception:
-                        self.logger.exception("Error in on_disconnect callback")
+                    await self._invoke_callback_safely(
+                        "on_disconnect", self._on_disconnect, routing_error
+                    )
 
                 if self._shutdown_event.is_set():
                     break
@@ -249,7 +303,17 @@ class SupervisorMixin:
                 if not self.auto_reconnect:
                     break
 
-                decision = runtime_deps._classify_disconnect(close_code, close_reason)
+                if forced_close:
+                    # The remote's echoed close code isn't guaranteed to match
+                    # what we sent (websockets' close_code reflects the code
+                    # *received*, not sent), so classification would be
+                    # unreliable here; a forced close always reconnects like
+                    # any other unclassified disconnect.
+                    decision = ReconnectDecision(should_reconnect=True)
+                else:
+                    decision = runtime_deps._classify_disconnect(
+                        close_code, close_reason
+                    )
                 if decision.terminal_error is not None:
                     self._terminal_error = decision.terminal_error
                     self.logger.error("%s", self._terminal_error)

@@ -6,6 +6,9 @@ from functools import cached_property
 from typing import Any, NewType
 
 
+PHOENIX_TOPIC = "phoenix"
+
+
 @unique
 class PHXEvent(Enum):
     close = "phx_close"

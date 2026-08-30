@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 ReconnectCallback = Callable[[], Awaitable[None]]
 DisconnectCallback = Callable[[Exception | None], Awaitable[None]]
+# Must be synchronous and fast: unlike the callbacks above, this runs inline
+# on the message-routing hot path, so blocking work here stalls heartbeat
+# sends and message routing for every connection.
+HeartbeatAckCallback = Callable[[], None]
 
 
 def _build_channel_socket_urls(
@@ -84,6 +88,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         heartbeat_interval_s: float | None = 30.0,
         on_reconnect: ReconnectCallback | None = None,
         on_disconnect: DisconnectCallback | None = None,
+        on_heartbeat_ack: HeartbeatAckCallback | None = None,
         additional_headers: dict[str, str] | None = None,
     ):
         self.logger = logger
@@ -149,6 +154,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._pending_heartbeat_ref: str | None = None
         self._on_reconnect = on_reconnect
         self._on_disconnect = on_disconnect
+        self._on_heartbeat_ack = on_heartbeat_ack
+        self._forced_close_pending = False
 
     @staticmethod
     def reconnect_policy_is_invalid(policy: ReconnectPolicy) -> bool:
