@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.2.3...phoenix-channels-python-client-v0.2.4) (2026-08-30)
+
+
+### Features
+
+* add on_heartbeat_ack callback and close_connection method ([#54](https://github.com/band-ai/phoenix-channels-python-client/issues/54)) ([21226c1](https://github.com/band-ai/phoenix-channels-python-client/commit/21226c18c5ee2b369ad8d0618fdaca66531507cc))
+
 ## [0.2.3](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.2.2...phoenix-channels-python-client-v0.2.3) (2026-07-23)
 
 
