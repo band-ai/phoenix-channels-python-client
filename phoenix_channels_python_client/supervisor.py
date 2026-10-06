@@ -376,34 +376,41 @@ class SupervisorMixin:
 
     async def _cleanup_connection(self) -> None:
         connection = self.connection
+        running = [
+            task
+            for task in (self._heartbeat_task, self._message_routing_task)
+            if task is not None and not task.done()
+        ]
         self.connection = None
+        self._heartbeat_task = None
+        self._message_routing_task = None
+        self._pending_heartbeat_ref = None
         self._connected_event.clear()
         self._forced_close_pending = False
 
-        if self._heartbeat_task and not self._heartbeat_task.done():
-            await cancel_and_wait(self._heartbeat_task)
-        self._heartbeat_task = None
-        self._pending_heartbeat_ref = None
+        try:
+            await cancel_and_wait(*running)
+        finally:
+            # Close the socket even if the caller is cancelled meanwhile.
+            if connection is not None:
+                await self._close_websocket(connection)
 
-        if self._message_routing_task and not self._message_routing_task.done():
-            await cancel_and_wait(self._message_routing_task)
-
-        self._message_routing_task = None
-
-        if connection is not None:
-            try:
-                await connection.close()
-            except Exception:
-                self.logger.exception("Failed while closing websocket connection")
+    async def _close_websocket(self, connection: ClientConnection) -> None:
+        try:
+            await connection.close()
+        except Exception:
+            self.logger.exception("Failed while closing websocket connection")
 
     async def run_forever(self, *, install_signal_handlers: bool = True) -> None:
         """Wait until the client stops, then raise why if it failed.
 
         With ``install_signal_handlers`` (the default), SIGTERM and SIGINT shut
-        the client down, and the handlers in place before the call are restored
-        on return. A host handler registered with ``loop.add_signal_handler``
-        for the same signal also fires. Hosts that own their process signals
-        pass ``False`` and schedule ``shutdown()`` from their own handler.
+        the client down. The handlers in place before the call are restored as
+        soon as it stops waiting, so a second signal during the shutdown reaches
+        them. A host handler registered with ``loop.add_signal_handler`` for the
+        same signal also fires. Hosts that own their process signals pass
+        ``False`` and schedule ``shutdown()`` on the client's loop from their
+        own handler.
         """
         runtime_deps = cast(_SupervisorRuntimeDeps, self)
         supervisor = self._supervisor_task

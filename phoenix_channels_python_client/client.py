@@ -249,12 +249,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
 
     async def _stop_supervisor(self) -> None:
         supervisor = self._supervisor_task
-        if supervisor is None or supervisor.done():
-            return
-        await cancel_and_wait(supervisor)
-        if not supervisor.cancelled() and (error := supervisor.exception()):
-            # Otherwise only run_forever() would ever report it.
-            self.logger.error("Supervisor failed", exc_info=error)
+        if supervisor is not None and not supervisor.done():
+            await cancel_and_wait(supervisor)
 
     def _transition_state(self, new_state: ClientState) -> None:
         if self._state == new_state:

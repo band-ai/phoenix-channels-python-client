@@ -53,8 +53,9 @@ def _on_shutdown_signal(signum: int, frame: FrameType | None) -> None:
     for waiter in live:
         _waiters[waiter] = signum
         waiter.loop.call_soon_threadsafe(waiter.event.set)
-    # Every waiting loop closed without unwinding: hand the signal back.
-    if not live and signum in _previous:
+    # Every waiting loop closed without unwinding: hand the signal back. If a
+    # newer handler chained to this one instead, that handler already has it.
+    if not live and _owned(signum):
         _restore()
         signal.raise_signal(signum)
 
