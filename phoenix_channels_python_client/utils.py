@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -44,6 +45,13 @@ def make_message(
             payload=payload,
             join_ref=join_ref,
         )
+
+
+async def cancel_and_wait(task: asyncio.Future[Any]) -> None:
+    task.cancel()
+    # Unlike suppress(CancelledError), this lets the caller's own cancellation
+    # propagate.
+    await asyncio.wait({task})
 
 
 def setup_logging(level: int = logging.INFO) -> None:

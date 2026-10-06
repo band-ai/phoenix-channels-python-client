@@ -26,7 +26,9 @@ from phoenix_channels_python_client.protocol_handler import (
 from phoenix_channels_python_client.supervisor import SupervisorMixin
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
-from phoenix_channels_python_client.utils import make_message
+from phoenix_channels_python_client.utils import cancel_and_wait, make_message
+
+from .conftest import ASYNC_TIMEOUT_S
 
 
 @dataclass
@@ -836,61 +838,19 @@ async def test_supervisor_initial_future_stop_and_cleanup_exceptions() -> None:
 
 
 @pytest.mark.asyncio
-async def test_supervisor_run_forever_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("install_signal_handlers", [True, False])
+async def test_supervisor_run_forever_paths(install_signal_handlers: bool) -> None:
     harness = _SupervisorHarness()
-    harness._supervisor_task = None
     with pytest.raises(PHXConnectionError):
-        await harness.run_forever()
+        await harness.run_forever(install_signal_handlers=install_signal_handlers)
 
-    signaled = _SupervisorHarness()
-    signaled._supervisor_task = asyncio.create_task(asyncio.sleep(10))
+    async def fail() -> None:
+        raise RuntimeError("supervisor failed")
 
-    loop = asyncio.get_running_loop()
-    monkeypatch.setattr(loop, "add_signal_handler", lambda *_args: None)
-    monkeypatch.setattr(loop, "remove_signal_handler", lambda *_args: None)
-
-    async def wait_signal_first(
-        tasks: Any, return_when: Any
-    ) -> tuple[set[Any], set[Any]]:
-        del return_when
-        return {tasks[0]}, {tasks[1]}
-
-    monkeypatch.setattr(
-        "phoenix_channels_python_client.supervisor.asyncio.wait", wait_signal_first
-    )
-    await signaled.run_forever()
-    assert signaled.shutdown_reasons == ["Signal received"]
-
-    fallback = _SupervisorHarness()
-    fallback._supervisor_task = asyncio.create_task(asyncio.sleep(10))
-
-    monkeypatch.setattr(
-        loop,
-        "add_signal_handler",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("not-main-thread")),
-    )
-    monkeypatch.setattr(loop, "remove_signal_handler", lambda *_args: None)
-    monkeypatch.setattr(
-        "phoenix_channels_python_client.supervisor.asyncio.wait", wait_signal_first
-    )
-    await fallback.run_forever()
-    assert fallback.shutdown_reasons == ["Signal received"]
-
-    errored = _SupervisorHarness()
-    errored._supervisor_task = asyncio.create_task(asyncio.sleep(0))
-    errored._terminal_error = PHXConnectionError("terminal")
-
-    async def wait_supervisor_first(
-        tasks: Any, return_when: Any
-    ) -> tuple[set[Any], set[Any]]:
-        del return_when
-        return {tasks[1]}, {tasks[0]}
-
-    monkeypatch.setattr(
-        "phoenix_channels_python_client.supervisor.asyncio.wait", wait_supervisor_first
-    )
-    with pytest.raises(PHXConnectionError):
-        await errored.run_forever()
+    failed = _SupervisorHarness()
+    failed._supervisor_task = asyncio.create_task(fail())
+    with pytest.raises(RuntimeError, match="supervisor failed"):
+        await failed.run_forever(install_signal_handlers=install_signal_handlers)
 
 
 @pytest.mark.asyncio
@@ -929,23 +889,17 @@ async def test_supervisor_on_reconnect_callback_fires_on_generation_gt_1(
     harness = _SupervisorHarness()
 
     reconnect_count = 0
-    connect_count = 0
 
     async def on_reconnect() -> None:
         nonlocal reconnect_count
         reconnect_count += 1
+        harness._shutdown_event.set()
 
     harness._on_reconnect = on_reconnect
 
-    async def connect_and_shutdown(_: str) -> ClientConnection:
-        nonlocal connect_count
-        connect_count += 1
-        if connect_count >= 2:
-            harness._shutdown_event.set()
-        return cast(ClientConnection, _FakeSocket())
-
     monkeypatch.setattr(
-        "phoenix_channels_python_client.supervisor.connect", connect_and_shutdown
+        "phoenix_channels_python_client.supervisor.connect",
+        lambda _: asyncio.sleep(0, result=cast(ClientConnection, _FakeSocket())),
     )
     harness._wait_for_shutdown_or_timeout = lambda _: asyncio.sleep(0)  # type: ignore[method-assign,assignment]
 
@@ -1136,3 +1090,27 @@ async def test_forced_close_bypasses_disconnect_classification(
 
     assert harness.wait_delays == [0.001]
     assert harness._forced_close_pending is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_and_wait_propagates_callers_cancellation() -> None:
+    release = asyncio.Event()
+
+    async def slow_to_unwind() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await release.wait()
+
+    target = asyncio.create_task(slow_to_unwind())
+    await asyncio.sleep(0)
+    caller = asyncio.create_task(cancel_and_wait(target))
+    await asyncio.sleep(0)
+
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(caller, ASYNC_TIMEOUT_S)
+
+    release.set()
+    await asyncio.wait({target}, timeout=ASYNC_TIMEOUT_S)
+    assert target.cancelled()

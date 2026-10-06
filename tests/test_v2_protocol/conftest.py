@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator, Mapping
 from urllib.parse import parse_qs, urlparse
 
 import pytest_asyncio
 from websockets.asyncio.server import Server, ServerConnection, serve
+from websockets.http11 import Request
 
 
 class FakePhoenixServer:
@@ -33,6 +35,10 @@ class FakePhoenixServer:
         self.duplicate_close_code = 1013
         self.duplicate_close_reason = "duplicate session"
         self.connection_attempts_by_path: dict[str, int] = {}
+        # Clear the gate to hold new opening handshakes until it is set again.
+        self.handshake_gate = asyncio.Event()
+        self.handshake_gate.set()
+        self.handshake_pending = asyncio.Event()
 
     def is_valid_topic(self, topic: str) -> bool:
         """Check if a topic is valid for subscription."""
@@ -53,6 +59,13 @@ class FakePhoenixServer:
         if not values:
             return ""
         return values[0]
+
+    async def _hold_handshake(
+        self, connection: ServerConnection, request: Request
+    ) -> None:
+        if not self.handshake_gate.is_set():
+            self.handshake_pending.set()
+            await self.handshake_gate.wait()
 
     async def handler(self, websocket: ServerConnection) -> None:
         """Handle WebSocket connections and messages."""
@@ -220,10 +233,14 @@ class FakePhoenixServer:
 
     async def start(self) -> None:
         """Start the fake Phoenix server."""
-        self.server = await serve(self.handler, self.host, self.port)
+        self.server = await serve(
+            self.handler, self.host, self.port, process_request=self._hold_handshake
+        )
 
     async def stop(self) -> None:
         """Stop the fake Phoenix server."""
+        # Closing waits for every handshake, including ones held at the gate.
+        self.handshake_gate.set()
         if self.server:
             self.server.close()
             await self.server.wait_closed()

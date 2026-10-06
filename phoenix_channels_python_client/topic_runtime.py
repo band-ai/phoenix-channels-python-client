@@ -4,7 +4,6 @@ import asyncio
 import logging
 from asyncio import Queue
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
 from typing import Any
 
 from websockets import ClientConnection
@@ -24,7 +23,7 @@ from phoenix_channels_python_client.topic_subscription import (
     TopicProcessingState,
     TopicSubscription,
 )
-from phoenix_channels_python_client.utils import make_message
+from phoenix_channels_python_client.utils import cancel_and_wait, make_message
 
 
 class TopicRuntimeMixin:
@@ -274,9 +273,7 @@ class TopicRuntimeMixin:
 
         task = topic_subscription.process_topic_messages_task
         if task and not task.done() and asyncio.current_task() is not task:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+            await cancel_and_wait(task)
 
         self.logger.info("Unregistered topic %s", topic_name)
 
@@ -501,14 +498,10 @@ class TopicRuntimeMixin:
                         "Callback for topic %s did not finish before reconnect; cancelling",
                         topic_name,
                     )
-                    callback_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await callback_task
+                    await cancel_and_wait(callback_task)
 
             if previous_task and not previous_task.done():
-                previous_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await previous_task
+                await cancel_and_wait(previous_task)
 
             topic_subscription.conn_generation = generation
             topic_subscription.join_ref = self._generate_ref()

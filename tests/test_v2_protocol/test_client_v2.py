@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
 
 import pytest
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
@@ -11,33 +10,10 @@ from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
+from ..conftest import wait_for_condition
 from .conftest import FakePhoenixServer as FakePhoenixServerV2
 
 logger = logging.getLogger(__name__)
-
-
-async def wait_for_condition(
-    condition: Callable[[], bool],
-    timeout: float = 1.0,
-    interval: float = 0.05,
-) -> bool:
-    """
-    Poll for a condition to become true, with timeout.
-
-    Args:
-        condition: A callable that returns True when the condition is met.
-        timeout: Maximum time to wait in seconds.
-        interval: Time between polls in seconds.
-
-    Returns:
-        True if condition was met, False if timeout occurred.
-    """
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        if condition():
-            return True
-        await asyncio.sleep(interval)
-    return False
 
 
 @pytest.mark.asyncio
@@ -835,8 +811,10 @@ async def test_full_reconnection_flow(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("install_signal_handlers", [True, False])
 async def test_rapid_disconnect_suppression_stops_reconnect_attempts(
     phoenix_server: FakePhoenixServerV2,
+    install_signal_handlers: bool,
 ):
     async def test_callback(_: ChannelMessage):
         pass
@@ -876,7 +854,7 @@ async def test_rapid_disconnect_suppression_stops_reconnect_attempts(
     with pytest.raises(PHXConnectionError):
         async with client:
             await client.subscribe_to_topic("test-topic", test_callback)
-            await client.run_forever()
+            await client.run_forever(install_signal_handlers=install_signal_handlers)
 
 
 # ---------------------------------------------------------------------------

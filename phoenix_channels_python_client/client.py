@@ -5,6 +5,7 @@ import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
 from types import TracebackType
+from typing import cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from websockets import ClientConnection
@@ -25,6 +26,7 @@ from phoenix_channels_python_client.reconnect_controller import ReconnectControl
 from phoenix_channels_python_client.supervisor import SupervisorMixin
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
+from phoenix_channels_python_client.utils import cancel_and_wait
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +147,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._connected_event = asyncio.Event()
         self._conn_generation = 0
         self._supervisor_task: asyncio.Task[None] | None = None
+        self._shutdown_task: asyncio.Task[None] | None = None
         self._message_routing_task: asyncio.Task[None] | None = None
         self._initial_connection_future: asyncio.Future[None] | None = None
         self._rapid_disconnects: deque[float] = deque()
@@ -157,13 +160,17 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._on_heartbeat_ack = on_heartbeat_ack
         self._forced_close_pending = False
 
+    @property
+    def _shutdown_in_progress(self) -> bool:
+        return self._shutdown_task is not None and not self._shutdown_task.done()
+
     @staticmethod
     def reconnect_policy_is_invalid(policy: ReconnectPolicy) -> bool:
         return reconnect_policy_is_invalid(policy)
 
     async def __aenter__(self) -> PHXChannelsClient:
         self.logger.debug("Entering PHXChannelsClient context")
-        if self._state != ClientState.CLOSED:
+        if self._state != ClientState.CLOSED or self._shutdown_in_progress:
             raise PHXConnectionError("Client is already running")
 
         self._shutdown_event.clear()
@@ -196,13 +203,19 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self,
         reason: str,
     ) -> None:
-        if (
-            self._state == ClientState.CLOSED
-            and not self._topic_subscriptions
-            and self.connection is None
-        ):
-            return
+        if not self._shutdown_in_progress:
+            if (
+                self._state == ClientState.CLOSED
+                and not self._topic_subscriptions
+                and self.connection is None
+            ):
+                return
+            self._shutdown_task = asyncio.create_task(self._shutdown(reason))
+        # Set above or still in progress. Every caller waits for the same
+        # shutdown, and one caller's cancellation never aborts it.
+        await asyncio.shield(cast(asyncio.Task[None], self._shutdown_task))
 
+    async def _shutdown(self, reason: str) -> None:
         self.logger.info("Event loop shutting down! reason=%s", reason)
 
         if self._state not in (ClientState.SHUTTING_DOWN, ClientState.CLOSED):
@@ -226,12 +239,12 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
                         result,
                     )
 
-        if self._supervisor_task and not self._supervisor_task.done():
-            self._supervisor_task.cancel()
-            try:
-                await self._supervisor_task
-            except asyncio.CancelledError:
-                self.logger.debug("Supervisor task cancelled during shutdown")
+        supervisor = self._supervisor_task
+        if supervisor and not supervisor.done():
+            await cancel_and_wait(supervisor)
+            if not supervisor.cancelled() and (error := supervisor.exception()):
+                # Otherwise only run_forever() would ever report it.
+                self.logger.error("Supervisor failed", exc_info=error)
 
         await self._cleanup_connection()
         self._connected_event.clear()

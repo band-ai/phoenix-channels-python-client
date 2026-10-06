@@ -68,11 +68,17 @@ async def main():
         await client.subscribe_to_topic("room:lobby", handle_message)
         
         # Use built-in convenience method to keep connection alive
-        await client.run_forever()  # Handles Ctrl+C automatically
+        # Shuts down on Ctrl+C or SIGTERM, then restores the previous handlers
+        await client.run_forever()
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+If your application owns its process signals (a service, desktop app or test
+runner), call `client.run_forever(install_signal_handlers=False)` and schedule
+`client.shutdown(...)` from your own handler, for example with
+`asyncio.create_task`; `run_forever()` then returns normally.
 
 ## Phoenix System Events
 
