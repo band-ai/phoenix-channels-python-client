@@ -74,6 +74,7 @@ class FakePhoenixServer:
         if not self.handshake_gate.is_set():
             self.handshake_pending.set()
             await self.handshake_gate.wait()
+            self.handshake_pending.clear()
 
     async def handler(self, websocket: ServerConnection) -> None:
         """Handle WebSocket connections and messages."""

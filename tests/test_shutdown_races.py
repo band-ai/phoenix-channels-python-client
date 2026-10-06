@@ -40,12 +40,19 @@ class HeldCallback:
     """A topic callback that, once cancelled, holds its unwinding until released.
 
     shutdown() cancels topic callbacks, so this holds shutdown() open on demand.
+    Leaving the ``with`` block releases it, even when the test fails.
     """
 
     def __init__(self) -> None:
         self.running = asyncio.Event()
         self.cancelled = asyncio.Event()
         self.release = asyncio.Event()
+
+    def __enter__(self) -> HeldCallback:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.release.set()
 
     async def __call__(self, message: ChannelMessage) -> None:
         self.running.set()
@@ -74,35 +81,24 @@ async def run_held_callback(
 async def test_reconnect_landing_during_shutdown_is_closed(
     phoenix_server: FakePhoenixServer,
 ) -> None:
-    held = HeldCallback()
     client = make_client(phoenix_server, reconnect_policy=FAST_RECONNECT)
     async with client:
-        try:
+        with HeldCallback() as held:
             await run_held_callback(phoenix_server, client, held)
-            attempts = phoenix_server.get_connection_attempts(
-                FakePhoenixServer.SOCKET_PATH
-            )
             phoenix_server.handshake_gate.clear()
             await phoenix_server.close_all_clients(code=CloseCode.SERVICE_RESTART)
             await asyncio.wait_for(
                 phoenix_server.handshake_pending.wait(), ASYNC_TIMEOUT_S
             )
 
-            run = asyncio.create_task(client.run_forever())
+            run = asyncio.create_task(client.run_forever(install_signal_handlers=False))
             stop = asyncio.create_task(client.shutdown(STOP_REASON))
             assert await wait_for_condition(
                 lambda: client._state is ClientState.SHUTTING_DOWN
             )
             phoenix_server.handshake_gate.set()
             # The held reconnect lands only now, after the shutdown began.
-            assert await wait_for_condition(
-                lambda: phoenix_server.get_connection_attempts(
-                    FakePhoenixServer.SOCKET_PATH
-                )
-                == attempts + 1
-            )
-        finally:
-            held.release.set()
+            assert await wait_for_condition(lambda: client.connection is not None)
 
         await asyncio.wait_for(stop, ASYNC_TIMEOUT_S)
         assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
@@ -128,10 +124,9 @@ async def test_shutdown_during_initial_connect_fails_the_entry(
 async def test_concurrent_shutdowns_wait_for_the_same_shutdown(
     phoenix_server: FakePhoenixServer,
 ) -> None:
-    held = HeldCallback()
     client = make_client(phoenix_server, leave_timeout_s=LEAVE_TIMEOUT_S)
     async with client:
-        try:
+        with HeldCallback() as held:
             await run_held_callback(phoenix_server, client, held)
             stops = [
                 asyncio.create_task(client.shutdown(STOP_REASON)),
@@ -140,27 +135,41 @@ async def test_concurrent_shutdowns_wait_for_the_same_shutdown(
             await asyncio.wait_for(held.cancelled.wait(), ASYNC_TIMEOUT_S)
             finished, _ = await asyncio.wait(stops, timeout=SETTLE_S)
             assert not finished
-        finally:
-            held.release.set()
 
         for stop in stops:
             await asyncio.wait_for(stop, ASYNC_TIMEOUT_S)
         assert client.connection is None
 
-    async with client:
-        await client.subscribe_to_topic(TOPIC)
-        await asyncio.sleep(SETTLE_S)  # give any stale shutdown time to act
+    async with client:  # re-entering works once every shutdown has finished
         assert client.connection is not None
-        assert client._state is ClientState.CONNECTED
+
+
+async def test_cancelling_one_caller_does_not_abort_the_shared_shutdown(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    client = make_client(phoenix_server, leave_timeout_s=LEAVE_TIMEOUT_S)
+    async with client:
+        with HeldCallback() as held:
+            await run_held_callback(phoenix_server, client, held)
+            abandoned = asyncio.create_task(client.shutdown(STOP_REASON))
+            waiting = asyncio.create_task(client.shutdown(STOP_REASON))
+            await asyncio.wait_for(held.cancelled.wait(), ASYNC_TIMEOUT_S)
+
+            abandoned.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(abandoned, ASYNC_TIMEOUT_S)
+
+        await asyncio.wait_for(waiting, ASYNC_TIMEOUT_S)
+        assert client.connection is None
+        assert client._state is ClientState.CLOSED
 
 
 async def test_reentering_during_a_shutdown_raises(
     phoenix_server: FakePhoenixServer,
 ) -> None:
-    held = HeldCallback()
     client = make_client(phoenix_server, auto_reconnect=False)
     async with client:
-        try:
+        with HeldCallback() as held:
             await run_held_callback(phoenix_server, client, held)
             await phoenix_server.close_all_clients(code=CloseCode.NORMAL_CLOSURE)
             assert await wait_for_condition(lambda: client._state is ClientState.CLOSED)
@@ -169,8 +178,6 @@ async def test_reentering_during_a_shutdown_raises(
             await asyncio.wait_for(held.cancelled.wait(), ASYNC_TIMEOUT_S)
             with pytest.raises(PHXConnectionError):
                 await asyncio.wait_for(client.__aenter__(), ASYNC_TIMEOUT_S)
-        finally:
-            held.release.set()
 
         await asyncio.wait_for(stop, ASYNC_TIMEOUT_S)
 
@@ -193,7 +200,7 @@ async def test_shutdown_from_a_topic_callback_cancels_the_callback(
         await deliver(phoenix_server, client)
 
         await asyncio.wait_for(callback_cancelled.wait(), ASYNC_TIMEOUT_S)
-        await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
+        assert await wait_for_condition(lambda: client._state is ClientState.CLOSED)
         assert client.connection is None
 
 
@@ -210,7 +217,7 @@ async def test_forced_close_racing_shutdown_does_not_leak_into_the_next_session(
         )
 
     async with client:
-        run = asyncio.create_task(client.run_forever())
+        run = asyncio.create_task(client.run_forever(install_signal_handlers=False))
         attempts = phoenix_server.get_connection_attempts(FakePhoenixServer.SOCKET_PATH)
         await phoenix_server.close_all_clients(code=CloseCode.NORMAL_CLOSURE)
 

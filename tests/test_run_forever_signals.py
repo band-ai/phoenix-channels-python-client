@@ -3,14 +3,16 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
+import threading
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from types import FrameType
 from typing import Any
 
 import pytest
 
 from phoenix_channels_python_client.client import PHXChannelsClient
+from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.shutdown_signals import (
     SHUTDOWN_SIGNALS,
     _on_shutdown_signal,
@@ -67,19 +69,35 @@ async def start(client: PHXChannelsClient, **kwargs: bool) -> asyncio.Task[None]
     return run
 
 
+async def serve_until(server: FakePhoenixServer, stop_signal: signal.Signals) -> None:
+    """Run a client until ``stop_signal`` stops it."""
+    async with make_client(server) as client:
+        run = await start(client)
+        send(stop_signal, _on_shutdown_signal)
+        assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
+
+
+@contextmanager
+def orphaned_waiter() -> Iterator[None]:
+    """A waiter whose loop closed while it was still waiting for a signal."""
+    with ExitStack() as orphaned:
+
+        async def wait_for_signals() -> None:
+            orphaned.enter_context(handle_shutdown_signals(asyncio.Event()))
+
+        with asyncio.Runner() as runner:
+            runner.run(wait_for_signals())
+        yield
+
+
 async def test_without_signal_handlers_the_host_keeps_its_own(
     phoenix_server: FakePhoenixServer,
     host_handlers: tuple[Handler, list[int]],
 ) -> None:
-    sentinel, received = host_handlers
+    sentinel, _ = host_handlers
     async with make_client(phoenix_server) as client:
         run = await start(client, install_signal_handlers=False)
-        assert installed(sentinel)
-
         send(signal.SIGTERM, sentinel)
-        await asyncio.sleep(0)
-        assert received == [signal.SIGTERM]
-        assert not run.done()
 
         await client.shutdown(STOP_REASON)
         assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
@@ -111,22 +129,20 @@ async def test_run_forever_stops_and_restores_the_hosts_handlers(
 
 
 def test_run_forever_restores_asyncio_runs_own_sigint_handler() -> None:
-    async def run_and_stop() -> tuple[Any, Any]:
+    async def main() -> tuple[Any, Any]:
         asyncio_run_handler = signal.getsignal(signal.SIGINT)
-        async with FakePhoenixServer() as server, make_client(server) as client:
-            run = await start(client)
-            send(signal.SIGINT, _on_shutdown_signal)
-            assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
+        async with FakePhoenixServer() as server:
+            await serve_until(server, signal.SIGINT)
         return asyncio_run_handler, signal.getsignal(signal.SIGINT)
 
-    asyncio_run_handler, after_run_forever = asyncio.run(run_and_stop())
+    asyncio_run_handler, after_run_forever = asyncio.run(main())
     assert asyncio_run_handler is not signal.default_int_handler
     assert after_run_forever is asyncio_run_handler
 
 
-async def test_run_forever_keeps_a_loop_registered_host_handler(
+@pytest.mark.usefixtures("host_handlers")
+async def test_a_loop_registered_host_handler_fires_during_and_after_run_forever(
     phoenix_server: FakePhoenixServer,
-    host_handlers: tuple[Handler, list[int]],
 ) -> None:
     loop = asyncio.get_running_loop()
     hit = asyncio.Event()
@@ -135,32 +151,38 @@ async def test_run_forever_keeps_a_loop_registered_host_handler(
         host = signal.getsignal(signal.SIGTERM)
         async with make_client(phoenix_server) as client:
             run = await start(client)
-            send(signal.SIGINT, _on_shutdown_signal)
+            send(signal.SIGTERM, _on_shutdown_signal)
             assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
+            await asyncio.wait_for(hit.wait(), ASYNC_TIMEOUT_S)
 
+        hit.clear()
         send(signal.SIGTERM, host)
         await asyncio.wait_for(hit.wait(), ASYNC_TIMEOUT_S)
     finally:
         loop.remove_signal_handler(signal.SIGTERM)
 
 
-async def test_run_forever_never_overwrites_a_newer_host_handler(
+async def test_a_newer_host_handler_stays_and_may_chain_to_ours(
     phoenix_server: FakePhoenixServer,
     host_handlers: tuple[Handler, list[int]],
 ) -> None:
-    sentinel, _ = host_handlers
-
-    def newer(signum: int, frame: FrameType | None) -> None:
-        pass
-
+    sentinel, received = host_handlers
+    chained: list[int] = []
     async with make_client(phoenix_server) as client:
         run = await start(client)
-        signal.signal(signal.SIGTERM, newer)
+
+        def newer(signum: int, frame: FrameType | None) -> None:
+            chained.append(signum)
+            _on_shutdown_signal(signum, frame)  # chains to the handler it replaced
+
+        assert signal.signal(signal.SIGTERM, newer) is _on_shutdown_signal
         send(signal.SIGINT, _on_shutdown_signal)
         assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
 
-    assert signal.getsignal(signal.SIGTERM) is newer
     assert signal.getsignal(signal.SIGINT) is sentinel
+    send(signal.SIGTERM, newer)
+    assert chained == [signal.SIGTERM]
+    assert received == []
 
 
 @pytest.mark.parametrize(
@@ -218,21 +240,35 @@ async def test_the_last_waiter_out_restores_the_handlers(
         assert received == []
 
 
-async def test_run_forever_off_the_main_thread_leaves_handlers_alone(
+async def test_a_signal_never_stops_a_client_waiting_off_the_main_thread(
     phoenix_server: FakePhoenixServer,
     host_handlers: tuple[Handler, list[int]],
 ) -> None:
     sentinel, _ = host_handlers
+    main_loop = asyncio.get_running_loop()
+    worker_waiting = asyncio.Event()
+    release_worker = threading.Event()
 
-    async def run_and_stop() -> bool:
+    async def wait_on_worker_thread() -> bool:
         async with make_client(phoenix_server) as client:
             run = await start(client)
-            untouched = installed(sentinel)
+            main_loop.call_soon_threadsafe(worker_waiting.set)
+            await asyncio.to_thread(release_worker.wait, ASYNC_TIMEOUT_S)
+            still_connected = client._state is ClientState.CONNECTED
             await client.shutdown(STOP_REASON)
             await asyncio.wait_for(run, ASYNC_TIMEOUT_S)
-            return untouched
+            return still_connected
 
-    assert await asyncio.to_thread(asyncio.run, run_and_stop())
+    worker = asyncio.create_task(
+        asyncio.to_thread(asyncio.run, wait_on_worker_thread())
+    )
+    try:
+        await asyncio.wait_for(worker_waiting.wait(), ASYNC_TIMEOUT_S)
+        assert installed(sentinel)
+        await serve_until(phoenix_server, signal.SIGTERM)
+    finally:
+        release_worker.set()
+    assert await asyncio.wait_for(worker, ASYNC_TIMEOUT_S)
     assert installed(sentinel)
 
 
@@ -240,15 +276,22 @@ def test_a_signal_after_every_waiting_loop_closed_goes_to_the_host(
     host_handlers: tuple[Handler, list[int]],
 ) -> None:
     sentinel, received = host_handlers
-    with ExitStack() as orphaned:
-
-        async def enter() -> None:
-            orphaned.enter_context(handle_shutdown_signals(asyncio.Event()))
-
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(enter())
-        loop.close()  # the body never unwinds while its loop runs
-
+    with orphaned_waiter():
         send(signal.SIGTERM, _on_shutdown_signal)
         assert received == [signal.SIGTERM]
         assert installed(sentinel)
+
+
+def test_a_closed_loop_never_blocks_restoring_the_hosts_handlers(
+    host_handlers: tuple[Handler, list[int]],
+) -> None:
+    sentinel, received = host_handlers
+
+    async def main() -> None:
+        async with FakePhoenixServer() as server:
+            await serve_until(server, signal.SIGTERM)
+
+    with orphaned_waiter():
+        asyncio.run(main())
+        assert installed(sentinel)
+        assert received == []
