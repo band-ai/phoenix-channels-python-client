@@ -13,6 +13,8 @@ jobs:
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # Backstop for a hung async test; the suite takes well under a minute.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
