@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 import pytest
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
@@ -10,13 +11,14 @@ from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from tests.conftest import wait_for_condition
+from websockets.frames import CloseCode
+
+from tests.conftest import API_KEY, FAST_RECONNECT, wait_for_condition
 from tests.test_v2_protocol.conftest import FakePhoenixServer as FakePhoenixServerV2
 
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.asyncio
 async def test_subscribe_to_topic_succeeds_when_subscribing_to_valid_topic(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -42,7 +44,6 @@ async def test_subscribe_to_topic_succeeds_when_subscribing_to_valid_topic(
         assert not topic_subscription.subscription_ready.exception()
 
 
-@pytest.mark.asyncio
 async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_unmatched_topic(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -61,7 +62,6 @@ async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_unmat
         assert "unmatched topic" in str(exc_info.value).lower()
 
 
-@pytest.mark.asyncio
 async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_already_subscribed_topic(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -83,7 +83,6 @@ async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_alrea
         assert str(exc_info.value) == expected_message
 
 
-@pytest.mark.asyncio
 async def test_unsubscribe_from_topic_succeeds_when_unsubscribing_from_subscribed_topic(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -107,7 +106,6 @@ async def test_unsubscribe_from_topic_succeeds_when_unsubscribing_from_subscribe
         assert "test-topic" not in subscriptions
 
 
-@pytest.mark.asyncio
 async def test_callback_receives_message_when_server_sends_message_to_subscribed_topic(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -152,7 +150,6 @@ async def test_callback_receives_message_when_server_sends_message_to_subscribed
         assert message.payload == test_payload
 
 
-@pytest.mark.asyncio
 async def test_unsubscribe_from_topic_gracefully_allows_callback_to_finish_but_ignores_queued_events(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -206,8 +203,7 @@ async def test_unsubscribe_from_topic_gracefully_allows_callback_to_finish_but_i
             client.unsubscribe_from_topic("test-topic")
         )
 
-        # Give the unsubscribe task a moment to process and set leave_requested
-        await asyncio.sleep(0)
+        assert await wait_for_condition(topic_subscription.leave_requested.is_set)
 
         # 5. Assert that leave was requested, callback is not done, and topic is still in subscriptions
         assert topic_subscription.leave_requested.is_set()
@@ -227,7 +223,6 @@ async def test_unsubscribe_from_topic_gracefully_allows_callback_to_finish_but_i
         assert received_messages[0].payload["event_id"] == 0
 
 
-@pytest.mark.asyncio
 async def test_two_topics_with_different_callbacks(phoenix_server: FakePhoenixServerV2):
     """Test subscribing to two topics with different callbacks that have unique behavior."""
 
@@ -271,7 +266,6 @@ async def test_two_topics_with_different_callbacks(phoenix_server: FakePhoenixSe
         assert messages_b[0].payload == payload_b
 
 
-@pytest.mark.asyncio
 async def test_messages_are_handled_in_correct_order(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -311,7 +305,6 @@ async def test_messages_are_handled_in_correct_order(
         assert received_messages == [0, 1, 2, 3, 4]
 
 
-@pytest.mark.asyncio
 async def test_shutdown_unsubscribes_from_all_topics_and_cleans_up_resources(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -371,7 +364,6 @@ async def test_shutdown_unsubscribes_from_all_topics_and_cleans_up_resources(
         raise
 
 
-@pytest.mark.asyncio
 async def test_dynamic_event_handler_management_with_counter(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -431,7 +423,6 @@ async def test_dynamic_event_handler_management_with_counter(
         assert message_handler_count == 3  # Only message handler ran this time
 
 
-@pytest.mark.asyncio
 async def test_run_forever_exits_when_connection_closes(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -474,7 +465,6 @@ async def test_run_forever_exits_when_connection_closes(
     assert client.connection is None
 
 
-@pytest.mark.asyncio
 async def test_service_restart_close_triggers_reconnect_and_rejoin(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -523,7 +513,6 @@ async def test_service_restart_close_triggers_reconnect_and_rejoin(
         assert "test-topic" in client.get_current_subscriptions()
 
 
-@pytest.mark.asyncio
 async def test_auto_reconnect_can_be_disabled_for_service_restart_close(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -540,11 +529,9 @@ async def test_auto_reconnect_can_be_disabled_for_service_restart_close(
     async with client:
         await client.subscribe_to_topic("test-topic", test_callback)
         await phoenix_server.close_all_clients(code=1012, reason="service restart")
-        await asyncio.sleep(0.2)
-        assert client.connection is None
+        assert await wait_for_condition(lambda: client.connection is None)
 
 
-@pytest.mark.asyncio
 async def test_try_again_later_close_code_uses_cooldown_override(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -587,7 +574,6 @@ async def test_try_again_later_close_code_uses_cooldown_override(
         assert client._conn_generation == before
 
 
-@pytest.mark.asyncio
 async def test_reconnection_is_enabled_by_default(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -601,7 +587,6 @@ async def test_reconnection_is_enabled_by_default(
         assert client.auto_reconnect is True
 
 
-@pytest.mark.asyncio
 async def test_reconnection_can_be_disabled(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -616,7 +601,6 @@ async def test_reconnection_can_be_disabled(
         assert client.auto_reconnect is False
 
 
-@pytest.mark.asyncio
 async def test_subscription_callbacks_are_stored_for_reconnection(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -636,7 +620,6 @@ async def test_subscription_callbacks_are_stored_for_reconnection(
         assert subscription.async_callback == test_callback
 
 
-@pytest.mark.asyncio
 async def test_event_handlers_are_stored_for_reconnection(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -660,7 +643,6 @@ async def test_event_handlers_are_stored_for_reconnection(
         assert Event("custom_event") in handlers
 
 
-@pytest.mark.asyncio
 async def test_stored_callbacks_are_cleared_on_unsubscribe(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -682,7 +664,22 @@ async def test_stored_callbacks_are_cleared_on_unsubscribe(
         assert "test-topic" not in client.get_current_subscriptions()
 
 
-@pytest.mark.asyncio
+# Long enough for a local join reply, short enough to time out an unanswered one.
+REJOIN_TIMEOUT_S = 0.2
+
+
+def rejoin_settled(client: PHXChannelsClient) -> Callable[[], bool]:
+    """True once the topic's post-reconnect join has an outcome, or it is gone."""
+
+    def settled() -> bool:
+        topic = client.get_current_subscriptions().get(FakePhoenixServerV2.TOPIC)
+        return topic is None or (
+            topic.conn_generation > 1 and topic.current_join_ready.done()
+        )
+
+    return settled
+
+
 async def test_transient_rejoin_failure_keeps_subscription_registered(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -691,24 +688,43 @@ async def test_transient_rejoin_failure_keeps_subscription_registered(
 
     client = PHXChannelsClient(
         phoenix_server.url,
-        api_key="test_key",
-        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        api_key=API_KEY,
+        reconnect_policy=FAST_RECONNECT,
+        join_timeout_s=REJOIN_TIMEOUT_S,
     )
 
     async with client:
-        await client.subscribe_to_topic("test-topic", test_callback)
-        target_id = phoenix_server.get_client_id_for_path("/socket/websocket")
-        assert target_id is not None
-        phoenix_server.fail_join_targets.add((target_id + 1, "test-topic"))
+        await client.subscribe_to_topic(FakePhoenixServerV2.TOPIC, test_callback)
+        reconnected_id = max(phoenix_server.current_client_ids()) + 1
+        phoenix_server.unanswered_join_ids.add(reconnected_id)
 
-        await phoenix_server.close_all_clients(code=1012, reason="service restart")
-        await asyncio.sleep(0.2)
+        await phoenix_server.close_all_clients(code=CloseCode.SERVICE_RESTART)
 
-        # Topic remains registered even if one rejoin attempt fails.
-        assert "test-topic" in client.get_current_subscriptions()
+        assert await wait_for_condition(rejoin_settled(client))
+        assert FakePhoenixServerV2.TOPIC in client.get_current_subscriptions()
 
 
-@pytest.mark.asyncio
+async def test_rejected_rejoin_unregisters_the_topic(
+    phoenix_server: FakePhoenixServerV2,
+):
+    async def test_callback(_: ChannelMessage):
+        pass
+
+    client = PHXChannelsClient(
+        phoenix_server.url, api_key=API_KEY, reconnect_policy=FAST_RECONNECT
+    )
+
+    async with client:
+        await client.subscribe_to_topic(FakePhoenixServerV2.TOPIC, test_callback)
+        reconnected_id = max(phoenix_server.current_client_ids()) + 1
+        phoenix_server.fail_join_ids.add(reconnected_id)
+
+        await phoenix_server.close_all_clients(code=CloseCode.SERVICE_RESTART)
+
+        assert await wait_for_condition(rejoin_settled(client))
+        assert FakePhoenixServerV2.TOPIC not in client.get_current_subscriptions()
+
+
 async def test_shutdown_stops_reconnection_attempts(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -726,7 +742,6 @@ async def test_shutdown_stops_reconnection_attempts(
     assert client._shutdown_event.is_set() is True
 
 
-@pytest.mark.asyncio
 async def test_full_reconnection_flow(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -810,7 +825,6 @@ async def test_full_reconnection_flow(
         await client.shutdown("test cleanup")
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("install_signal_handlers", [True, False])
 async def test_rapid_disconnect_suppression_stops_reconnect_attempts(
     phoenix_server: FakePhoenixServerV2,
@@ -862,25 +876,26 @@ async def test_rapid_disconnect_suppression_stops_reconnect_attempts(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_heartbeat_is_sent_periodically(
     phoenix_server: FakePhoenixServerV2,
 ):
     """Test that the client sends heartbeat messages at the configured interval."""
+    acks = 0
+
+    def count_ack() -> None:
+        nonlocal acks
+        acks += 1
+
     async with PHXChannelsClient(
         phoenix_server.url,
         api_key="test_key",
         protocol_version=PhoenixChannelsProtocolVersion.V2,
         heartbeat_interval_s=0.1,
-    ) as client:
-        # Wait long enough for at least 2 heartbeats to be sent and acknowledged
-        await asyncio.sleep(0.35)
-        # If heartbeats are working, the pending ref should be cleared
-        # (server responds with phx_reply)
-        assert client._pending_heartbeat_ref is None
+        on_heartbeat_ack=count_ack,
+    ):
+        assert await wait_for_condition(lambda: acks >= 2)
 
 
-@pytest.mark.asyncio
 async def test_heartbeat_can_be_disabled(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -898,7 +913,6 @@ async def test_heartbeat_can_be_disabled(
         assert client._heartbeat_task is None
 
 
-@pytest.mark.asyncio
 async def test_heartbeat_task_is_cleaned_up_on_shutdown(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -911,15 +925,13 @@ async def test_heartbeat_task_is_cleaned_up_on_shutdown(
     )
 
     async with client:
-        await asyncio.sleep(0.15)
-        assert client._heartbeat_task is not None
+        assert await wait_for_condition(lambda: client._heartbeat_task is not None)
 
     # After context exit, heartbeat task should be cleaned up
     assert client._heartbeat_task is None
     assert client._pending_heartbeat_ref is None
 
 
-@pytest.mark.asyncio
 async def test_heartbeat_invalid_interval_raises_valueerror():
     """Test that a non-positive heartbeat interval raises ValueError."""
     with pytest.raises(ValueError, match="heartbeat_interval_s must be > 0"):
@@ -937,7 +949,6 @@ async def test_heartbeat_invalid_interval_raises_valueerror():
         )
 
 
-@pytest.mark.asyncio
 async def test_heartbeat_survives_reconnection(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -969,8 +980,7 @@ async def test_heartbeat_survives_reconnection(
     )
 
     async with client:
-        await asyncio.sleep(0.15)
-        assert client._heartbeat_task is not None
+        assert await wait_for_condition(lambda: client._heartbeat_task is not None)
 
         # Trigger reconnection
         await phoenix_server.close_all_clients(code=1012, reason="service restart")
@@ -983,15 +993,14 @@ async def test_heartbeat_survives_reconnection(
         )
         assert result, "Client did not reconnect after service restart"
 
-        # Heartbeat should be running again after reconnection
-        await asyncio.sleep(0.15)
-        assert client._heartbeat_task is not None
-        assert not client._heartbeat_task.done()
-        # Server is responding, so pending ref should be cleared
-        assert client._pending_heartbeat_ref is None
+        # Heartbeat runs again after reconnection and the server acknowledges it.
+        assert await wait_for_condition(
+            lambda: client._heartbeat_task is not None
+            and not client._heartbeat_task.done()
+            and client._pending_heartbeat_ref is None
+        )
 
 
-@pytest.mark.asyncio
 async def test_additional_headers_are_sent_on_the_ws_handshake(
     phoenix_server: FakePhoenixServerV2,
 ):

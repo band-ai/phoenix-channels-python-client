@@ -5,13 +5,14 @@ import asyncio
 import pytest
 from websockets.frames import CloseCode
 
-from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
+from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.phx_messages import ChannelMessage
 
 from tests.conftest import (
     ASYNC_TIMEOUT_S,
+    FAST_RECONNECT,
     STOP_REASON,
     FakePhoenixServer,
     make_client,
@@ -26,14 +27,6 @@ LEAVE_TIMEOUT_S = 0.05
 
 # Long enough for a shutdown that isn't held to finish against the local server.
 SETTLE_S = 0.2
-
-# Reconnect after a service restart without waiting on backoff.
-FAST_RECONNECT = ReconnectPolicy(
-    base_delay_s=0.01,
-    service_restart_min_delay_s=0.01,
-    service_restart_max_delay_s=0.01,
-    rapid_first_min_delay_s=0.0,
-)
 
 
 class HeldCallback:

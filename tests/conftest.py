@@ -4,12 +4,13 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from phoenix_channels_python_client.client import PHXChannelsClient
+from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
 from tests.test_v2_protocol.conftest import FakePhoenixServer, phoenix_server
 
 __all__ = [
     "API_KEY",
     "ASYNC_TIMEOUT_S",
+    "FAST_RECONNECT",
     "FakePhoenixServer",
     "make_client",
     "phoenix_server",
@@ -25,6 +26,14 @@ STOP_REASON = "test stop"
 # Upper bound for awaiting a task or event that should finish promptly; without
 # pytest-timeout, this turns a hang into a failure.
 ASYNC_TIMEOUT_S = 2.0
+
+# Reconnect after a disconnect without waiting on backoff.
+FAST_RECONNECT = ReconnectPolicy(
+    base_delay_s=0.01,
+    service_restart_min_delay_s=0.01,
+    service_restart_max_delay_s=0.01,
+    rapid_first_min_delay_s=0.0,
+)
 
 
 def make_client(server: FakePhoenixServer, **options: Any) -> PHXChannelsClient:

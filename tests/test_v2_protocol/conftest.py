@@ -39,6 +39,8 @@ class FakePhoenixServer:
         self.close_on_join_reason = "forced close on join"
         self.fail_join_ids: set[int] = set()
         self.fail_join_targets: set[tuple[int, str]] = set()
+        # Joins from these clients get no reply, so the client's join times out.
+        self.unanswered_join_ids: set[int] = set()
         self.enforce_single_connection_per_api_key = False
         self.duplicate_close_code = 1013
         self.duplicate_close_reason = "duplicate session"
@@ -142,6 +144,9 @@ class FakePhoenixServer:
             return
 
         if event == "phx_join":
+            if client_id in self.unanswered_join_ids:
+                return
+
             if client_id in self.fail_join_ids or (
                 client_id is not None and (client_id, topic) in self.fail_join_targets
             ):
