@@ -18,7 +18,12 @@ from phoenix_channels_python_client.client_types import (
     reconnect_policy_is_invalid,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from phoenix_channels_python_client.phx_messages import PHXEvent, UserEvent
+from phoenix_channels_python_client.phx_messages import (
+    PHOENIX_TOPIC,
+    ChannelMessage,
+    PHXEvent,
+    UserEvent,
+)
 from phoenix_channels_python_client.protocol_handler import (
     PHXProtocolHandler,
     PhoenixChannelsProtocolVersion,
@@ -29,6 +34,8 @@ from phoenix_channels_python_client.topic_subscription import TopicSubscription
 from phoenix_channels_python_client.utils import cancel_and_wait, make_message
 
 from .conftest import ASYNC_TIMEOUT_S
+
+HEARTBEAT_REF = "5"
 
 
 @dataclass
@@ -128,7 +135,14 @@ class _TopicRuntimeHarness(TopicRuntimeMixin):
 
 
 class _SupervisorHarness(SupervisorMixin):
-    def __init__(self) -> None:
+    # Starting state is passed in rather than assigned by the test, which would
+    # narrow its type for the rest of the test.
+    def __init__(
+        self,
+        *,
+        pending_heartbeat_ref: str | None = None,
+        forced_close_pending: bool = False,
+    ) -> None:
         self.logger = logging.getLogger(__name__)
         self.channel_socket_url = "ws://unit-test/socket"
         self.channel_socket_url_redacted = "ws://unit-test/socket?api_key=***"
@@ -150,12 +164,12 @@ class _SupervisorHarness(SupervisorMixin):
         self._terminal_error: Exception | None = None
         self._heartbeat_interval_s: float | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
-        self._pending_heartbeat_ref: str | None = None
+        self._pending_heartbeat_ref = pending_heartbeat_ref
         self._ref_counter = 0
         self._on_reconnect = None
         self._on_disconnect = None
         self._on_heartbeat_ack = None
-        self._forced_close_pending = False
+        self._forced_close_pending = forced_close_pending
 
         self.transition_history: list[ClientState] = []
         self.disconnect_uptimes: list[float] = []
@@ -937,10 +951,13 @@ async def test_supervisor_callback_exception_does_not_crash_loop(
     assert harness.connection is None
 
 
+def _heartbeat_reply(ref: str) -> ChannelMessage:
+    return make_message(topic=PHOENIX_TOPIC, event=PHXEvent.reply, payload={}, ref=ref)
+
+
 @pytest.mark.asyncio
 async def test_handle_heartbeat_response_fires_on_heartbeat_ack_callback() -> None:
-    harness = _SupervisorHarness()
-    harness._pending_heartbeat_ref = "5"
+    harness = _SupervisorHarness(pending_heartbeat_ref=HEARTBEAT_REF)
 
     ack_count = 0
 
@@ -950,9 +967,7 @@ async def test_handle_heartbeat_response_fires_on_heartbeat_ack_callback() -> No
 
     harness._on_heartbeat_ack = on_heartbeat_ack
 
-    harness._handle_heartbeat_response(
-        make_message(topic="phoenix", event=PHXEvent.reply, payload={}, ref="5")
-    )
+    harness._handle_heartbeat_response(_heartbeat_reply(HEARTBEAT_REF))
 
     assert ack_count == 1
     assert harness._pending_heartbeat_ref is None
@@ -960,8 +975,7 @@ async def test_handle_heartbeat_response_fires_on_heartbeat_ack_callback() -> No
 
 @pytest.mark.asyncio
 async def test_handle_heartbeat_response_ignores_mismatched_ref() -> None:
-    harness = _SupervisorHarness()
-    harness._pending_heartbeat_ref = "5"
+    harness = _SupervisorHarness(pending_heartbeat_ref=HEARTBEAT_REF)
 
     ack_count = 0
 
@@ -971,37 +985,31 @@ async def test_handle_heartbeat_response_ignores_mismatched_ref() -> None:
 
     harness._on_heartbeat_ack = on_heartbeat_ack
 
-    harness._handle_heartbeat_response(
-        make_message(topic="phoenix", event=PHXEvent.reply, payload={}, ref="not-5")
-    )
+    harness._handle_heartbeat_response(_heartbeat_reply(f"not-{HEARTBEAT_REF}"))
 
     assert ack_count == 0
-    assert harness._pending_heartbeat_ref == "5"
+    assert harness._pending_heartbeat_ref == HEARTBEAT_REF
 
 
 @pytest.mark.asyncio
 async def test_handle_heartbeat_response_callback_exception_does_not_propagate() -> (
     None
 ):
-    harness = _SupervisorHarness()
-    harness._pending_heartbeat_ref = "5"
+    harness = _SupervisorHarness(pending_heartbeat_ref=HEARTBEAT_REF)
 
     def bad_heartbeat_ack() -> None:
         raise ValueError("callback boom")
 
     harness._on_heartbeat_ack = bad_heartbeat_ack
 
-    harness._handle_heartbeat_response(
-        make_message(topic="phoenix", event=PHXEvent.reply, payload={}, ref="5")
-    )
+    harness._handle_heartbeat_response(_heartbeat_reply(HEARTBEAT_REF))
 
     assert harness._pending_heartbeat_ref is None
 
 
 @pytest.mark.asyncio
 async def test_handle_heartbeat_response_rejects_async_callback() -> None:
-    harness = _SupervisorHarness()
-    harness._pending_heartbeat_ref = "5"
+    harness = _SupervisorHarness(pending_heartbeat_ref=HEARTBEAT_REF)
 
     ran: list[bool] = []
 
@@ -1010,9 +1018,7 @@ async def test_handle_heartbeat_response_rejects_async_callback() -> None:
 
     harness._on_heartbeat_ack = async_on_heartbeat_ack  # type: ignore[assignment]
 
-    harness._handle_heartbeat_response(
-        make_message(topic="phoenix", event=PHXEvent.reply, payload={}, ref="5")
-    )
+    harness._handle_heartbeat_response(_heartbeat_reply(HEARTBEAT_REF))
 
     assert harness._pending_heartbeat_ref is None
     assert ran == []
@@ -1075,8 +1081,7 @@ async def test_disconnect_classification_applies_when_not_forced(
 async def test_forced_close_bypasses_disconnect_classification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    harness = _SupervisorHarness()
-    harness._forced_close_pending = True
+    harness = _SupervisorHarness(forced_close_pending=True)
     # What the real _classify_disconnect would decide for whatever code the
     # remote happened to echo back; the forced-close path must not consult it.
     harness.disconnect_decision = ReconnectDecision(should_reconnect=False)

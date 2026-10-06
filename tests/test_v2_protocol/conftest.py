@@ -11,6 +11,8 @@ from websockets.http11 import Request
 
 
 class FakePhoenixServer:
+    SOCKET_PATH = "/socket/websocket"
+
     def __init__(self, host: str = "localhost", port: int = 8765):
         self.host = host
         self.port = port
@@ -247,7 +249,7 @@ class FakePhoenixServer:
 
     @property
     def url(self) -> str:
-        return f"ws://{self.host}:{self.port}/socket/websocket"
+        return f"ws://{self.host}:{self.port}{self.SOCKET_PATH}"
 
 
 @pytest_asyncio.fixture

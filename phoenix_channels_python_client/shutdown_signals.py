@@ -16,7 +16,7 @@ import threading
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from types import FrameType
-from typing import Any
+from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +25,23 @@ SHUTDOWN_SIGNALS = (signal.SIGTERM, signal.SIGINT)
 # typeshed's signal._HANDLER is private.
 _Handler = Callable[[int, FrameType | None], Any] | int | None
 
-# Each waiting (loop, event) maps to the last signal it took, if any.
-_waiters: dict[tuple[asyncio.AbstractEventLoop, asyncio.Event], int | None] = {}
+
+class _Waiter(NamedTuple):
+    loop: asyncio.AbstractEventLoop
+    event: asyncio.Event
+
+    @property
+    def live(self) -> bool:
+        return not self.loop.is_closed()
+
+
+# Each waiter maps to the last signal it took, if any.
+_waiters: dict[_Waiter, int | None] = {}
 _previous: dict[int, _Handler] = {}
+
+
+def _on_main_thread() -> bool:
+    return threading.current_thread() is threading.main_thread()
 
 
 def _owned(sig: int) -> bool:
@@ -35,10 +49,10 @@ def _owned(sig: int) -> bool:
 
 
 def _on_shutdown_signal(signum: int, frame: FrameType | None) -> None:
-    live = [(loop, event) for loop, event in tuple(_waiters) if not loop.is_closed()]
-    for loop, event in live:
-        _waiters[(loop, event)] = signum
-        loop.call_soon_threadsafe(event.set)
+    live = [waiter for waiter in tuple(_waiters) if waiter.live]
+    for waiter in live:
+        _waiters[waiter] = signum
+        waiter.loop.call_soon_threadsafe(waiter.event.set)
     # Every waiting loop closed without unwinding: hand the signal back.
     if not live and signum in _previous:
         _restore()
@@ -63,6 +77,21 @@ def _restore() -> None:
             signal.signal(sig, _previous[sig])
 
 
+def _unregister(waiter: _Waiter) -> int | None:
+    """Drop ``waiter``, restoring the handlers if it was the last one.
+
+    Returns the last signal it took, if any.
+    """
+    received = _waiters.pop(waiter, None)
+    for orphan in [other for other in tuple(_waiters) if not other.live]:
+        _waiters.pop(orphan, None)  # a closed loop never blocks a restore
+    # GC may finalize an orphaned body off the main thread, where
+    # signal.signal raises.
+    if not _waiters and _on_main_thread():
+        _restore()
+    return received
+
+
 @contextmanager
 def handle_shutdown_signals(event: asyncio.Event) -> Generator[None, None, None]:
     """Set ``event`` on SIGTERM/SIGINT while inside.
@@ -70,11 +99,11 @@ def handle_shutdown_signals(event: asyncio.Event) -> Generator[None, None, None]
     A signal is consumed only if the body completes with ``event`` set, and the
     caller must then act on it. Any other signal taken is handed back on exit.
     """
-    if threading.current_thread() is not threading.main_thread():
+    if not _on_main_thread():
         logger.debug("Signal handlers not available off the main thread")
         yield
         return
-    waiter = (asyncio.get_running_loop(), event)
+    waiter = _Waiter(asyncio.get_running_loop(), event)
     consumed = False
     try:
         # Register before installing so a signal mid-install is never dropped.
@@ -84,12 +113,6 @@ def handle_shutdown_signals(event: asyncio.Event) -> Generator[None, None, None]
         yield
         consumed = event.is_set()
     finally:
-        received = _waiters.pop(waiter, None)
-        for orphan in [w for w in tuple(_waiters) if w[0].is_closed()]:
-            _waiters.pop(orphan, None)  # a closed loop never blocks a restore
-        # GC may finalize an orphaned body off the main thread, where
-        # signal.signal raises.
-        if not _waiters and threading.current_thread() is threading.main_thread():
-            _restore()
+        received = _unregister(waiter)
         if received is not None and not consumed and not _owned(received):
-            signal.raise_signal(received)
+            signal.raise_signal(received)  # nobody acted on it: hand it back

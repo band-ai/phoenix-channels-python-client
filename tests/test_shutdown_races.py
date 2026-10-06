@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
-from urllib.parse import urlparse
 
 import pytest
+from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
 from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.phx_messages import ChannelMessage
 
-from .conftest import ASYNC_TIMEOUT_S, FakePhoenixServer, wait_for_condition
+from .conftest import (
+    ASYNC_TIMEOUT_S,
+    FakePhoenixServer,
+    make_client,
+    wait_for_condition,
+)
 
 TOPIC = "test-topic"
 
@@ -51,32 +55,30 @@ class HeldCallback:
             raise
 
 
-def make_client(server: FakePhoenixServer, **options: Any) -> PHXChannelsClient:
-    return PHXChannelsClient(
-        server.url, api_key="test_key", leave_timeout_s=LEAVE_TIMEOUT_S, **options
-    )
+async def deliver(server: FakePhoenixServer, client: PHXChannelsClient) -> None:
+    """Send one event to the client's current join of ``TOPIC``."""
+    join_ref = client.get_current_subscriptions()[TOPIC].join_ref
+    await server.simulate_server_event(TOPIC, "event", {}, join_ref=join_ref)
 
 
-async def run_callback(
+async def run_held_callback(
     server: FakePhoenixServer, client: PHXChannelsClient, callback: HeldCallback
 ) -> None:
     await client.subscribe_to_topic(TOPIC, callback)
-    join_ref = client.get_current_subscriptions()[TOPIC].join_ref
-    await server.simulate_server_event(TOPIC, "hold", {}, join_ref=join_ref)
+    await deliver(server, client)
     await asyncio.wait_for(callback.running.wait(), ASYNC_TIMEOUT_S)
 
 
 async def test_reconnect_landing_during_shutdown_is_closed(
     phoenix_server: FakePhoenixServer,
 ) -> None:
-    path = urlparse(phoenix_server.url).path
     held = HeldCallback()
     client = make_client(phoenix_server, reconnect_policy=FAST_RECONNECT)
     async with client:
         try:
-            await run_callback(phoenix_server, client, held)
+            await run_held_callback(phoenix_server, client, held)
             phoenix_server.handshake_gate.clear()
-            await phoenix_server.close_all_clients(code=1012)
+            await phoenix_server.close_all_clients(code=CloseCode.SERVICE_RESTART)
             await asyncio.wait_for(
                 phoenix_server.handshake_pending.wait(), ASYNC_TIMEOUT_S
             )
@@ -88,7 +90,10 @@ async def test_reconnect_landing_during_shutdown_is_closed(
             )
             phoenix_server.handshake_gate.set()
             assert await wait_for_condition(
-                lambda: phoenix_server.get_connection_attempts(path) == 2
+                lambda: phoenix_server.get_connection_attempts(
+                    FakePhoenixServer.SOCKET_PATH
+                )
+                == 2
             )
         finally:
             held.release.set()
@@ -118,10 +123,10 @@ async def test_concurrent_shutdowns_wait_for_the_same_shutdown(
     phoenix_server: FakePhoenixServer,
 ) -> None:
     held = HeldCallback()
-    client = make_client(phoenix_server)
+    client = make_client(phoenix_server, leave_timeout_s=LEAVE_TIMEOUT_S)
     async with client:
         try:
-            await run_callback(phoenix_server, client, held)
+            await run_held_callback(phoenix_server, client, held)
             stops = [
                 asyncio.create_task(client.shutdown("first stop")),
                 asyncio.create_task(client.shutdown("second stop")),
@@ -151,8 +156,8 @@ async def test_reentering_during_a_shutdown_raises(
     client = make_client(phoenix_server, auto_reconnect=False)
     async with client:
         try:
-            await run_callback(phoenix_server, client, held)
-            await phoenix_server.close_all_clients(code=1000)
+            await run_held_callback(phoenix_server, client, held)
+            await phoenix_server.close_all_clients(code=CloseCode.NORMAL_CLOSURE)
             assert await wait_for_condition(lambda: client._state is ClientState.CLOSED)
 
             stop = asyncio.create_task(client.shutdown("host stop"))
@@ -177,11 +182,10 @@ async def test_shutdown_from_a_topic_callback_cancels_the_callback(
             callback_cancelled.set()
             raise
 
-    client = make_client(phoenix_server)
+    client = make_client(phoenix_server, leave_timeout_s=LEAVE_TIMEOUT_S)
     async with client:
         await client.subscribe_to_topic(TOPIC, stop_from_callback)
-        join_ref = client.get_current_subscriptions()[TOPIC].join_ref
-        await phoenix_server.simulate_server_event(TOPIC, "stop", {}, join_ref=join_ref)
+        await deliver(phoenix_server, client)
 
         await asyncio.wait_for(callback_cancelled.wait(), ASYNC_TIMEOUT_S)
         await asyncio.wait_for(client.shutdown("host stop"), ASYNC_TIMEOUT_S)
@@ -191,7 +195,6 @@ async def test_shutdown_from_a_topic_callback_cancels_the_callback(
 async def test_forced_close_racing_shutdown_does_not_leak_into_the_next_session(
     phoenix_server: FakePhoenixServer,
 ) -> None:
-    path = urlparse(phoenix_server.url).path
     client = make_client(phoenix_server)
     async with client:
         await asyncio.wait_for(
@@ -203,8 +206,11 @@ async def test_forced_close_racing_shutdown_does_not_leak_into_the_next_session(
 
     async with client:
         run = asyncio.create_task(client.run_forever())
-        attempts = phoenix_server.get_connection_attempts(path)
-        await phoenix_server.close_all_clients(code=1000)
+        attempts = phoenix_server.get_connection_attempts(FakePhoenixServer.SOCKET_PATH)
+        await phoenix_server.close_all_clients(code=CloseCode.NORMAL_CLOSURE)
 
         assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
-        assert phoenix_server.get_connection_attempts(path) == attempts
+        assert (
+            phoenix_server.get_connection_attempts(FakePhoenixServer.SOCKET_PATH)
+            == attempts
+        )

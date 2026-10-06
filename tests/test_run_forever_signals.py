@@ -17,7 +17,7 @@ from phoenix_channels_python_client.shutdown_signals import (
     handle_shutdown_signals,
 )
 
-from .conftest import ASYNC_TIMEOUT_S, FakePhoenixServer
+from .conftest import ASYNC_TIMEOUT_S, FakePhoenixServer, make_client
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="a raised SIGINT kills the Windows test process"
@@ -59,10 +59,6 @@ async def start(client: PHXChannelsClient, **kwargs: bool) -> asyncio.Task[None]
     run = asyncio.create_task(client.run_forever(**kwargs))
     await asyncio.sleep(0)  # handlers are installed before the first suspension
     return run
-
-
-def make_client(server: FakePhoenixServer) -> PHXChannelsClient:
-    return PHXChannelsClient(server.url, api_key="test_key")
 
 
 async def test_without_signal_handlers_the_host_keeps_its_own(
