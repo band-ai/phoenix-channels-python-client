@@ -88,10 +88,11 @@ returns `None`:
 
 ```python
 loop = asyncio.get_running_loop()
-loop.add_signal_handler(
-    signal.SIGTERM, lambda: asyncio.create_task(client.shutdown("SIGTERM"))
-)
-await client.run_forever(install_signal_handlers=False)
+async with asyncio.TaskGroup() as tasks:
+    loop.add_signal_handler(
+        signal.SIGTERM, lambda: tasks.create_task(client.shutdown("SIGTERM"))
+    )
+    await client.run_forever(install_signal_handlers=False)
 ```
 
 From a plain `signal.signal` handler or another thread, use
@@ -101,7 +102,8 @@ network activity. See [`examples/embedded_host_signals.py`](examples/embedded_ho
 
 With the default, handlers are installed only when `run_forever()` runs on the
 main thread; elsewhere it just waits. A handler you registered with
-`loop.add_signal_handler` for the same signal still fires.
+`loop.add_signal_handler` before calling `run_forever()` still fires for the
+same signal; one registered while it runs replaces the client's.
 
 ## Phoenix System Events
 
@@ -275,7 +277,7 @@ Exceptions raised in callbacks are logged, not raised.
 ## Connection Lifecycle and Errors
 
 - `async with` waits for the first connection. With `auto_reconnect=True` it keeps retrying; with `auto_reconnect=False` a failed first connection raises `PHXConnectionError`.
-- `run_forever()` returns `None` after `shutdown()`, a signal, or a close that doesn't reconnect. It raises `PHXConnectionError` on a terminal close, after repeated rapid disconnects, or when called outside `async with`.
+- `run_forever()` returns `None` after `shutdown()`, a signal, or a close that doesn't reconnect. It raises `PHXConnectionError` on a terminal close, after repeated rapid disconnects, or when the client has never entered `async with`.
 - `subscribe_to_topic()` raises `PHXTopicError` on a rejected join, a join timeout or a duplicate subscription.
 - `await client.close_connection(reason)` force-closes the current connection; the client then reconnects if `auto_reconnect` is on.
 - Exceptions live in `phoenix_channels_python_client.exceptions`.

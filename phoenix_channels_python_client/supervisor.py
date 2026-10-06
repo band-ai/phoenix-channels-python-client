@@ -405,10 +405,11 @@ class SupervisorMixin:
         """Wait until the client stops, then raise why if it failed.
 
         With ``install_signal_handlers`` (the default), SIGTERM and SIGINT shut
-        the client down. The handlers in place before the call are restored as
-        soon as it stops waiting, so a second signal during the shutdown reaches
-        them. A host handler registered with ``loop.add_signal_handler`` for the
-        same signal also fires. Hosts that own their process signals pass
+        the client down. The handlers in place before the call are restored once
+        the last waiting ``run_forever()`` stops waiting, so a second signal
+        during the shutdown reaches them. A host handler registered with
+        ``loop.add_signal_handler`` before the call also fires; one registered
+        during it replaces ours. Hosts that own their process signals pass
         ``False`` and schedule ``shutdown()`` on the client's loop from their
         own handler.
         """

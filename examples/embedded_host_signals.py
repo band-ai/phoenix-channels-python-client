@@ -33,13 +33,16 @@ logger = logging.getLogger(__name__)
 @contextmanager
 def host_signal_handlers(on_signal: Callable[[], object]) -> Iterator[None]:
     loop = asyncio.get_running_loop()
+    previous = {sig: signal.getsignal(sig) for sig in HOST_SIGNALS}
     for sig in HOST_SIGNALS:
         loop.add_signal_handler(sig, on_signal)
     try:
         yield
     finally:
-        for sig in HOST_SIGNALS:
+        for sig, handler in previous.items():
             loop.remove_signal_handler(sig)
+            # remove_signal_handler resets to SIG_DFL, not asyncio.run's handler.
+            signal.signal(sig, handler)
 
 
 async def handle_message(message: ChannelMessage) -> None:
