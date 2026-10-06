@@ -858,13 +858,16 @@ async def test_supervisor_run_forever_paths(install_signal_handlers: bool) -> No
     with pytest.raises(PHXConnectionError):
         await harness.run_forever(install_signal_handlers=install_signal_handlers)
 
+    failure = RuntimeError()
+
     async def fail() -> None:
-        raise RuntimeError("supervisor failed")
+        raise failure
 
     failed = _SupervisorHarness()
     failed._supervisor_task = asyncio.create_task(fail())
-    with pytest.raises(RuntimeError, match="supervisor failed"):
+    with pytest.raises(RuntimeError) as raised:
         await failed.run_forever(install_signal_handlers=install_signal_handlers)
+    assert raised.value is failure
 
 
 @pytest.mark.asyncio

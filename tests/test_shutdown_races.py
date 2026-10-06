@@ -12,12 +12,14 @@ from phoenix_channels_python_client.phx_messages import ChannelMessage
 
 from tests.conftest import (
     ASYNC_TIMEOUT_S,
+    STOP_REASON,
     FakePhoenixServer,
     make_client,
     wait_for_condition,
 )
 
-TOPIC = "test-topic"
+TOPIC = FakePhoenixServer.TOPIC
+EVENT = "test_event"
 
 # A held callback never processes the leave reply, so don't wait long for it.
 LEAVE_TIMEOUT_S = 0.05
@@ -58,7 +60,7 @@ class HeldCallback:
 async def deliver(server: FakePhoenixServer, client: PHXChannelsClient) -> None:
     """Send one event to the client's current join of ``TOPIC``."""
     join_ref = client.get_current_subscriptions()[TOPIC].join_ref
-    await server.simulate_server_event(TOPIC, "event", {}, join_ref=join_ref)
+    await server.simulate_server_event(TOPIC, EVENT, {}, join_ref=join_ref)
 
 
 async def run_held_callback(
@@ -77,6 +79,9 @@ async def test_reconnect_landing_during_shutdown_is_closed(
     async with client:
         try:
             await run_held_callback(phoenix_server, client, held)
+            attempts = phoenix_server.get_connection_attempts(
+                FakePhoenixServer.SOCKET_PATH
+            )
             phoenix_server.handshake_gate.clear()
             await phoenix_server.close_all_clients(code=CloseCode.SERVICE_RESTART)
             await asyncio.wait_for(
@@ -84,16 +89,17 @@ async def test_reconnect_landing_during_shutdown_is_closed(
             )
 
             run = asyncio.create_task(client.run_forever())
-            stop = asyncio.create_task(client.shutdown("host stop"))
+            stop = asyncio.create_task(client.shutdown(STOP_REASON))
             assert await wait_for_condition(
                 lambda: client._state is ClientState.SHUTTING_DOWN
             )
             phoenix_server.handshake_gate.set()
+            # The held reconnect lands only now, after the shutdown began.
             assert await wait_for_condition(
                 lambda: phoenix_server.get_connection_attempts(
                     FakePhoenixServer.SOCKET_PATH
                 )
-                == 2
+                == attempts + 1
             )
         finally:
             held.release.set()
@@ -114,7 +120,7 @@ async def test_shutdown_during_initial_connect_fails_the_entry(
     enter = asyncio.create_task(client.__aenter__())
     await asyncio.wait_for(phoenix_server.handshake_pending.wait(), ASYNC_TIMEOUT_S)
 
-    await asyncio.wait_for(client.shutdown("host stop"), ASYNC_TIMEOUT_S)
+    await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
     with pytest.raises(PHXConnectionError):
         await asyncio.wait_for(enter, ASYNC_TIMEOUT_S)
 
@@ -128,8 +134,8 @@ async def test_concurrent_shutdowns_wait_for_the_same_shutdown(
         try:
             await run_held_callback(phoenix_server, client, held)
             stops = [
-                asyncio.create_task(client.shutdown("first stop")),
-                asyncio.create_task(client.shutdown("second stop")),
+                asyncio.create_task(client.shutdown(STOP_REASON)),
+                asyncio.create_task(client.shutdown(STOP_REASON)),
             ]
             await asyncio.wait_for(held.cancelled.wait(), ASYNC_TIMEOUT_S)
             finished, _ = await asyncio.wait(stops, timeout=SETTLE_S)
@@ -143,8 +149,7 @@ async def test_concurrent_shutdowns_wait_for_the_same_shutdown(
 
     async with client:
         await client.subscribe_to_topic(TOPIC)
-        for _ in range(3):
-            await asyncio.sleep(0)
+        await asyncio.sleep(SETTLE_S)  # give any stale shutdown time to act
         assert client.connection is not None
         assert client._state is ClientState.CONNECTED
 
@@ -160,7 +165,7 @@ async def test_reentering_during_a_shutdown_raises(
             await phoenix_server.close_all_clients(code=CloseCode.NORMAL_CLOSURE)
             assert await wait_for_condition(lambda: client._state is ClientState.CLOSED)
 
-            stop = asyncio.create_task(client.shutdown("host stop"))
+            stop = asyncio.create_task(client.shutdown(STOP_REASON))
             await asyncio.wait_for(held.cancelled.wait(), ASYNC_TIMEOUT_S)
             with pytest.raises(PHXConnectionError):
                 await asyncio.wait_for(client.__aenter__(), ASYNC_TIMEOUT_S)
@@ -177,7 +182,7 @@ async def test_shutdown_from_a_topic_callback_cancels_the_callback(
 
     async def stop_from_callback(message: ChannelMessage) -> None:
         try:
-            await client.shutdown("callback stop")
+            await client.shutdown(STOP_REASON)
         except asyncio.CancelledError:
             callback_cancelled.set()
             raise
@@ -188,7 +193,7 @@ async def test_shutdown_from_a_topic_callback_cancels_the_callback(
         await deliver(phoenix_server, client)
 
         await asyncio.wait_for(callback_cancelled.wait(), ASYNC_TIMEOUT_S)
-        await asyncio.wait_for(client.shutdown("host stop"), ASYNC_TIMEOUT_S)
+        await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
         assert client.connection is None
 
 
@@ -199,7 +204,7 @@ async def test_forced_close_racing_shutdown_does_not_leak_into_the_next_session(
     async with client:
         await asyncio.wait_for(
             asyncio.gather(
-                client.close_connection("forced"), client.shutdown("host stop")
+                client.close_connection(STOP_REASON), client.shutdown(STOP_REASON)
             ),
             ASYNC_TIMEOUT_S,
         )

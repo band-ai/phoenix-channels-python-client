@@ -17,7 +17,12 @@ from phoenix_channels_python_client.shutdown_signals import (
     handle_shutdown_signals,
 )
 
-from tests.conftest import ASYNC_TIMEOUT_S, FakePhoenixServer, make_client
+from tests.conftest import (
+    ASYNC_TIMEOUT_S,
+    STOP_REASON,
+    FakePhoenixServer,
+    make_client,
+)
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="a raised SIGINT kills the Windows test process"
@@ -76,7 +81,7 @@ async def test_without_signal_handlers_the_host_keeps_its_own(
         assert received == [signal.SIGTERM]
         assert not run.done()
 
-        await client.shutdown("host stop")
+        await client.shutdown(STOP_REASON)
         assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
         assert installed(sentinel)
 
@@ -95,7 +100,7 @@ async def test_run_forever_stops_and_restores_the_hosts_handlers(
     async with make_client(phoenix_server) as client:
         run = await start(client)
         if stop_signal is None:
-            await client.shutdown("host stop")
+            await client.shutdown(STOP_REASON)
         else:
             send(stop_signal, _on_shutdown_signal)
 
@@ -203,7 +208,7 @@ async def test_the_last_waiter_out_restores_the_handlers(
     async with make_client(phoenix_server) as a, make_client(phoenix_server) as b:
         run_a, run_b = await start(a), await start(b)
 
-        await a.shutdown("host stop")
+        await a.shutdown(STOP_REASON)
         assert await asyncio.wait_for(run_a, ASYNC_TIMEOUT_S) is None
         assert installed(_on_shutdown_signal)
 
@@ -223,7 +228,7 @@ async def test_run_forever_off_the_main_thread_leaves_handlers_alone(
         async with make_client(phoenix_server) as client:
             run = await start(client)
             untouched = installed(sentinel)
-            await client.shutdown("host stop")
+            await client.shutdown(STOP_REASON)
             await asyncio.wait_for(run, ASYNC_TIMEOUT_S)
             return untouched
 

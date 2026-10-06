@@ -13,10 +13,14 @@ __all__ = [
     "FakePhoenixServer",
     "make_client",
     "phoenix_server",
+    "STOP_REASON",
     "wait_for_condition",
 ]
 
 API_KEY = "test_key"
+
+# Tests that stop the client don't care why; this is only logged.
+STOP_REASON = "test stop"
 
 # Upper bound for awaiting a task or event that should finish promptly; without
 # pytest-timeout, this turns a hang into a failure.

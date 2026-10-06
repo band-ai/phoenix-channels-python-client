@@ -10,14 +10,20 @@ from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.http11 import Request
 
 
+# One IPv4 socket on a port the OS picks, so test runs never collide on a port.
+LOOPBACK_HOST = "127.0.0.1"
+ANY_FREE_PORT = 0
+
+
 class FakePhoenixServer:
     SOCKET_PATH = "/socket/websocket"
+    TOPIC = "test-topic"
 
-    def __init__(self, host: str = "localhost", port: int = 8765):
+    def __init__(self, host: str = LOOPBACK_HOST, port: int = ANY_FREE_PORT):
         self.host = host
         self.port = port
         self.valid_topics = {
-            "test-topic",
+            self.TOPIC,
             "test-topic-b",
         }
 
@@ -238,6 +244,7 @@ class FakePhoenixServer:
         self.server = await serve(
             self.handler, self.host, self.port, process_request=self._hold_handshake
         )
+        self.port = self.server.sockets[0].getsockname()[1]
 
     async def __aenter__(self) -> FakePhoenixServer:
         await self.start()
