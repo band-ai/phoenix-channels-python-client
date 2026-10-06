@@ -17,7 +17,7 @@ from phoenix_channels_python_client.shutdown_signals import (
     handle_shutdown_signals,
 )
 
-from .conftest import ASYNC_TIMEOUT_S, FakePhoenixServer, make_client
+from tests.conftest import ASYNC_TIMEOUT_S, FakePhoenixServer, make_client
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="a raised SIGINT kills the Windows test process"
@@ -30,7 +30,8 @@ Handler = Callable[[int, FrameType | None], None]
 def host_handlers() -> Iterator[tuple[Handler, list[int]]]:
     """Install one recording handler for both signals, as a host would.
 
-    Synchronous on purpose: pytest-asyncio's Runner then leaves SIGINT alone.
+    Installed before the test's event loop starts, like a host that owns its
+    process signals.
     """
     received: list[int] = []
 
@@ -104,18 +105,18 @@ async def test_run_forever_stops_and_restores_the_hosts_handlers(
         assert received == []
 
 
-async def test_run_forever_restores_asyncio_runs_sigint_handler(
-    phoenix_server: FakePhoenixServer,
-) -> None:
-    before = signal.getsignal(signal.SIGINT)
-    assert before is not signal.default_int_handler  # asyncio.Runner's own
+def test_run_forever_restores_asyncio_runs_own_sigint_handler() -> None:
+    async def run_and_stop() -> tuple[Any, Any]:
+        asyncio_run_handler = signal.getsignal(signal.SIGINT)
+        async with FakePhoenixServer() as server, make_client(server) as client:
+            run = await start(client)
+            send(signal.SIGINT, _on_shutdown_signal)
+            assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
+        return asyncio_run_handler, signal.getsignal(signal.SIGINT)
 
-    async with make_client(phoenix_server) as client:
-        run = await start(client)
-        send(signal.SIGINT, _on_shutdown_signal)
-        assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
-
-    assert signal.getsignal(signal.SIGINT) is before
+    asyncio_run_handler, after_run_forever = asyncio.run(run_and_stop())
+    assert asyncio_run_handler is not signal.default_int_handler
+    assert after_run_forever is asyncio_run_handler
 
 
 async def test_run_forever_keeps_a_loop_registered_host_handler(

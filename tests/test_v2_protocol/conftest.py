@@ -239,6 +239,13 @@ class FakePhoenixServer:
             self.handler, self.host, self.port, process_request=self._hold_handshake
         )
 
+    async def __aenter__(self) -> FakePhoenixServer:
+        await self.start()
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.stop()
+
     async def stop(self) -> None:
         """Stop the fake Phoenix server."""
         # Closing waits for every handshake, including ones held at the gate.
@@ -255,9 +262,5 @@ class FakePhoenixServer:
 @pytest_asyncio.fixture
 async def phoenix_server() -> AsyncGenerator[FakePhoenixServer, None]:
     """Fixture that provides a fake Phoenix WebSocket server."""
-    server = FakePhoenixServer()
-    await server.start()
-    try:
+    async with FakePhoenixServer() as server:
         yield server
-    finally:
-        await server.stop()

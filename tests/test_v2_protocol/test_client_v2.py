@@ -10,8 +10,8 @@ from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from ..conftest import wait_for_condition
-from .conftest import FakePhoenixServer as FakePhoenixServerV2
+from tests.conftest import wait_for_condition
+from tests.test_v2_protocol.conftest import FakePhoenixServer as FakePhoenixServerV2
 
 logger = logging.getLogger(__name__)
 

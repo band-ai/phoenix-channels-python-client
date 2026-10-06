@@ -10,7 +10,7 @@ from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.phx_messages import ChannelMessage
 
-from .conftest import (
+from tests.conftest import (
     ASYNC_TIMEOUT_S,
     FakePhoenixServer,
     make_client,

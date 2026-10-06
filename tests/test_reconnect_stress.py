@@ -9,7 +9,7 @@ from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
 
-from .test_v2_protocol.conftest import FakePhoenixServer
+from tests.test_v2_protocol.conftest import FakePhoenixServer
 
 
 @dataclass(frozen=True)
