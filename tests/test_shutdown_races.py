@@ -12,6 +12,7 @@ from phoenix_channels_python_client.phx_messages import ChannelMessage
 
 from tests.conftest import (
     ASYNC_TIMEOUT_S,
+    EVENT,
     FAST_RECONNECT,
     LEAVE_TIMEOUT_S,
     STOP_REASON,
@@ -21,7 +22,6 @@ from tests.conftest import (
 )
 
 TOPIC = FakePhoenixServer.TOPIC
-EVENT = "test_event"
 
 # Long enough for a shutdown that isn't held to finish against the local server.
 SETTLE_S = 0.2

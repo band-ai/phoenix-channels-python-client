@@ -10,6 +10,7 @@ from tests.test_v2_protocol.conftest import FakePhoenixServer, phoenix_server
 __all__ = [
     "API_KEY",
     "ASYNC_TIMEOUT_S",
+    "EVENT",
     "FAST_RECONNECT",
     "FakePhoenixServer",
     "LEAVE_TIMEOUT_S",
@@ -20,6 +21,9 @@ __all__ = [
 ]
 
 API_KEY = "test_key"
+
+# A custom (non-phx_) event for tests that only need some server push.
+EVENT = "test_event"
 
 # Tests that stop the client don't care why; this is only logged.
 STOP_REASON = "test stop"

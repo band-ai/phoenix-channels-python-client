@@ -18,6 +18,7 @@ from websockets.frames import CloseCode
 from tests.conftest import (
     API_KEY,
     ASYNC_TIMEOUT_S,
+    EVENT,
     FAST_RECONNECT,
     LEAVE_TIMEOUT_S,
     make_client,
@@ -28,7 +29,6 @@ from tests.test_v2_protocol.conftest import FakePhoenixServer as FakePhoenixServ
 logger = logging.getLogger(__name__)
 
 REJECTED_TOPIC = "invalid-topic"
-EVENT = "test_event"
 
 
 async def test_subscribe_to_topic_succeeds_when_subscribing_to_valid_topic(
@@ -694,6 +694,9 @@ async def test_stored_callbacks_are_cleared_on_unsubscribe(
 # Long enough for a local join reply, short enough to time out an unanswered one.
 REJOIN_TIMEOUT_S = 0.2
 
+# Short, so a callback that is never released gets cancelled promptly.
+CALLBACK_DRAIN_TIMEOUT_S = 0.05
+
 
 def rejoin_settled(
     client: PHXChannelsClient, topic: str = FakePhoenixServerV2.TOPIC
@@ -848,6 +851,30 @@ async def test_a_callback_failing_while_the_rejoin_drains_it_does_not_stop_the_r
         )
 
 
+async def test_a_callback_outlasting_the_drain_is_cancelled_and_the_topic_rejoins(
+    phoenix_server: FakePhoenixServerV2,
+):
+    busy = BusyCallback()
+    received: asyncio.Queue[ChannelMessage] = asyncio.Queue()
+    client = make_client(
+        phoenix_server,
+        reconnect_policy=FAST_RECONNECT,
+        callback_drain_timeout_s=CALLBACK_DRAIN_TIMEOUT_S,
+    )
+
+    async with client:
+        await client.subscribe_to_topic(FakePhoenixServerV2.TOPIC, busy)
+        await client.subscribe_to_topic(FakePhoenixServerV2.OTHER_TOPIC, received.put)
+        await reconnect_while_draining(phoenix_server, client, busy)
+
+        assert await wait_for_condition(rejoin_settled(client))
+        rejoined = client.get_current_subscriptions()[FakePhoenixServerV2.TOPIC]
+        assert rejoined.current_join_ready.exception() is None
+        await assert_delivers_after_rejoin(
+            phoenix_server, client, FakePhoenixServerV2.OTHER_TOPIC, received
+        )
+
+
 async def test_shutdown_stops_reconnection_attempts(
     phoenix_server: FakePhoenixServerV2,
 ):
@@ -930,7 +957,7 @@ async def test_full_reconnection_flow(
         topic_sub = client.get_current_subscriptions()["test-topic"]
         await phoenix_server.simulate_server_event(
             "test-topic",
-            "test_event",
+            EVENT,
             {"data": "after_reconnect"},
             join_ref=topic_sub.join_ref,
         )
