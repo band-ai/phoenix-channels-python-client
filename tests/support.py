@@ -8,6 +8,7 @@ from typing import Any, TypeVar
 
 import pytest
 from websockets.frames import CloseCode
+from websockets.protocol import State
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
 from phoenix_channels_python_client.protocol_handler import (
@@ -149,6 +150,21 @@ async def reconnect(
 ) -> None:
     """Close every connection with ``code`` and wait for the client to reconnect."""
     await reconnect_after(client, server.close_all_clients(code=code))
+
+
+async def start_server_close(
+    server: FakePhoenixServer,
+    client: PHXChannelsClient,
+    code: int = CloseCode.SERVICE_RESTART,
+) -> asyncio.Task[None]:
+    """Start the server closing the client's socket and return once the socket is
+    closing, before the client has dropped it. Await the returned task to finish."""
+    socket = client.connection
+    assert socket is not None
+    closing = asyncio.create_task(server.close_all_clients(code=code))
+    # Every loop turn, since the client drops a closing socket within a few.
+    assert await wait_for_condition(lambda: socket.state is State.CLOSING, interval=0)
+    return closing
 
 
 def rejoin_settled(client: PHXChannelsClient, topic: str = TOPIC) -> Callable[[], bool]:

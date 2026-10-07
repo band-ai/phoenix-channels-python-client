@@ -273,8 +273,7 @@ class FakePhoenixServer:
             yield
         finally:
             for transport in transports:
-                if not transport.is_closing():
-                    transport.resume_reading()
+                transport.resume_reading()
 
     async def close_all_clients(
         self,
