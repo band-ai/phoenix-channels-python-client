@@ -280,6 +280,24 @@ class TopicRuntimeMixin:
                 f"Cannot {operation} while client is {self._state.value}. Wait for reconnection."
             )
 
+    async def _join(self, topic_subscription: TopicSubscription) -> None:
+        """Send the topic's join on its current join_ref and wait for the reply."""
+        connection = self.connection
+        if connection is None:
+            raise PHXConnectionError("Connection lost before join could be sent")
+
+        join_message = make_message(
+            topic=topic_subscription.name,
+            event=PHXEvent.join,
+            payload={},
+            ref=topic_subscription.join_ref,
+            join_ref=topic_subscription.join_ref,
+        )
+        await self._protocol_handler.send_message(connection, join_message)
+        await asyncio.wait_for(
+            topic_subscription.current_join_ready, timeout=self.join_timeout_s
+        )
+
     async def subscribe_to_topic(
         self,
         topic: str,
@@ -308,22 +326,8 @@ class TopicRuntimeMixin:
             self._process_topic_messages(topic)
         )
 
-        topic_join_message = make_message(
-            topic=topic,
-            event=PHXEvent.join,
-            payload={},
-            ref=join_ref,
-            join_ref=join_ref,
-        )
-
         try:
-            connection = self.connection
-            if connection is None:
-                raise PHXConnectionError("Connection lost before join could be sent")
-            await self._protocol_handler.send_message(connection, topic_join_message)
-            await asyncio.wait_for(
-                topic_subscription.current_join_ready, timeout=self.join_timeout_s
-            )
+            await self._join(topic_subscription)
         except asyncio.TimeoutError as exc:
             await self._unregister_topic(
                 topic,
@@ -462,87 +466,91 @@ class TopicRuntimeMixin:
         topic_subscription = self._topic_subscriptions[topic]
         return topic_subscription.async_callback is not None
 
+    async def _drain_callback(self, topic_subscription: TopicSubscription) -> None:
+        callback_task = topic_subscription.current_callback_task
+        if callback_task is None or callback_task.done():
+            return
+
+        # The topic task owns how the callback ends, so don't re-raise it here.
+        _, still_running = await asyncio.wait(
+            {callback_task}, timeout=self.callback_drain_timeout_s
+        )
+        if still_running:
+            self.logger.warning(
+                "Callback for topic %s did not finish before reconnect; cancelling",
+                topic_subscription.name,
+            )
+            await cancel_and_wait(callback_task)
+
     async def _rejoin_topics(self, generation: int) -> None:
         async with self._topics_lock:
-            subscriptions = list(self._topic_subscriptions.items())
+            subscriptions = list(self._topic_subscriptions.values())
 
-        loop = asyncio.get_running_loop()
+        for topic_subscription in subscriptions:
+            await self._rejoin_topic(topic_subscription, generation)
 
-        for topic_name, topic_subscription in subscriptions:
-            if topic_subscription.leave_requested.is_set():
-                continue
+    async def _rejoin_topic(
+        self, topic_subscription: TopicSubscription, generation: int
+    ) -> None:
+        if not self._should_rejoin(topic_subscription):
+            return
 
-            previous_task = topic_subscription.process_topic_messages_task
-            callback_task = topic_subscription.current_callback_task
-            if callback_task and not callback_task.done():
-                try:
-                    await asyncio.wait_for(
-                        asyncio.shield(callback_task),
-                        timeout=self.callback_drain_timeout_s,
-                    )
-                except asyncio.TimeoutError:
-                    self.logger.warning(
-                        "Callback for topic %s did not finish before reconnect; cancelling",
-                        topic_name,
-                    )
-                    await cancel_and_wait(callback_task)
+        await self._drain_callback(topic_subscription)
+        # The topic may be left or unregistered while the callback drains.
+        if not self._should_rejoin(topic_subscription):
+            return
 
-            if previous_task and not previous_task.done():
-                await cancel_and_wait(previous_task)
+        await self._restart_topic(topic_subscription, generation)
+        try:
+            await self._join(topic_subscription)
+        except Exception as exc:
+            await self._handle_rejoin_failure(topic_subscription.name, exc)
 
-            topic_subscription.conn_generation = generation
-            topic_subscription.join_ref = self._generate_ref()
-            topic_subscription.current_join_ready = loop.create_future()
-            self._drain_topic_queue(topic_subscription)
-            topic_subscription.process_topic_messages_task = asyncio.create_task(
-                self._process_topic_messages(topic_name)
+    def _should_rejoin(self, topic_subscription: TopicSubscription) -> bool:
+        is_registered = (
+            self._topic_subscriptions.get(topic_subscription.name) is topic_subscription
+        )
+        return is_registered and not topic_subscription.leave_requested.is_set()
+
+    async def _restart_topic(
+        self, topic_subscription: TopicSubscription, generation: int
+    ) -> None:
+        previous_task = topic_subscription.process_topic_messages_task
+        if previous_task and not previous_task.done():
+            await cancel_and_wait(previous_task)
+
+        topic_subscription.conn_generation = generation
+        topic_subscription.join_ref = self._generate_ref()
+        topic_subscription.current_join_ready = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._drain_topic_queue(topic_subscription)
+        topic_subscription.process_topic_messages_task = asyncio.create_task(
+            self._process_topic_messages(topic_subscription.name)
+        )
+
+    async def _handle_rejoin_failure(self, topic_name: str, exc: Exception) -> None:
+        if self._shutdown_event.is_set() or self._state == ClientState.SHUTTING_DOWN:
+            self.logger.debug(
+                "Ignoring rejoin failure for topic %s during shutdown: %s",
+                topic_name,
+                exc,
             )
+            return
 
-            join_message = make_message(
-                topic=topic_subscription.name,
-                event=PHXEvent.join,
-                payload={},
-                ref=topic_subscription.join_ref,
-                join_ref=topic_subscription.join_ref,
+        if isinstance(exc, PHXTopicError):
+            self.logger.error("Failed to rejoin topic %s: %s", topic_name, exc)
+            await self._unregister_topic(
+                topic_name,
+                error=PHXTopicError(f"Failed to rejoin topic {topic_name}: {exc}"),
             )
+            return
 
-            try:
-                if self.connection is None:
-                    raise PHXConnectionError(
-                        "Connection unavailable while rejoining topics"
-                    )
-
-                await self._protocol_handler.send_message(self.connection, join_message)
-                await asyncio.wait_for(
-                    topic_subscription.current_join_ready,
-                    timeout=self.join_timeout_s,
-                )
-            except Exception as exc:
-                if (
-                    self._shutdown_event.is_set()
-                    or self._state == ClientState.SHUTTING_DOWN
-                ):
-                    self.logger.debug(
-                        "Ignoring rejoin failure for topic %s during shutdown: %s",
-                        topic_name,
-                        exc,
-                    )
-                    continue
-                if isinstance(exc, PHXTopicError):
-                    self.logger.error("Failed to rejoin topic %s: %s", topic_name, exc)
-                    await self._unregister_topic(
-                        topic_name,
-                        error=PHXTopicError(
-                            f"Failed to rejoin topic {topic_name}: {exc}"
-                        ),
-                    )
-                    continue
-
-                self.logger.warning(
-                    "Transient rejoin failure for topic %s, will retry on next reconnect: %s",
-                    topic_name,
-                    exc,
-                )
+        self.logger.warning(
+            "Transient rejoin failure for topic %s, will retry on next reconnect: %s",
+            topic_name,
+            exc,
+        )
 
     def _drain_topic_queue(self, topic_subscription: TopicSubscription) -> None:
         dropped = 0

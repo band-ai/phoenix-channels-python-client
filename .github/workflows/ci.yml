@@ -37,8 +37,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
+      # Coverage on one version is enough to report the number.
       - name: Run tests
-        run: uv run pytest
+        run: uv run pytest ${{ matrix.python-version == '3.13' && '--cov' || '' }}
 
   lint:
     name: Lint

@@ -18,13 +18,14 @@ ANY_FREE_PORT = 0
 class FakePhoenixServer:
     SOCKET_PATH = "/socket/websocket"
     TOPIC = "test-topic"
+    OTHER_TOPIC = "test-topic-b"
 
     def __init__(self, host: str = LOOPBACK_HOST, port: int = ANY_FREE_PORT):
         self.host = host
         self.port = port
         self.valid_topics = {
             self.TOPIC,
-            "test-topic-b",
+            self.OTHER_TOPIC,
         }
 
         self.server: Server | None = None
@@ -41,6 +42,8 @@ class FakePhoenixServer:
         self.fail_join_targets: set[tuple[int, str]] = set()
         # Joins from these clients get no reply, so the client's join times out.
         self.unanswered_join_ids: set[int] = set()
+        # Every topic a client asked to join, in order, answered or not.
+        self.join_topics: list[str] = []
         self.enforce_single_connection_per_api_key = False
         self.duplicate_close_code = 1013
         self.duplicate_close_reason = "duplicate session"
@@ -144,6 +147,7 @@ class FakePhoenixServer:
             return
 
         if event == "phx_join":
+            self.join_topics.append(topic)
             if client_id in self.unanswered_join_ids:
                 return
 
