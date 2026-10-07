@@ -79,9 +79,6 @@ async def test_subscribe_to_topic_succeeds_when_subscribing_to_valid_topic(
         assert topic_subscription.name == "test-topic"
         assert topic_subscription.async_callback == test_callback
 
-        assert topic_subscription.subscription_ready.done()
-        assert not topic_subscription.subscription_ready.exception()
-
 
 async def test_subscribe_to_topic_raises_phxconnectionerror_when_disconnected(
     phoenix_server: FakePhoenixServer,

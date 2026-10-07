@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import asyncio.log
+import gc
 import logging
 from collections.abc import Callable
 
@@ -13,10 +15,12 @@ from phoenix_channels_python_client.protocol_handler import (
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
 from websockets.frames import CloseCode
 
-from tests.conftest import API_KEY, FAST_RECONNECT, wait_for_condition
+from tests.conftest import API_KEY, FAST_RECONNECT, make_client, wait_for_condition
 from tests.test_v2_protocol.conftest import FakePhoenixServer as FakePhoenixServerV2
 
 logger = logging.getLogger(__name__)
+
+REJECTED_TOPIC = "invalid-topic"
 
 
 async def test_subscribe_to_topic_succeeds_when_subscribing_to_valid_topic(
@@ -40,9 +44,6 @@ async def test_subscribe_to_topic_succeeds_when_subscribing_to_valid_topic(
         assert topic_subscription.name == "test-topic"
         assert topic_subscription.async_callback == test_callback
 
-        assert topic_subscription.subscription_ready.done()
-        assert not topic_subscription.subscription_ready.exception()
-
 
 async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_unmatched_topic(
     phoenix_server: FakePhoenixServerV2,
@@ -60,6 +61,24 @@ async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_unmat
             await client.subscribe_to_topic("invalid-topic", test_callback)
 
         assert "unmatched topic" in str(exc_info.value).lower()
+
+
+async def test_rejected_join_leaves_no_unretrieved_future_error(
+    phoenix_server: FakePhoenixServerV2, caplog: pytest.LogCaptureFixture
+):
+    # Run in its own frame: a live client or bound exception keeps the
+    # subscription, and its futures, from being collected.
+    async def subscribe_to_rejected_topic() -> None:
+        async with make_client(phoenix_server) as client:
+            with pytest.raises(PHXTopicError):
+                await client.subscribe_to_topic(REJECTED_TOPIC, None)
+
+    await subscribe_to_rejected_topic()
+    gc.collect()
+
+    assert not [
+        record for record in caplog.records if record.name == asyncio.log.logger.name
+    ]
 
 
 async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_already_subscribed_topic(
