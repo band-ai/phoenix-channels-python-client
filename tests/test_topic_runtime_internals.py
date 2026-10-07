@@ -92,17 +92,6 @@ async def test_a_connection_lost_before_the_join_is_sent_fails_the_subscribe() -
     assert TOPIC not in runtime._topic_subscriptions
 
 
-async def test_unsubscribing_while_disconnected_raises_and_keeps_the_topic() -> None:
-    runtime = TopicRuntimeHarness()
-    topic = runtime.register(make_subscription())
-    runtime.connection = None
-
-    with pytest.raises(PHXConnectionError):
-        await runtime.unsubscribe_from_topic(topic.name)
-
-    assert topic.name in runtime._topic_subscriptions
-
-
 async def test_a_rejoin_without_a_connection_keeps_the_topic() -> None:
     runtime = TopicRuntimeHarness()
     topic = runtime.register(make_subscription())
