@@ -74,6 +74,8 @@ class FakePhoenixServer:
         self.fail_join_targets: set[tuple[int, str]] = set()
         # Joins from these clients get no reply, so the client's join times out.
         self.unanswered_join_ids: set[int] = set()
+        # Clear to leave heartbeats unanswered, like an unresponsive server.
+        self.answer_heartbeats = True
         # Every topic a client asked to join, in order, answered or not.
         self.join_topics: list[str] = []
         self.enforce_single_connection_per_api_key = False
@@ -215,7 +217,7 @@ class FakePhoenixServer:
 
     async def handle_frame(self, websocket: ServerConnection, frame: Frame) -> None:
         match frame.event:
-            case WireEvent.HEARTBEAT:
+            case WireEvent.HEARTBEAT if self.answer_heartbeats:
                 await self._reply(websocket, frame, ReplyStatus.OK)
             case WireEvent.JOIN:
                 await self._handle_join(websocket, frame)

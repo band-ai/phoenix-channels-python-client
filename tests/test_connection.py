@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
 from websockets.frames import CloseCode
 
-from phoenix_channels_python_client.client import PHXChannelsClient
+from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 
 from tests.fake_server import FakePhoenixServer
@@ -14,12 +15,10 @@ from tests.support import (
     ASYNC_TIMEOUT_S,
     FAST_RECONNECT,
     TOPIC,
+    UNPARSEABLE_FRAME,
     make_client,
     reconnect,
 )
-
-# Not a Phoenix frame in either protocol, so the client can't parse it.
-UNPARSEABLE_FRAME = "not a phoenix frame"
 
 
 async def test_run_forever_returns_when_the_server_closes_normally(
@@ -142,3 +141,26 @@ async def test_raising_lifecycle_callbacks_do_not_stop_reconnecting(
         await reconnect(phoenix_server, client)
 
         await client.subscribe_to_topic(TOPIC)
+
+
+@pytest.mark.parametrize(
+    "option,value,message",
+    [
+        ("heartbeat_interval_s", 0, "heartbeat_interval_s must be > 0"),
+        ("heartbeat_interval_s", -1.0, "heartbeat_interval_s must be > 0"),
+        ("join_timeout_s", 0, "join_timeout_s must be > 0"),
+        ("leave_timeout_s", 0, "leave_timeout_s must be > 0"),
+        ("max_topic_queue_size", 0, "max_topic_queue_size must be > 0"),
+        ("callback_drain_timeout_s", 0, "callback_drain_timeout_s must be > 0"),
+        (
+            "reconnect_policy",
+            ReconnectPolicy(base_delay_s=-1),
+            "Invalid reconnect policy configuration",
+        ),
+    ],
+)
+def test_an_out_of_range_client_option_is_rejected(
+    option: str, value: Any, message: str
+):
+    with pytest.raises(ValueError, match=message):
+        PHXChannelsClient(FakePhoenixServer().url, api_key=API_KEY, **{option: value})

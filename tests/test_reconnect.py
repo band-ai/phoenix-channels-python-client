@@ -18,6 +18,7 @@ from tests.support import (
     LEAVE_TIMEOUT_S,
     OTHER_TOPIC,
     TOPIC,
+    UNPARSEABLE_FRAME,
     deliver,
     each_protocol,
     expect_message,
@@ -35,6 +36,9 @@ TRY_AGAIN_LATER_MIN_DELAY_S = 0.2
 TRY_AGAIN_LATER_MAX_DELAY_S = 0.25
 
 SUPPRESS_AFTER_DISCONNECTS = 3
+
+# A private-use close code (4000-4999) the client has no rule for.
+UNRECOGNISED_CLOSE_CODE = 4001
 
 
 class CallbackFailure(Exception):
@@ -343,3 +347,29 @@ async def test_a_normal_close_does_not_reconnect_by_default(
         await asyncio.wait_for(client.run_forever(), ASYNC_TIMEOUT_S)
 
     assert phoenix_server.get_connection_attempts(FakePhoenixServer.SOCKET_PATH) == 1
+
+
+@each_protocol
+async def test_an_unrecognised_close_code_reconnects(
+    phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
+):
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        await client.subscribe_to_topic(TOPIC, received.put)
+
+        await reconnect(phoenix_server, client, code=UNRECOGNISED_CLOSE_CODE)
+
+        await assert_delivers_after_rejoin(phoenix_server, client, TOPIC, received)
+
+
+@each_protocol
+async def test_a_frame_the_client_cannot_parse_triggers_a_reconnect(
+    phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
+):
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        await client.subscribe_to_topic(TOPIC, received.put)
+        generation = client._conn_generation
+
+        await phoenix_server.send_raw(UNPARSEABLE_FRAME)
+
+        assert await wait_for_condition(lambda: client._conn_generation > generation)
+        await assert_delivers_after_rejoin(phoenix_server, client, TOPIC, received)

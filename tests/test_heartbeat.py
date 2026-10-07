@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from phoenix_channels_python_client.client import PHXChannelsClient
 
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
-    API_KEY,
     FAST_RECONNECT,
     make_client,
     reconnect,
@@ -49,14 +47,6 @@ async def test_the_heartbeat_stops_on_shutdown(phoenix_server: FakePhoenixServer
     assert client._pending_heartbeat_ref is None
 
 
-@pytest.mark.parametrize("interval_s", [0, -1.0])
-def test_a_non_positive_heartbeat_interval_is_rejected(interval_s: float):
-    with pytest.raises(ValueError, match="heartbeat_interval_s must be > 0"):
-        PHXChannelsClient(
-            FakePhoenixServer().url, api_key=API_KEY, heartbeat_interval_s=interval_s
-        )
-
-
 async def test_the_heartbeat_resumes_after_a_reconnect(
     phoenix_server: FakePhoenixServer,
 ):
@@ -74,4 +64,15 @@ async def test_the_heartbeat_resumes_after_a_reconnect(
             lambda: client._heartbeat_task is not None
             and not client._heartbeat_task.done()
             and client._pending_heartbeat_ref is None
+        )
+
+
+async def test_an_unanswered_heartbeat_is_reported(
+    phoenix_server: FakePhoenixServer, caplog: pytest.LogCaptureFixture
+):
+    phoenix_server.answer_heartbeats = False
+
+    async with make_client(phoenix_server, heartbeat_interval_s=HEARTBEAT_INTERVAL_S):
+        assert await wait_for_condition(
+            lambda: "server may be unresponsive" in caplog.text
         )
