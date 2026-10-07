@@ -111,7 +111,7 @@ class ReconnectControllerMixin:
             return computed
 
         # Equal jitter avoids synchronization while keeping a meaningful minimum delay.
-        computed = (delay / 2) + (random.random() * (delay / 2))  # noqa: S311  # jitter
+        computed = self._random_between(delay / 2, delay)
         logger.debug(
             "Computed reconnect delay with equal jitter. attempt=%s rapid_count=%s "
             "base_delay_s=%s min_delay_s=%s computed_delay_s=%s",
