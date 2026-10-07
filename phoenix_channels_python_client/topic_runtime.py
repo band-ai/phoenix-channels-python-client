@@ -462,6 +462,22 @@ class TopicRuntimeMixin:
         topic_subscription = self._topic_subscriptions[topic]
         return topic_subscription.async_callback is not None
 
+    async def _drain_callback(self, topic_subscription: TopicSubscription) -> None:
+        callback_task = topic_subscription.current_callback_task
+        if callback_task is None or callback_task.done():
+            return
+
+        # The topic task owns how the callback ends, so don't re-raise it here.
+        _, still_running = await asyncio.wait(
+            {callback_task}, timeout=self.callback_drain_timeout_s
+        )
+        if still_running:
+            self.logger.warning(
+                "Callback for topic %s did not finish before reconnect; cancelling",
+                topic_subscription.name,
+            )
+            await cancel_and_wait(callback_task)
+
     async def _rejoin_topics(self, generation: int) -> None:
         async with self._topics_lock:
             subscriptions = list(self._topic_subscriptions.items())
@@ -472,21 +488,12 @@ class TopicRuntimeMixin:
             if topic_subscription.leave_requested.is_set():
                 continue
 
-            previous_task = topic_subscription.process_topic_messages_task
-            callback_task = topic_subscription.current_callback_task
-            if callback_task and not callback_task.done():
-                try:
-                    await asyncio.wait_for(
-                        asyncio.shield(callback_task),
-                        timeout=self.callback_drain_timeout_s,
-                    )
-                except asyncio.TimeoutError:
-                    self.logger.warning(
-                        "Callback for topic %s did not finish before reconnect; cancelling",
-                        topic_name,
-                    )
-                    await cancel_and_wait(callback_task)
+            await self._drain_callback(topic_subscription)
+            # The app may unsubscribe while the callback drains.
+            if topic_subscription.leave_requested.is_set():
+                continue
 
+            previous_task = topic_subscription.process_topic_messages_task
             if previous_task and not previous_task.done():
                 await cancel_and_wait(previous_task)
 

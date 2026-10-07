@@ -18,13 +18,14 @@ ANY_FREE_PORT = 0
 class FakePhoenixServer:
     SOCKET_PATH = "/socket/websocket"
     TOPIC = "test-topic"
+    OTHER_TOPIC = "test-topic-b"
 
     def __init__(self, host: str = LOOPBACK_HOST, port: int = ANY_FREE_PORT):
         self.host = host
         self.port = port
         self.valid_topics = {
             self.TOPIC,
-            "test-topic-b",
+            self.OTHER_TOPIC,
         }
 
         self.server: Server | None = None

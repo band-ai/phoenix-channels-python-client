@@ -15,12 +15,20 @@ from phoenix_channels_python_client.protocol_handler import (
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
 from websockets.frames import CloseCode
 
-from tests.conftest import API_KEY, FAST_RECONNECT, make_client, wait_for_condition
+from tests.conftest import (
+    API_KEY,
+    ASYNC_TIMEOUT_S,
+    FAST_RECONNECT,
+    LEAVE_TIMEOUT_S,
+    make_client,
+    wait_for_condition,
+)
 from tests.test_v2_protocol.conftest import FakePhoenixServer as FakePhoenixServerV2
 
 logger = logging.getLogger(__name__)
 
 REJECTED_TOPIC = "invalid-topic"
+EVENT = "test_event"
 
 
 async def test_subscribe_to_topic_succeeds_when_subscribing_to_valid_topic(
@@ -687,16 +695,61 @@ async def test_stored_callbacks_are_cleared_on_unsubscribe(
 REJOIN_TIMEOUT_S = 0.2
 
 
-def rejoin_settled(client: PHXChannelsClient) -> Callable[[], bool]:
+def rejoin_settled(
+    client: PHXChannelsClient, topic: str = FakePhoenixServerV2.TOPIC
+) -> Callable[[], bool]:
     """True once the topic's post-reconnect join has an outcome, or it is gone."""
 
     def settled() -> bool:
-        topic = client.get_current_subscriptions().get(FakePhoenixServerV2.TOPIC)
-        return topic is None or (
-            topic.conn_generation > 1 and topic.current_join_ready.done()
+        subscription = client.get_current_subscriptions().get(topic)
+        return subscription is None or (
+            subscription.conn_generation > 1 and subscription.current_join_ready.done()
         )
 
     return settled
+
+
+class CallbackFailure(Exception):
+    pass
+
+
+class BusyCallback:
+    """A topic callback that stays busy until released, then fails."""
+
+    def __init__(self) -> None:
+        self.running = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __call__(self, message: ChannelMessage) -> None:
+        self.running.set()
+        await self.release.wait()
+        raise CallbackFailure
+
+
+async def reconnect_while_draining(
+    server: FakePhoenixServerV2, client: PHXChannelsClient, busy: BusyCallback
+) -> None:
+    topic = FakePhoenixServerV2.TOPIC
+    join_ref = client.get_current_subscriptions()[topic].join_ref
+    await server.simulate_server_event(topic, EVENT, {}, join_ref=join_ref)
+    await asyncio.wait_for(busy.running.wait(), ASYNC_TIMEOUT_S)
+
+    generation = client._conn_generation
+    await server.close_all_clients(code=CloseCode.SERVICE_RESTART)
+    # Nothing yields from the reconnect until the first topic's drain.
+    assert await wait_for_condition(lambda: client._conn_generation > generation)
+
+
+async def assert_delivers_after_rejoin(
+    server: FakePhoenixServerV2,
+    client: PHXChannelsClient,
+    topic: str,
+    received: asyncio.Queue[ChannelMessage],
+) -> None:
+    assert await wait_for_condition(rejoin_settled(client, topic))
+    join_ref = client.get_current_subscriptions()[topic].join_ref
+    await server.simulate_server_event(topic, EVENT, {}, join_ref=join_ref)
+    await asyncio.wait_for(received.get(), ASYNC_TIMEOUT_S)
 
 
 async def test_transient_rejoin_failure_keeps_subscription_registered(
@@ -742,6 +795,57 @@ async def test_rejected_rejoin_unregisters_the_topic(
 
         assert await wait_for_condition(rejoin_settled(client))
         assert FakePhoenixServerV2.TOPIC not in client.get_current_subscriptions()
+
+
+async def test_unsubscribing_during_a_rejoin_drain_keeps_the_client_running(
+    phoenix_server: FakePhoenixServerV2,
+):
+    busy = BusyCallback()
+    received: asyncio.Queue[ChannelMessage] = asyncio.Queue()
+    client = make_client(
+        phoenix_server,
+        reconnect_policy=FAST_RECONNECT,
+        leave_timeout_s=LEAVE_TIMEOUT_S,
+        # Outlasts the leave, so the unsubscribe cancels the callback mid-drain.
+        callback_drain_timeout_s=ASYNC_TIMEOUT_S,
+    )
+
+    async with client:
+        await client.subscribe_to_topic(FakePhoenixServerV2.TOPIC, busy)
+        await client.subscribe_to_topic(FakePhoenixServerV2.OTHER_TOPIC, received.put)
+        await reconnect_while_draining(phoenix_server, client, busy)
+        run = asyncio.create_task(client.run_forever(install_signal_handlers=False))
+
+        with pytest.raises(PHXTopicError):
+            await client.unsubscribe_from_topic(FakePhoenixServerV2.TOPIC)
+
+        await assert_delivers_after_rejoin(
+            phoenix_server, client, FakePhoenixServerV2.OTHER_TOPIC, received
+        )
+        assert FakePhoenixServerV2.TOPIC not in client.get_current_subscriptions()
+
+    assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
+
+
+async def test_a_callback_failing_while_the_rejoin_drains_it_does_not_stop_the_rejoin(
+    phoenix_server: FakePhoenixServerV2,
+):
+    busy = BusyCallback()
+    received: asyncio.Queue[ChannelMessage] = asyncio.Queue()
+    client = make_client(phoenix_server, reconnect_policy=FAST_RECONNECT)
+
+    async with client:
+        await client.subscribe_to_topic(FakePhoenixServerV2.TOPIC, busy)
+        await client.subscribe_to_topic(FakePhoenixServerV2.OTHER_TOPIC, received.put)
+        await reconnect_while_draining(phoenix_server, client, busy)
+
+        busy.release.set()
+
+        assert await wait_for_condition(rejoin_settled(client))
+        assert FakePhoenixServerV2.TOPIC in client.get_current_subscriptions()
+        await assert_delivers_after_rejoin(
+            phoenix_server, client, FakePhoenixServerV2.OTHER_TOPIC, received
+        )
 
 
 async def test_shutdown_stops_reconnection_attempts(
