@@ -27,6 +27,7 @@ classifiers = [
 dev = [
     "pytest",
     "pytest-asyncio>=1.4",
+    "pytest-cov",
     "pre-commit>=3.0.0",
     "commitizen>=3.13.0",
     "pyrefly",
@@ -36,6 +37,13 @@ test = [
     "pytest",
     "pytest-asyncio>=1.4",
 ]
+
+[tool.coverage.run]
+source = ["phoenix_channels_python_client"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
 
 # Package discovery for flat layout (phoenix_channels_python_client/ in root)
 [tool.setuptools.packages.find]
