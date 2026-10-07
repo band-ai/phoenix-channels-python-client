@@ -44,6 +44,9 @@ JOIN_TIMEOUT_S = 0.1
 # How often a condition is polled; far below every timeout the tests use.
 POLL_INTERVAL_S = 0.01
 
+# Short enough that a test sees several heartbeats.
+HEARTBEAT_INTERVAL_S = 0.05
+
 T = TypeVar("T")
 
 # Every reconnect delay and cooldown is near zero, so no test waits on backoff.
@@ -121,6 +124,16 @@ class ReconnectCounter:
 
     async def __call__(self) -> None:
         self.count += 1
+
+
+class LostTopics:
+    """An ``on_topic_lost`` callback that records each lost topic and its error."""
+
+    def __init__(self) -> None:
+        self.lost: list[tuple[str, Exception]] = []
+
+    async def __call__(self, topic: str, error: Exception) -> None:
+        self.lost.append((topic, error))
 
 
 async def deliver(

@@ -18,6 +18,7 @@ from tests.support import (
     STOP_REASON,
     TOPIC,
     UNPARSEABLE_FRAME,
+    LostTopics,
     ReconnectCounter,
     deliver,
     derive_policy,
@@ -198,7 +199,28 @@ async def test_a_rejected_rejoin_unregisters_only_that_topic(
 
 
 @each_protocol
-async def test_a_rejoin_that_times_out_keeps_the_topic_for_the_next_reconnect(
+async def test_a_rejected_rejoin_after_reconnect_reports_the_lost_topic(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    lost = LostTopics()
+    client = make_client(
+        phoenix_server, reconnect_policy=FAST_RECONNECT, on_topic_lost=lost
+    )
+    async with client:
+        await client.subscribe_to_topic(TOPIC)
+        phoenix_server.fail_join_targets.add((phoenix_server.next_client_id, TOPIC))
+
+        await reconnect(phoenix_server, client)
+
+        assert await wait_for_condition(lambda: bool(lost.lost))
+        [(topic, error)] = lost.lost
+        assert topic == TOPIC
+        assert isinstance(error, PHXTopicError)
+        assert f"Failed to rejoin topic {TOPIC}" in str(error)
+
+
+@each_protocol
+async def test_a_rejoin_that_times_out_keeps_retrying_on_the_live_socket(
     phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
 ) -> None:
     client = make_client(
@@ -206,13 +228,16 @@ async def test_a_rejoin_that_times_out_keeps_the_topic_for_the_next_reconnect(
     )
     async with client:
         await client.subscribe_to_topic(TOPIC, received.put)
-        phoenix_server.unanswered_join_ids.add(phoenix_server.next_client_id)
+        client_id = phoenix_server.next_client_id
+        phoenix_server.unanswered_join_ids.add(client_id)
 
         await reconnect(phoenix_server, client)
+        generation = client._conn_generation
         assert await wait_for_condition(rejoin_settled(client))
-        assert TOPIC in client.get_current_subscriptions()
+        phoenix_server.unanswered_join_ids.discard(client_id)
 
-        await reconnect(phoenix_server, client)
+        assert await wait_for_condition(lambda: client.is_topic_joined(TOPIC))
+        assert client._conn_generation == generation
         await assert_delivers_after_rejoin(phoenix_server, client, TOPIC, received)
 
 
