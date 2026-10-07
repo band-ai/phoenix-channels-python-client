@@ -33,7 +33,7 @@ class PHXProtocolHandler:
     def __init__(
         self,
         protocol_version: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V2,
-    ):
+    ) -> None:
         self.protocol_version = protocol_version
         self.logger = logger.getChild("ProtocolHandler")
         self.logger.debug(

@@ -14,7 +14,6 @@ from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPo
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
-
 from tests.fake_server import FakePhoenixServer
 
 API_KEY = "test_key"
@@ -158,7 +157,8 @@ async def start_server_close(
     code: int = CloseCode.SERVICE_RESTART,
 ) -> asyncio.Task[None]:
     """Start the server closing the client's socket and return once the socket is
-    closing, before the client has dropped it. Await the returned task to finish."""
+    closing, before the client has dropped it. Await the returned task to finish.
+    """
     socket = client.connection
     assert socket is not None
     closing = asyncio.create_task(server.close_all_clients(code=code))
@@ -169,7 +169,8 @@ async def start_server_close(
 
 def rejoin_settled(client: PHXChannelsClient, topic: str = TOPIC) -> Callable[[], bool]:
     """True once the topic's join on the current connection has an outcome, or
-    the topic is gone."""
+    the topic is gone.
+    """
 
     def settled() -> bool:
         subscription = client.get_current_subscriptions().get(topic)

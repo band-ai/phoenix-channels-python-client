@@ -11,7 +11,6 @@ from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
 from phoenix_channels_python_client.phx_messages import PHXEvent, UserEvent
 from phoenix_channels_python_client.utils import make_message
-
 from tests.fake_server import ReplyStatus
 from tests.harness import (
     DEFAULT_JOIN_REF,

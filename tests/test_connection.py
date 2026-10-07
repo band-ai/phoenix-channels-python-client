@@ -7,7 +7,6 @@ import pytest
 from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.exceptions import PHXConnectionError
-
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     API_KEY,
@@ -34,7 +33,7 @@ MAX_CLOSE_REASON_BYTES = 123
 
 async def test_run_forever_returns_when_the_server_closes_normally(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     async with make_client(phoenix_server) as client:
         await client.subscribe_to_topic(TOPIC)
         run = asyncio.create_task(client.run_forever())
@@ -49,7 +48,7 @@ async def test_run_forever_returns_when_the_server_closes_normally(
 
 async def test_leaving_the_client_closes_its_connection(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     async with make_client(phoenix_server) as client:
         assert phoenix_server.list_client_connections()
 
@@ -61,7 +60,7 @@ async def test_leaving_the_client_closes_its_connection(
 
 async def test_close_connection_drops_the_connection_and_the_client_reconnects(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         await reconnect_after(client, client.close_connection("dead threshold"))
 
@@ -70,7 +69,7 @@ async def test_close_connection_drops_the_connection_and_the_client_reconnects(
 
 async def test_close_connection_truncates_an_oversized_reason(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         await reconnect_after(client, client.close_connection("x" * 200))
 
@@ -82,7 +81,7 @@ async def test_close_connection_truncates_an_oversized_reason(
 
 async def test_forced_close_during_a_terminal_server_close_does_not_reconnect(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         run = asyncio.create_task(client.run_forever(install_signal_handlers=False))
         server_close = await start_server_close(
@@ -98,7 +97,7 @@ async def test_forced_close_during_a_terminal_server_close_does_not_reconnect(
 
 async def test_close_connection_before_entering_does_nothing(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     await make_client(phoenix_server).close_connection("not connected")
 
     assert phoenix_server.closes == []
@@ -106,10 +105,11 @@ async def test_close_connection_before_entering_does_nothing(
 
 async def test_additional_headers_are_sent_on_the_ws_handshake(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     """`additional_headers` ride the WebSocket handshake, so a caller can send the
     API key as an `x-api-key` header (for proxy in-header injection) rather than
-    only in the URL query."""
+    only in the URL query.
+    """
     headers = {"x-api-key": "header-only-value"}
 
     async with make_client(phoenix_server, additional_headers=headers) as client:
@@ -123,7 +123,7 @@ async def test_additional_headers_are_sent_on_the_ws_handshake(
 
 async def test_entering_fails_when_the_server_is_unreachable(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     await phoenix_server.stop()
 
     with pytest.raises(PHXConnectionError):
@@ -131,14 +131,16 @@ async def test_entering_fails_when_the_server_is_unreachable(
             pass
 
 
-async def test_run_forever_before_entering_raises(phoenix_server: FakePhoenixServer):
+async def test_run_forever_before_entering_raises(
+    phoenix_server: FakePhoenixServer,
+) -> None:
     with pytest.raises(PHXConnectionError, match="not connected"):
         await make_client(phoenix_server).run_forever()
 
 
 async def test_on_disconnect_receives_the_error_that_ended_the_connection(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     errors: asyncio.Queue[Exception | None] = asyncio.Queue()
     client = make_client(phoenix_server, auto_reconnect=False, on_disconnect=errors.put)
 
@@ -152,7 +154,7 @@ async def test_on_disconnect_receives_the_error_that_ended_the_connection(
 
 async def test_on_reconnect_fires_after_a_reconnect_but_not_the_first_connect(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     reconnects: asyncio.Queue[None] = asyncio.Queue()
 
     async def on_reconnect() -> None:
@@ -171,7 +173,7 @@ async def test_on_reconnect_fires_after_a_reconnect_but_not_the_first_connect(
 
 async def test_raising_lifecycle_callbacks_do_not_stop_reconnecting(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     async def fail_on_disconnect(error: Exception | None) -> None:
         raise ValueError("callback boom")
 
@@ -204,6 +206,6 @@ async def test_raising_lifecycle_callbacks_do_not_stop_reconnecting(
 )
 def test_an_out_of_range_client_option_is_rejected(
     option: str, value: Any, message: str
-):
+) -> None:
     with pytest.raises(ValueError, match=message):
         make_client(FakePhoenixServer(), **{option: value})

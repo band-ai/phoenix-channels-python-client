@@ -6,7 +6,6 @@ from typing import Any, NewType
 
 from pydantic import BaseModel, ConfigDict
 
-
 PHOENIX_TOPIC = "phoenix"
 
 

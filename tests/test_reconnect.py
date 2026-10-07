@@ -11,11 +11,8 @@ from websockets.frames import CloseCode
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
 from phoenix_channels_python_client.phx_messages import ChannelMessage, PHXEvent
-
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
-    reconnect_after,
-    wait_forever,
     ASYNC_TIMEOUT_S,
     FAST_RECONNECT,
     JOIN_TIMEOUT_S,
@@ -30,8 +27,10 @@ from tests.support import (
     expect_message,
     make_client,
     reconnect,
+    reconnect_after,
     rejoin_settled,
     wait_for_condition,
+    wait_forever,
 )
 
 # Short, so a callback that is never released gets cancelled promptly.
@@ -111,7 +110,7 @@ def rejoin_outcome(client: PHXChannelsClient) -> RejoinOutcome | None:
 @each_protocol
 async def test_a_service_restart_reconnects_and_rejoins_the_topic(
     phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
-):
+) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         await client.subscribe_to_topic(TOPIC, received.put)
 
@@ -122,7 +121,7 @@ async def test_a_service_restart_reconnects_and_rejoins_the_topic(
 
 async def test_with_auto_reconnect_disabled_a_service_restart_disconnects(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     async with make_client(phoenix_server, auto_reconnect=False) as client:
         await client.subscribe_to_topic(TOPIC)
 
@@ -133,7 +132,7 @@ async def test_with_auto_reconnect_disabled_a_service_restart_disconnects(
 
 async def test_try_again_later_holds_the_reconnect_for_its_cooldown(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     policy = ReconnectPolicy.model_validate(
         FAST_RECONNECT.model_dump()
         | {
@@ -154,7 +153,7 @@ async def test_try_again_later_holds_the_reconnect_for_its_cooldown(
 @each_protocol
 async def test_messages_queued_before_a_reconnect_are_dropped(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     handled: list[object] = []
     first_started = asyncio.Event()
 
@@ -186,7 +185,7 @@ async def test_messages_queued_before_a_reconnect_are_dropped(
 @each_protocol
 async def test_a_rejected_rejoin_unregisters_only_that_topic(
     phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
-):
+) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         await client.subscribe_to_topic(TOPIC, received.put)
         await client.subscribe_to_topic(OTHER_TOPIC)
@@ -206,7 +205,7 @@ async def test_a_rejected_rejoin_unregisters_only_that_topic(
 @each_protocol
 async def test_a_rejoin_that_times_out_keeps_the_topic_for_the_next_reconnect(
     phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
-):
+) -> None:
     client = make_client(
         phoenix_server, reconnect_policy=FAST_RECONNECT, join_timeout_s=JOIN_TIMEOUT_S
     )
@@ -263,7 +262,7 @@ async def test_a_send_failure_during_rejoin_keeps_the_topic_and_recovers(
 
 async def test_unsubscribing_during_a_rejoin_drain_keeps_the_client_running(
     phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
-):
+) -> None:
     busy = BusyCallback()
     client = make_client(
         phoenix_server,
@@ -292,7 +291,7 @@ async def test_unsubscribing_during_a_rejoin_drain_keeps_the_client_running(
 
 async def test_a_callback_failing_while_the_rejoin_drains_it_does_not_stop_the_rejoin(
     phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
-):
+) -> None:
     busy = BusyCallback()
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         await client.subscribe_to_topic(TOPIC, busy)
@@ -310,7 +309,7 @@ async def test_a_callback_failing_while_the_rejoin_drains_it_does_not_stop_the_r
 
 async def test_a_callback_outlasting_the_drain_is_cancelled_and_the_topic_rejoins(
     phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
-):
+) -> None:
     busy = BusyCallback()
     client = make_client(
         phoenix_server,
@@ -334,7 +333,7 @@ async def test_a_callback_outlasting_the_drain_is_cancelled_and_the_topic_rejoin
 
 async def test_a_subscribe_interrupted_by_a_disconnect_fails_fast(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     # The default join timeout outlasts ASYNC_TIMEOUT_S, so only failing fast passes.
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         phoenix_server.unanswered_join_ids.update(phoenix_server.current_client_ids())
@@ -390,7 +389,7 @@ async def test_a_subscribe_during_a_rejoin_fails_fast_when_the_socket_drops(
 
 async def test_shutdown_during_a_rejoin_does_not_report_a_reconnect(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     reconnects = ReconnectCounter()
     client = make_client(
         phoenix_server, reconnect_policy=FAST_RECONNECT, on_reconnect=reconnects
@@ -415,7 +414,7 @@ async def test_shutdown_during_a_rejoin_does_not_report_a_reconnect(
 @pytest.mark.parametrize("install_signal_handlers", [True, False])
 async def test_rapid_disconnects_suppress_reconnecting_and_fail_run_forever(
     phoenix_server: FakePhoenixServer, install_signal_handlers: bool
-):
+) -> None:
     policy = ReconnectPolicy.model_validate(
         FAST_RECONNECT.model_dump()
         | {
@@ -441,7 +440,7 @@ async def test_rapid_disconnects_suppress_reconnecting_and_fail_run_forever(
 @each_protocol
 async def test_a_policy_violation_close_stops_reconnecting_with_a_terminal_error(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     phoenix_server.close_on_join_ids.add(phoenix_server.next_client_id)
     phoenix_server.close_on_join_code = CloseCode.POLICY_VIOLATION
 
@@ -458,7 +457,7 @@ async def test_a_policy_violation_close_stops_reconnecting_with_a_terminal_error
 @each_protocol
 async def test_a_normal_close_does_not_reconnect_by_default(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     phoenix_server.close_on_join_ids.add(phoenix_server.next_client_id)
     phoenix_server.close_on_join_code = CloseCode.NORMAL_CLOSURE
 
@@ -472,7 +471,7 @@ async def test_a_normal_close_does_not_reconnect_by_default(
 @each_protocol
 async def test_an_unrecognised_close_code_reconnects(
     phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
-):
+) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         await client.subscribe_to_topic(TOPIC, received.put)
 
@@ -484,7 +483,7 @@ async def test_an_unrecognised_close_code_reconnects(
 @each_protocol
 async def test_a_frame_the_client_cannot_parse_triggers_a_reconnect(
     phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
-):
+) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         await client.subscribe_to_topic(TOPIC, received.put)
 

@@ -1,5 +1,6 @@
 """Stand-ins for driving the client's internals directly, for races and
-defensive branches the fake server can't trigger. Prefer the fake server."""
+defensive branches the fake server can't trigger. Prefer the fake server.
+"""
 
 from __future__ import annotations
 
@@ -18,13 +19,12 @@ from phoenix_channels_python_client.client_types import (
 )
 from phoenix_channels_python_client.phx_messages import ChannelMessage
 from phoenix_channels_python_client.protocol_handler import (
-    PHXProtocolHandler,
     PhoenixChannelsProtocolVersion,
+    PHXProtocolHandler,
 )
 from phoenix_channels_python_client.supervisor import SupervisorMixin
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
-
 from tests.support import TOPIC
 
 # Short, so harness joins and leaves that get no reply time out promptly.

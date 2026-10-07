@@ -13,8 +13,8 @@ from phoenix_channels_python_client.client_state_machine import transition_clien
 from phoenix_channels_python_client.client_types import ClientState, ReconnectPolicy
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.protocol_handler import (
-    PHXProtocolHandler,
     PhoenixChannelsProtocolVersion,
+    PHXProtocolHandler,
 )
 from phoenix_channels_python_client.reconnect_controller import ReconnectControllerMixin
 from phoenix_channels_python_client.supervisor import SupervisorMixin
@@ -86,7 +86,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         on_disconnect: DisconnectCallback | None = None,
         on_heartbeat_ack: HeartbeatAckCallback | None = None,
         additional_headers: dict[str, str] | None = None,
-    ):
+    ) -> None:
         self.logger = logger
 
         if heartbeat_interval_s is not None and heartbeat_interval_s <= 0:

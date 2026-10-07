@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     FAST_RECONNECT,
@@ -15,7 +14,9 @@ from tests.support import (
 HEARTBEAT_INTERVAL_S = 0.05
 
 
-async def test_heartbeats_are_sent_and_acknowledged(phoenix_server: FakePhoenixServer):
+async def test_heartbeats_are_sent_and_acknowledged(
+    phoenix_server: FakePhoenixServer,
+) -> None:
     acks: list[None] = []
 
     async with make_client(
@@ -26,14 +27,16 @@ async def test_heartbeats_are_sent_and_acknowledged(phoenix_server: FakePhoenixS
         assert await wait_for_condition(lambda: len(acks) >= 2)
 
 
-async def test_heartbeats_can_be_disabled(phoenix_server: FakePhoenixServer):
+async def test_heartbeats_can_be_disabled(phoenix_server: FakePhoenixServer) -> None:
     # The heartbeat task starts before the connection is reported ready, so
     # its absence here is final.
     async with make_client(phoenix_server, heartbeat_interval_s=None) as client:
         assert client._heartbeat_task is None
 
 
-async def test_the_heartbeat_stops_on_shutdown(phoenix_server: FakePhoenixServer):
+async def test_the_heartbeat_stops_on_shutdown(
+    phoenix_server: FakePhoenixServer,
+) -> None:
     client = make_client(phoenix_server, heartbeat_interval_s=HEARTBEAT_INTERVAL_S)
 
     async with client:
@@ -45,7 +48,7 @@ async def test_the_heartbeat_stops_on_shutdown(phoenix_server: FakePhoenixServer
 
 async def test_the_heartbeat_resumes_after_a_reconnect(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     acks: list[None] = []
 
     client = make_client(
@@ -64,7 +67,7 @@ async def test_the_heartbeat_resumes_after_a_reconnect(
 
 async def test_an_unanswered_heartbeat_is_reported(
     phoenix_server: FakePhoenixServer, caplog: pytest.LogCaptureFixture
-):
+) -> None:
     phoenix_server.answer_heartbeats = False
 
     async with make_client(phoenix_server, heartbeat_interval_s=HEARTBEAT_INTERVAL_S):

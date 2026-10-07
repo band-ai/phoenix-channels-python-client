@@ -19,7 +19,6 @@ from phoenix_channels_python_client.shutdown_signals import (
     _on_shutdown_signal,
     handle_shutdown_signals,
 )
-
 from tests.fake_server import FakePhoenixServer
 from tests.support import ASYNC_TIMEOUT_S, STOP_REASON, make_client
 

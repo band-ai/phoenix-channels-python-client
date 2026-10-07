@@ -9,10 +9,9 @@ import pytest
 from websockets import ClientConnection
 
 from phoenix_channels_python_client.protocol_handler import (
-    PHXProtocolHandler,
     PhoenixChannelsProtocolVersion,
+    PHXProtocolHandler,
 )
-
 from tests.harness import make_subscription
 from tests.support import EVENT, TOPIC
 
