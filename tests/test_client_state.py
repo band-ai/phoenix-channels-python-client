@@ -52,3 +52,8 @@ def test_an_out_of_range_reconnect_policy_cannot_be_built(
 ) -> None:
     with pytest.raises(ValidationError):
         ReconnectPolicy(**kwargs)
+
+
+def test_an_unknown_reconnect_policy_field_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ReconnectPolicy.model_validate({"base_delay": 1.0})

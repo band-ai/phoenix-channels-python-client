@@ -19,6 +19,7 @@ from phoenix_channels_python_client.utils import make_message
 
 from tests.harness import (
     HARNESS_RECONNECT_DELAY_S,
+    HARNESS_STABLE_RESET_S,
     FakeSocket,
     SupervisorHarness,
     connect_to,
@@ -27,6 +28,9 @@ from tests.harness import (
 from tests.support import wait_forever
 
 HEARTBEAT_REF = "5"
+
+# Past the harness's stable reset, with margin for the loop clock's resolution.
+STABLE_UPTIME_S = 2 * HARNESS_STABLE_RESET_S
 
 Connect = Callable[[str], Awaitable[ClientConnection]]
 
@@ -111,7 +115,7 @@ async def test_a_rejoin_error_does_not_stop_the_supervisor(
 async def test_a_connection_outliving_stable_reset_clears_the_rapid_history(
     use_connect: Callable[[Connect], None],
 ) -> None:
-    harness = SupervisorHarness()  # stable_reset_s=0: every connection is stable
+    harness = SupervisorHarness(connection_uptime_s=STABLE_UPTIME_S)
     harness._rapid_disconnects.extend([1.0, 2.0])
     use_connect(connect_to)
 

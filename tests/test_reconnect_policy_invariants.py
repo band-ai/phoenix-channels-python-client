@@ -16,15 +16,6 @@ def _make_client(policy: ReconnectPolicy | None = None) -> PHXChannelsClient:
     )
 
 
-def test_invalid_reconnect_policy_is_rejected() -> None:
-    bad_policy = ReconnectPolicy(
-        service_restart_min_delay_s=2.0,
-        service_restart_max_delay_s=1.0,
-    )
-    with pytest.raises(ValueError, match="Invalid reconnect policy"):
-        _ = _make_client(bad_policy)
-
-
 def test_client_maintains_redacted_socket_url_for_logging() -> None:
     client = _make_client()
     assert "api_key=test-key" in client.channel_socket_url
