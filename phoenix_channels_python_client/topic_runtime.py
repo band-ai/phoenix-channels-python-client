@@ -492,12 +492,12 @@ class TopicRuntimeMixin:
     async def _rejoin_topic(
         self, topic_subscription: TopicSubscription, generation: int
     ) -> None:
-        if topic_subscription.leave_requested.is_set():
+        if not self._should_rejoin(topic_subscription):
             return
 
         await self._drain_callback(topic_subscription)
-        # The app may unsubscribe while the callback drains.
-        if topic_subscription.leave_requested.is_set():
+        # The topic may be left or unregistered while the callback drains.
+        if not self._should_rejoin(topic_subscription):
             return
 
         await self._restart_topic(topic_subscription, generation)
@@ -505,6 +505,12 @@ class TopicRuntimeMixin:
             await self._join(topic_subscription)
         except Exception as exc:
             await self._handle_rejoin_failure(topic_subscription.name, exc)
+
+    def _should_rejoin(self, topic_subscription: TopicSubscription) -> bool:
+        is_registered = (
+            self._topic_subscriptions.get(topic_subscription.name) is topic_subscription
+        )
+        return is_registered and not topic_subscription.leave_requested.is_set()
 
     async def _restart_topic(
         self, topic_subscription: TopicSubscription, generation: int
