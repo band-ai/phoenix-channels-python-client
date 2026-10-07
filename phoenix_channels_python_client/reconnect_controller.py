@@ -62,19 +62,18 @@ class ReconnectControllerMixin:
         return should_suppress
 
     def _rapid_floors(self) -> tuple[float, ...]:
-        """Each early rapid disconnect's own floor; the cooldown follows them."""
+        """The floor for each rapid-disconnect count before the cooldown starts."""
         return (
+            0.0,
             self.reconnect_policy.rapid_first_min_delay_s,
             self.reconnect_policy.rapid_second_min_delay_s,
         )
 
     def _rapid_min_delay(self, rapid_count: int) -> float:
         floors = self._rapid_floors()
-        if rapid_count == 0:
-            return 0.0
-        if rapid_count <= len(floors):
-            return floors[rapid_count - 1]
-        steps = rapid_count - len(floors) - 1
+        if rapid_count < len(floors):
+            return floors[rapid_count]
+        steps = rapid_count - len(floors)
         return min(
             self.reconnect_policy.rapid_cooldown_base_s
             + (self.reconnect_policy.rapid_cooldown_step_s * steps),
@@ -95,7 +94,7 @@ class ReconnectControllerMixin:
         if delay <= 0:
             return 0.0
 
-        if rapid_count > len(self._rapid_floors()):
+        if rapid_count >= len(self._rapid_floors()):
             low_ratio = self.reconnect_policy.rapid_hold_down_jitter_low_ratio
             high_ratio = self.reconnect_policy.rapid_hold_down_jitter_high_ratio
             min_jittered = delay * low_ratio

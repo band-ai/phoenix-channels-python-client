@@ -241,8 +241,6 @@ class SupervisorMixin:
             self._settle_supervisor_exit()
 
     async def _connect(self) -> ClientConnection:
-        if not self.additional_headers:
-            return await connect(self.channel_socket_url)
         return await connect(
             self.channel_socket_url, additional_headers=self.additional_headers
         )
@@ -258,8 +256,7 @@ class SupervisorMixin:
             return False
         if self._suppressed_after_disconnect(0.0):
             return False
-        # Only the initial connect moves the state; shutdown may have begun.
-        if self._state == ClientState.CONNECTING:
+        if self._state != ClientState.SHUTTING_DOWN:
             self._deps._transition_state(ClientState.RECONNECTING)
         return True
 
