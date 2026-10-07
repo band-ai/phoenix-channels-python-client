@@ -248,7 +248,5 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
             return
 
         transitioned_state = transition_client_state(self._state, new_state)
-        self.logger.debug(
-            "Client state transition: %s -> %s", self._state.value, new_state.value
-        )
+        self.logger.debug("Client state transition: %s -> %s", self._state, new_state)
         self._state = transitioned_state
