@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from websockets.frames import CloseCode
 
-from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
+from phoenix_channels_python_client.client import ReconnectPolicy
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 
 from tests.fake_server import FakePhoenixServer
@@ -16,9 +16,19 @@ from tests.support import (
     FAST_RECONNECT,
     TOPIC,
     UNPARSEABLE_FRAME,
+    expect_message,
     make_client,
     reconnect,
+    reconnect_after,
+    wait_for_condition,
 )
+
+# The close code the client sends when it drops a connection on purpose. Spelled
+# out, not imported, so the test pins the value peers see.
+FORCED_CLOSE_CODE = 4000
+
+# A close reason's limit in bytes, per RFC 6455.
+MAX_CLOSE_REASON_BYTES = 123
 
 
 async def test_run_forever_returns_when_the_server_closes_normally(
@@ -36,20 +46,45 @@ async def test_run_forever_returns_when_the_server_closes_normally(
     assert client.connection is None
 
 
-async def test_leaving_the_client_shuts_it_down(phoenix_server: FakePhoenixServer):
+async def test_leaving_the_client_closes_its_connection(
+    phoenix_server: FakePhoenixServer,
+):
     async with make_client(phoenix_server) as client:
-        pass
+        assert phoenix_server.list_client_connections()
 
-    assert client._shutdown_event.is_set()
+    assert client.connection is None
+    assert await wait_for_condition(
+        lambda: not phoenix_server.list_client_connections()
+    )
 
 
-async def test_reconnection_is_enabled_by_default(client: PHXChannelsClient):
-    assert client.auto_reconnect is True
+async def test_close_connection_drops_the_connection_and_the_client_reconnects(
+    phoenix_server: FakePhoenixServer,
+):
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        await reconnect_after(client, client.close_connection("dead threshold"))
+
+    assert phoenix_server.closes[0] == (FORCED_CLOSE_CODE, "dead threshold")
 
 
-async def test_reconnection_can_be_disabled(phoenix_server: FakePhoenixServer):
-    async with make_client(phoenix_server, auto_reconnect=False) as client:
-        assert client.auto_reconnect is False
+async def test_close_connection_truncates_an_oversized_reason(
+    phoenix_server: FakePhoenixServer,
+):
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        await reconnect_after(client, client.close_connection("x" * 200))
+
+    assert phoenix_server.closes[0] == (
+        FORCED_CLOSE_CODE,
+        "x" * MAX_CLOSE_REASON_BYTES,
+    )
+
+
+async def test_close_connection_before_entering_does_nothing(
+    phoenix_server: FakePhoenixServer,
+):
+    await make_client(phoenix_server).close_connection("not connected")
+
+    assert phoenix_server.closes == []
 
 
 async def test_additional_headers_are_sent_on_the_ws_handshake(
@@ -61,14 +96,10 @@ async def test_additional_headers_are_sent_on_the_ws_handshake(
     headers = {"x-api-key": "header-only-value"}
 
     async with make_client(phoenix_server, additional_headers=headers) as client:
-        # subscribing forces a live connection, so the server sees the handshake
-        await client.subscribe_to_topic(TOPIC)
+        (server_ws,) = phoenix_server.list_client_connections()
+        assert server_ws.request is not None
+        assert server_ws.request.headers["x-api-key"] == headers["x-api-key"]
 
-    server_ws = phoenix_server.client_websocket
-    assert server_ws is not None
-    request = server_ws.request
-    assert request is not None
-    assert request.headers["x-api-key"] == headers["x-api-key"]
     # the header is additive; the existing api_key query param is untouched
     assert f"api_key={API_KEY}" in client.channel_socket_url
 
@@ -97,7 +128,7 @@ async def test_on_disconnect_receives_the_error_that_ended_the_connection(
     async with client:
         await phoenix_server.send_raw(UNPARSEABLE_FRAME)
 
-        error = await asyncio.wait_for(errors.get(), ASYNC_TIMEOUT_S)
+        error = await expect_message(errors)
 
     assert isinstance(error, ValueError)
 
@@ -118,7 +149,7 @@ async def test_on_reconnect_fires_after_a_reconnect_but_not_the_first_connect(
 
         await reconnect(phoenix_server, client)
 
-        await asyncio.wait_for(reconnects.get(), ASYNC_TIMEOUT_S)
+        await expect_message(reconnects)
 
 
 async def test_raising_lifecycle_callbacks_do_not_stop_reconnecting(
@@ -163,4 +194,4 @@ def test_an_out_of_range_client_option_is_rejected(
     option: str, value: Any, message: str
 ):
     with pytest.raises(ValueError, match=message):
-        PHXChannelsClient(FakePhoenixServer().url, api_key=API_KEY, **{option: value})
+        make_client(FakePhoenixServer(), **{option: value})

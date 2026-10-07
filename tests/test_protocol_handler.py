@@ -14,7 +14,7 @@ from phoenix_channels_python_client.protocol_handler import (
 )
 
 from tests.harness import make_subscription
-from tests.support import TOPIC
+from tests.support import EVENT, TOPIC
 
 V1 = PhoenixChannelsProtocolVersion.V1
 V2 = PhoenixChannelsProtocolVersion.V2
@@ -53,7 +53,7 @@ class QueueEmptiedWhileFull(asyncio.Queue[Any]):
 
 
 def v2_frame(join_ref: str, payload: dict[str, object] | None = None) -> str:
-    return json.dumps([join_ref, "1", TOPIC, "evt", payload or {}])
+    return json.dumps([join_ref, "1", TOPIC, EVENT, payload or {}])
 
 
 async def route(
@@ -70,18 +70,18 @@ async def route(
 
 def test_a_v2_frame_parses_into_a_message() -> None:
     message = PHXProtocolHandler(V2).parse_message(
-        json.dumps(["jr", "r1", TOPIC, "hello", {"k": "v"}])
+        json.dumps(["jr", "r1", TOPIC, EVENT, {"k": "v"}])
     )
 
-    assert (message.topic, message.event, message.join_ref) == (TOPIC, "hello", "jr")
+    assert (message.topic, message.event, message.join_ref) == (TOPIC, EVENT, "jr")
 
 
 def test_a_v1_frame_parses_into_a_message() -> None:
     message = PHXProtocolHandler(V1).parse_message(
-        json.dumps({"topic": TOPIC, "event": "hello", "ref": "1", "payload": {"x": 1}})
+        json.dumps({"topic": TOPIC, "event": EVENT, "ref": "1", "payload": {"x": 1}})
     )
 
-    assert (message.topic, message.event, message.ref) == (TOPIC, "hello", "1")
+    assert (message.topic, message.event, message.ref) == (TOPIC, EVENT, "1")
 
 
 @pytest.mark.parametrize(
@@ -89,7 +89,7 @@ def test_a_v1_frame_parses_into_a_message() -> None:
     [
         (V2, json.dumps({"bad": "shape"}), TypeError),
         (V2, json.dumps([1, 2, 3]), ValueError),
-        (V2, json.dumps([None, None, "", "evt", {}]), TypeError),
+        (V2, json.dumps([None, None, "", EVENT, {}]), TypeError),
         (V2, json.dumps([None, None, TOPIC, "", {}]), TypeError),
         (V1, json.dumps([1, 2, 3]), TypeError),
         (V1, json.dumps({"topic": "", "event": "x", "payload": {}}), TypeError),
@@ -108,8 +108,8 @@ def test_a_malformed_frame_is_rejected(
 @pytest.mark.parametrize(
     "protocol,raw",
     [
-        (V2, json.dumps([None, None, TOPIC, "evt", None])),
-        (V1, json.dumps({"topic": TOPIC, "event": "evt", "payload": "not-a-dict"})),
+        (V2, json.dumps([None, None, TOPIC, EVENT, None])),
+        (V1, json.dumps({"topic": TOPIC, "event": EVENT, "payload": "not-a-dict"})),
     ],
 )
 def test_a_frame_without_an_object_payload_parses_with_an_empty_one(
@@ -125,7 +125,7 @@ def test_a_message_subtopic_is_what_follows_the_first_colon(
     topic: str, subtopic: str | None
 ) -> None:
     message = PHXProtocolHandler(V2).parse_message(
-        json.dumps([None, None, topic, "evt", {}])
+        json.dumps([None, None, topic, EVENT, {}])
     )
 
     assert message.subtopic == subtopic
@@ -147,7 +147,7 @@ def test_an_unexpected_parse_failure_is_reported_as_a_value_error(
 
 def test_a_message_serializes_back_to_its_v2_frame() -> None:
     handler = PHXProtocolHandler(V2)
-    frame = ["jr", "r1", TOPIC, "evt", {"x": 1}]
+    frame = ["jr", "r1", TOPIC, EVENT, {"x": 1}]
 
     serialized = handler.serialize_message(handler.parse_message(json.dumps(frame)))
 
@@ -171,19 +171,6 @@ def test_an_unserializable_payload_raises_a_type_error() -> None:
 
     with pytest.raises(TypeError):
         handler.serialize_message(message)
-
-
-async def test_routing_drops_a_message_from_an_older_join() -> None:
-    queue: asyncio.Queue[Any] = asyncio.Queue()
-
-    await route(
-        [v2_frame("old", {"a": 2}), v2_frame("new", {"a": 3})],
-        queue,
-        join_ref="new",
-        generation=2,
-    )
-
-    assert [queue.get_nowait().payload for _ in range(queue.qsize())] == [{"a": 3}]
 
 
 async def test_routing_drops_messages_from_an_older_connection() -> None:

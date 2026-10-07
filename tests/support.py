@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
-from typing import Any
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, TypeVar
 
 import pytest
 from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
-from phoenix_channels_python_client.phx_messages import ChannelMessage
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
@@ -40,7 +39,12 @@ ASYNC_TIMEOUT_S = 2.0
 LEAVE_TIMEOUT_S = 0.05
 
 # Long enough for a local join reply, short enough to time out an unanswered one.
-JOIN_TIMEOUT_S = 0.2
+JOIN_TIMEOUT_S = 0.1
+
+# How often a condition is polled; far below every timeout the tests use.
+POLL_INTERVAL_S = 0.01
+
+T = TypeVar("T")
 
 # Every reconnect delay and cooldown is near zero, so no test waits on backoff.
 FAST_RECONNECT = ReconnectPolicy(
@@ -81,9 +85,7 @@ def make_client(
 
 
 async def wait_for_condition(
-    condition: Callable[[], bool],
-    timeout: float = ASYNC_TIMEOUT_S,
-    interval: float = 0.05,
+    condition: Callable[[], bool], timeout: float = ASYNC_TIMEOUT_S
 ) -> bool:
     """Poll ``condition`` until it is true; False if ``timeout`` passes first."""
     loop = asyncio.get_running_loop()
@@ -91,8 +93,13 @@ async def wait_for_condition(
     while loop.time() < deadline:
         if condition():
             return True
-        await asyncio.sleep(interval)
+        await asyncio.sleep(POLL_INTERVAL_S)
     return False
+
+
+async def wait_forever() -> None:
+    """A stand-in for work that only ends when cancelled."""
+    await asyncio.Event().wait()
 
 
 async def deliver(
@@ -107,8 +114,17 @@ async def deliver(
     await server.simulate_server_event(topic, event, payload or {}, join_ref=join_ref)
 
 
-async def expect_message(received: asyncio.Queue[ChannelMessage]) -> ChannelMessage:
+async def expect_message(received: asyncio.Queue[T]) -> T:
     return await asyncio.wait_for(received.get(), ASYNC_TIMEOUT_S)
+
+
+async def reconnect_after(
+    client: PHXChannelsClient, drop_connection: Awaitable[None]
+) -> None:
+    """Run ``drop_connection`` and wait until the client holds a new connection."""
+    generation = client._conn_generation
+    await drop_connection
+    assert await wait_for_condition(lambda: client._conn_generation > generation)
 
 
 async def reconnect(
@@ -116,10 +132,8 @@ async def reconnect(
     client: PHXChannelsClient,
     code: int = CloseCode.SERVICE_RESTART,
 ) -> None:
-    """Drop every connection and wait until the client holds a new one."""
-    generation = client._conn_generation
-    await server.close_all_clients(code=code)
-    assert await wait_for_condition(lambda: client._conn_generation > generation)
+    """Close every connection with ``code`` and wait for the client to reconnect."""
+    await reconnect_after(client, server.close_all_clients(code=code))
 
 
 def rejoin_settled(client: PHXChannelsClient, topic: str = TOPIC) -> Callable[[], bool]:

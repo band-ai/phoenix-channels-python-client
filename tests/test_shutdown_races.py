@@ -12,6 +12,7 @@ from phoenix_channels_python_client.phx_messages import ChannelMessage
 
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
+    wait_forever,
     ASYNC_TIMEOUT_S,
     FAST_RECONNECT,
     LEAVE_TIMEOUT_S,
@@ -47,7 +48,7 @@ class HeldCallback:
     async def __call__(self, message: ChannelMessage) -> None:
         self.running.set()
         try:
-            await asyncio.Event().wait()
+            await wait_forever()
         except asyncio.CancelledError:
             self.cancelled.set()
             await self.release.wait()

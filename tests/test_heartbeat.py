@@ -12,22 +12,18 @@ from tests.support import (
 )
 
 # Short enough that a test sees several heartbeats.
-HEARTBEAT_INTERVAL_S = 0.1
+HEARTBEAT_INTERVAL_S = 0.05
 
 
 async def test_heartbeats_are_sent_and_acknowledged(phoenix_server: FakePhoenixServer):
-    acks = 0
-
-    def count_ack() -> None:
-        nonlocal acks
-        acks += 1
+    acks: list[None] = []
 
     async with make_client(
         phoenix_server,
         heartbeat_interval_s=HEARTBEAT_INTERVAL_S,
-        on_heartbeat_ack=count_ack,
+        on_heartbeat_ack=lambda: acks.append(None),
     ):
-        assert await wait_for_condition(lambda: acks >= 2)
+        assert await wait_for_condition(lambda: len(acks) >= 2)
 
 
 async def test_heartbeats_can_be_disabled(phoenix_server: FakePhoenixServer):
@@ -50,21 +46,20 @@ async def test_the_heartbeat_stops_on_shutdown(phoenix_server: FakePhoenixServer
 async def test_the_heartbeat_resumes_after_a_reconnect(
     phoenix_server: FakePhoenixServer,
 ):
+    acks: list[None] = []
+
     client = make_client(
         phoenix_server,
         heartbeat_interval_s=HEARTBEAT_INTERVAL_S,
         reconnect_policy=FAST_RECONNECT,
+        on_heartbeat_ack=lambda: acks.append(None),
     )
 
     async with client:
         await reconnect(phoenix_server, client)
+        acks.clear()
 
-        # It runs on the new connection and the server acknowledges it.
-        assert await wait_for_condition(
-            lambda: client._heartbeat_task is not None
-            and not client._heartbeat_task.done()
-            and client._pending_heartbeat_ref is None
-        )
+        assert await wait_for_condition(lambda: bool(acks))
 
 
 async def test_an_unanswered_heartbeat_is_reported(
