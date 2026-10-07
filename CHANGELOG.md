@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.2.4...phoenix-channels-python-client-v0.2.5) (2026-10-07)
+
+
+### Features
+
+* **client:** add install_signal_handlers to run_forever ([160d954](https://github.com/band-ai/phoenix-channels-python-client/commit/160d9546bd28ab7a1da798b7df89b64918092257))
+
+
+### Bug Fixes
+
+* **client:** make shutdown safe under concurrent stops, reconnects and callbacks ([160d954](https://github.com/band-ai/phoenix-channels-python-client/commit/160d9546bd28ab7a1da798b7df89b64918092257))
+* **client:** raise PHXConnectionError from run_forever after the client stopped ([160d954](https://github.com/band-ai/phoenix-channels-python-client/commit/160d9546bd28ab7a1da798b7df89b64918092257))
+* **client:** restore the host's signal handlers after run_forever ([160d954](https://github.com/band-ai/phoenix-channels-python-client/commit/160d9546bd28ab7a1da798b7df89b64918092257))
+* **client:** return normally from run_forever when shutdown() is called elsewhere ([160d954](https://github.com/band-ai/phoenix-channels-python-client/commit/160d9546bd28ab7a1da798b7df89b64918092257))
+
 ## [0.2.4](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.2.3...phoenix-channels-python-client-v0.2.4) (2026-08-30)
 
 
