@@ -45,18 +45,6 @@ class TopicRuntimeMixin:
         if not topic_subscription.current_join_ready.done():
             topic_subscription.current_join_ready.set_result(None)
 
-        if not topic_subscription.subscription_ready.done():
-            topic_subscription.subscription_ready.set_result(None)
-
-    def _set_subscription_error(
-        self, topic_subscription: TopicSubscription, error: Exception
-    ) -> None:
-        if not topic_subscription.current_join_ready.done():
-            topic_subscription.current_join_ready.set_exception(error)
-
-        if not topic_subscription.subscription_ready.done():
-            topic_subscription.subscription_ready.set_exception(error)
-
     def _is_current_join_ready(self, topic: TopicSubscription) -> bool:
         if not topic.current_join_ready.done():
             return False
@@ -155,7 +143,7 @@ class TopicRuntimeMixin:
         )
 
         error = PHXTopicError(error_message)
-        self._set_subscription_error(topic, error)
+        self._set_future_exception(topic.current_join_ready, error)
         self.logger.error(
             "Failed to subscribe to topic %s: %s", topic.name, error_message
         )
@@ -241,7 +229,6 @@ class TopicRuntimeMixin:
         error: Exception,
     ) -> None:
         self._set_future_exception(topic_subscription.current_join_ready, error)
-        self._set_future_exception(topic_subscription.subscription_ready, error)
 
         if topic_subscription.leave_requested.is_set():
             self._set_future_exception(topic_subscription.unsubscribe_completed, error)

@@ -25,7 +25,6 @@ class TopicSubscription:
     queue: Queue[ChannelMessage]
     join_ref: str
     process_topic_messages_task: Task[None] | None
-    subscription_ready: Future[None] = field(default_factory=asyncio.Future)
     current_join_ready: Future[None] = field(default_factory=asyncio.Future)
     unsubscribe_completed: Future[None] = field(default_factory=asyncio.Future)
     leave_requested: asyncio.Event = field(default_factory=asyncio.Event)

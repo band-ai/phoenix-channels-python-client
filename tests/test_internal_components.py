@@ -473,7 +473,7 @@ async def test_topic_runtime_processing_state_and_join_leave_error_paths() -> No
 
     non_reply = make_message(UserEvent("user:event"), "room:lobby", payload={})
     await runtime._handle_join_response_mode(join_topic, non_reply)
-    assert join_topic.subscription_ready.done() is False
+    assert join_topic.current_join_ready.done() is False
 
     bad_join_reply = make_message(
         PHXEvent.reply,
