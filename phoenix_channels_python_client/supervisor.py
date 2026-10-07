@@ -10,6 +10,7 @@ from typing import Protocol, cast
 
 from websockets import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
+from websockets.protocol import State
 
 from phoenix_channels_python_client.client_types import (
     ClientState,
@@ -126,9 +127,9 @@ class SupervisorMixin:
     async def close_connection(self, reason: str) -> None:
         """Force-close the current connection so the supervisor's own
         disconnect handling decides whether to reconnect. No-op if not
-        currently connected."""
+        currently connected or the connection is already closing."""
         connection = self.connection
-        if connection is None:
+        if connection is None or connection.state is not State.OPEN:
             return
         reason = _truncate_close_reason(reason)
         self.logger.info("Forcing connection close: %s", reason)
