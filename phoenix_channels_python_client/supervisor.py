@@ -266,7 +266,11 @@ class SupervisorMixin:
                 ):
                     self._initial_connection_future.set_result(None)
 
-                if generation > 1 and self._on_reconnect is not None:
+                if (
+                    generation > 1
+                    and self._on_reconnect is not None
+                    and not self._shutdown_event.is_set()
+                ):
                     await self._invoke_callback_safely(
                         "on_reconnect", self._on_reconnect
                     )
