@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import Enum, unique
 from functools import cached_property
 from typing import Any, NewType
+
+from pydantic import BaseModel, ConfigDict
 
 
 PHOENIX_TOPIC = "phoenix"
@@ -27,8 +28,9 @@ Event = UserEvent
 ChannelEvent = PHXEvent | UserEvent
 
 
-@dataclass(frozen=True)
-class BasePHXMessage:
+class BasePHXMessage(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     topic: str
     ref: str | None
     payload: dict[str, Any]
@@ -41,13 +43,11 @@ class BasePHXMessage:
         return subtopic
 
 
-@dataclass(frozen=True)
 class PHXMessage(BasePHXMessage):
     event: Event
     join_ref: str | None = None
 
 
-@dataclass(frozen=True)
 class PHXEventMessage(BasePHXMessage):
     event: PHXEvent
     join_ref: str | None = None

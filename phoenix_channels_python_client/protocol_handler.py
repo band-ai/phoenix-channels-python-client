@@ -24,6 +24,11 @@ class PhoenixChannelsProtocolVersion(Enum):
     V2 = "2.0"
 
 
+def _as_ref(value: object) -> str | None:
+    """A frame's ref or join_ref as a string; servers may send numbers."""
+    return None if value is None else str(value)
+
+
 class PHXProtocolHandler:
     def __init__(
         self,
@@ -69,8 +74,8 @@ class PHXProtocolHandler:
                     topic=topic,
                     event=Event(event),
                     payload=payload,
-                    ref=ref if ref is None else str(ref),
-                    join_ref=join_ref if join_ref is None else str(join_ref),
+                    ref=_as_ref(ref),
+                    join_ref=_as_ref(join_ref),
                 )
 
             if not isinstance(parsed_data, dict):
@@ -93,8 +98,8 @@ class PHXProtocolHandler:
                 topic=topic,
                 event=Event(event),
                 payload=payload,
-                ref=parsed_data.get("ref"),
-                join_ref=parsed_data.get("join_ref"),
+                ref=_as_ref(parsed_data.get("ref")),
+                join_ref=_as_ref(parsed_data.get("join_ref")),
             )
         except (TypeError, ValueError):
             self.logger.exception("Failed to parse message")
