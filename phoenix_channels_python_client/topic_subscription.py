@@ -34,6 +34,8 @@ class TopicSubscription:
     conn_generation: int = 0
     dropped_message_count: int = 0
     current_callback_task: Future[None] | None = None
+    # Rejoins the channel after a crash, while the socket stays up.
+    recovery_task: Task[None] | None = None
 
     def add_event_handler(
         self, event: ChannelEvent, handler: Callable[[dict[str, Any]], Awaitable[None]]

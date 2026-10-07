@@ -120,6 +120,8 @@ class TopicRuntimeHarness(TopicRuntimeMixin):
         self.leave_timeout_s = HARNESS_TIMEOUT_S
         self.max_topic_queue_size = 10
         self.callback_drain_timeout_s = HARNESS_TIMEOUT_S
+        self._on_topic_lost = None
+        self._lifecycle_tasks: set[asyncio.Task[None]] = set()
 
     def register(self, subscription: TopicSubscription) -> TopicSubscription:
         self._topic_subscriptions[subscription.name] = subscription
