@@ -93,7 +93,8 @@ class ReconnectControllerMixin:
             max_jittered = delay * high_ratio
             computed = self._random_between(min_jittered, max_jittered)
             logger.debug(
-                "Computed reconnect delay with hold-down jitter. attempt=%s rapid_count=%s base_delay_s=%s min_delay_s=%s computed_delay_s=%s",
+                "Computed reconnect delay with hold-down jitter. attempt=%s "
+                "rapid_count=%s base_delay_s=%s min_delay_s=%s computed_delay_s=%s",
                 attempt,
                 rapid_count,
                 base_delay,
@@ -110,9 +111,10 @@ class ReconnectControllerMixin:
             return computed
 
         # Equal jitter avoids synchronization while keeping a meaningful minimum delay.
-        computed = (delay / 2) + (random.random() * (delay / 2))
+        computed = (delay / 2) + (random.random() * (delay / 2))  # noqa: S311  # jitter
         logger.debug(
-            "Computed reconnect delay with equal jitter. attempt=%s rapid_count=%s base_delay_s=%s min_delay_s=%s computed_delay_s=%s",
+            "Computed reconnect delay with equal jitter. attempt=%s rapid_count=%s "
+            "base_delay_s=%s min_delay_s=%s computed_delay_s=%s",
             attempt,
             rapid_count,
             base_delay,
@@ -147,7 +149,8 @@ class ReconnectControllerMixin:
         if close_code is None:
             decision = ReconnectDecision(should_reconnect=True)
             logger.debug(
-                "Disconnect classification result. close_code=%s close_reason=%s should_reconnect=%s",
+                "Disconnect classification result. close_code=%s close_reason=%s "
+                "should_reconnect=%s",
                 close_code,
                 close_reason,
                 decision.should_reconnect,
@@ -165,7 +168,8 @@ class ReconnectControllerMixin:
         ):
             decision = ReconnectDecision(should_reconnect=False)
             logger.debug(
-                "Disconnect classification result. close_code=%s close_reason=%s should_reconnect=%s",
+                "Disconnect classification result. close_code=%s close_reason=%s "
+                "should_reconnect=%s",
                 close_code,
                 close_reason,
                 decision.should_reconnect,
@@ -185,11 +189,13 @@ class ReconnectControllerMixin:
             decision = ReconnectDecision(
                 should_reconnect=False,
                 terminal_error=PHXConnectionError(
-                    f"Reconnect disabled due to terminal close code {CloseCode.POLICY_VIOLATION} ({reason})"
+                    "Reconnect disabled due to terminal close code "
+                    f"{CloseCode.POLICY_VIOLATION} ({reason})"
                 ),
             )
             logger.debug(
-                "Disconnect classification result. close_code=%s close_reason=%s should_reconnect=%s terminal=%s",
+                "Disconnect classification result. close_code=%s close_reason=%s "
+                "should_reconnect=%s terminal=%s",
                 close_code,
                 close_reason,
                 decision.should_reconnect,
@@ -210,7 +216,8 @@ class ReconnectControllerMixin:
                 max_delay_s=self.reconnect_policy.service_restart_max_delay_s,
             )
             logger.debug(
-                "Disconnect classification result. close_code=%s close_reason=%s should_reconnect=%s min_delay_s=%s max_delay_s=%s",
+                "Disconnect classification result. close_code=%s close_reason=%s "
+                "should_reconnect=%s min_delay_s=%s max_delay_s=%s",
                 close_code,
                 close_reason,
                 decision.should_reconnect,
@@ -233,7 +240,8 @@ class ReconnectControllerMixin:
                 max_delay_s=self.reconnect_policy.try_again_later_max_delay_s,
             )
             logger.debug(
-                "Disconnect classification result. close_code=%s close_reason=%s should_reconnect=%s min_delay_s=%s max_delay_s=%s",
+                "Disconnect classification result. close_code=%s close_reason=%s "
+                "should_reconnect=%s min_delay_s=%s max_delay_s=%s",
                 close_code,
                 close_reason,
                 decision.should_reconnect,
@@ -251,7 +259,8 @@ class ReconnectControllerMixin:
 
         decision = ReconnectDecision(should_reconnect=True)
         logger.debug(
-            "Disconnect classification result. close_code=%s close_reason=%s should_reconnect=%s",
+            "Disconnect classification result. close_code=%s close_reason=%s "
+            "should_reconnect=%s",
             close_code,
             close_reason,
             decision.should_reconnect,
@@ -282,4 +291,4 @@ class ReconnectControllerMixin:
         high = max(low, max_delay_s)
         if high == low:
             return low
-        return low + (random.random() * (high - low))
+        return low + (random.random() * (high - low))  # noqa: S311  # jitter

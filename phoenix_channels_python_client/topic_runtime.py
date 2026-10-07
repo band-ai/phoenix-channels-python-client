@@ -84,7 +84,8 @@ class TopicRuntimeMixin:
                     and message.join_ref != topic.join_ref
                 ):
                     self.logger.debug(
-                        "Dropping stale queued message for topic %s. got=%s expected=%s",
+                        "Dropping stale queued message for topic %s. got=%s "
+                        "expected=%s",
                         topic.name,
                         message.join_ref,
                         topic.join_ref,
@@ -279,7 +280,8 @@ class TopicRuntimeMixin:
     def _ensure_can_send(self, operation: str) -> None:
         if self._state != ClientState.CONNECTED or self.connection is None:
             raise PHXConnectionError(
-                f"Cannot {operation} while client is {self._state.value}. Wait for reconnection."
+                f"Cannot {operation} while client is {self._state.value}. Wait for "
+                "reconnection."
             )
 
     async def _send(
@@ -514,7 +516,7 @@ class TopicRuntimeMixin:
         self._restart_topic(topic_subscription, generation)
         try:
             await self._join(topic_subscription)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # handled per topic
             await self._handle_rejoin_failure(topic_subscription.name, exc)
 
     def _should_rejoin(self, topic_subscription: TopicSubscription) -> bool:

@@ -5,6 +5,7 @@ import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
 from types import TracebackType
+from typing import Self
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from websockets import ClientConnection
@@ -13,6 +14,7 @@ from phoenix_channels_python_client.client_state_machine import transition_clien
 from phoenix_channels_python_client.client_types import ClientState, ReconnectPolicy
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.protocol_handler import (
+    DEFAULT_PROTOCOL_VERSION,
     PhoenixChannelsProtocolVersion,
     PHXProtocolHandler,
 )
@@ -69,12 +71,12 @@ def _build_channel_socket_urls(
 
 
 class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
-    def __init__(
+    def __init__(  # noqa: PLR0913  # the public options
         self,
         websocket_url: str,
         api_key: str,
         *,
-        protocol_version: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V2,
+        protocol_version: PhoenixChannelsProtocolVersion = DEFAULT_PROTOCOL_VERSION,
         auto_reconnect: bool = True,
         reconnect_policy: ReconnectPolicy | None = None,
         join_timeout_s: float = 10.0,
@@ -163,7 +165,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
             and self.connection is None
         )
 
-    async def __aenter__(self) -> PHXChannelsClient:
+    async def __aenter__(self) -> Self:
         self.logger.debug("Entering PHXChannelsClient context")
         if self._state != ClientState.CLOSED or self._active_shutdown is not None:
             raise PHXConnectionError("Client is already running")

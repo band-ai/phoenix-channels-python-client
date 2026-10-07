@@ -18,7 +18,7 @@ class TopicProcessingState(Enum):
 
 @dataclass()
 class TopicSubscription:
-    """Represents a topic subscription with all necessary components for message handling."""
+    """A topic subscription and everything needed to handle its messages."""
 
     name: str
     async_callback: Callable[[ChannelMessage], Awaitable[None]] | None

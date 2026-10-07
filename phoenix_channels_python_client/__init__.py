@@ -1,4 +1,4 @@
-"""Phoenix Channels Python Client
+"""Phoenix Channels Python Client.
 
 A Python client library for connecting to Phoenix Channels.
 """

@@ -68,7 +68,8 @@ def setup_logging(level: int = logging.INFO) -> None:
     """Configure clean logging with timestamps for Phoenix Channels Python Client.
 
     Args:
-        level: Logging level (default: logging.INFO for production, use logging.DEBUG for development)
+        level: Logging level (default: logging.INFO for production, use
+            logging.DEBUG for development)
 
     Example:
         >>> from phoenix_channels_python_client.utils import setup_logging
