@@ -248,7 +248,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
                 )
 
     async def _stop_supervisor(self) -> None:
-        supervisor = self._supervisor_task
+        # Cleared, so run_forever() after the stop reports the client isn't running.
+        supervisor, self._supervisor_task = self._supervisor_task, None
         if supervisor is not None and not supervisor.done():
             await cancel_and_wait(supervisor)
 

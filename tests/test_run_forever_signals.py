@@ -13,6 +13,7 @@ import pytest
 
 from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.client_types import ClientState
+from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.shutdown_signals import (
     SHUTDOWN_SIGNALS,
     _on_shutdown_signal,
@@ -205,6 +206,19 @@ async def test_cancelled_run_forever_restores_and_hands_back_the_signal(
         assert installed(sentinel)
         assert client.connection is not None
         assert received == ([signal.SIGTERM] if with_signal else [])
+
+
+async def test_run_forever_after_the_client_stopped_raises(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    client = make_client(phoenix_server)
+    async with client:
+        pass
+
+    with pytest.raises(PHXConnectionError, match="not connected"):
+        await asyncio.wait_for(
+            client.run_forever(install_signal_handlers=False), ASYNC_TIMEOUT_S
+        )
 
 
 async def test_one_signal_stops_every_waiting_client(

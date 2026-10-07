@@ -92,7 +92,11 @@ async with asyncio.TaskGroup() as tasks:
     loop.add_signal_handler(
         signal.SIGTERM, lambda: tasks.create_task(client.shutdown("SIGTERM"))
     )
-    await client.run_forever(install_signal_handlers=False)
+    try:
+        await client.run_forever(install_signal_handlers=False)
+    finally:
+        # Once the group exits, a later SIGTERM must not reach the closed group.
+        loop.remove_signal_handler(signal.SIGTERM)
 ```
 
 From a plain `signal.signal` handler or another thread, use
