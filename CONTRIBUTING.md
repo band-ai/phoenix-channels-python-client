@@ -177,8 +177,9 @@ issue the branch addresses, e.g. `feat/add-user-auth-ENG-123` or
 
 ## Commit Messages
 
-This project uses [Conventional Commits](https://www.conventionalcommits.org/) enforced by Commitizen,
-with the `type` values in `release-please-config.json`'s `changelog-sections`.
+This project uses [Conventional Commits](https://www.conventionalcommits.org/). Commitizen checks
+the format of each commit message; CI checks PR titles and branch names against the `type`
+values in `release-please-config.json`'s `changelog-sections`.
 
 ## Release Process
 
