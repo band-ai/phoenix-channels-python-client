@@ -5,7 +5,6 @@ from typing import Any
 
 import pytest
 from websockets.frames import CloseCode
-from websockets.protocol import State
 
 from phoenix_channels_python_client.client import ReconnectPolicy
 from phoenix_channels_python_client.exceptions import PHXConnectionError
@@ -22,6 +21,7 @@ from tests.support import (
     make_client,
     reconnect,
     reconnect_after,
+    start_server_close,
     wait_for_condition,
 )
 
@@ -85,15 +85,9 @@ async def test_forced_close_during_a_terminal_server_close_does_not_reconnect(
     phoenix_server: FakePhoenixServer,
 ):
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
-        socket = client.connection
-        assert socket is not None
         run = asyncio.create_task(client.run_forever(install_signal_handlers=False))
-        server_close = asyncio.create_task(
-            phoenix_server.close_all_clients(code=CloseCode.POLICY_VIOLATION)
-        )
-        # Check every loop turn, to land before the client drops the connection.
-        assert await wait_for_condition(
-            lambda: socket.state is not State.OPEN, interval=0
+        server_close = await start_server_close(
+            phoenix_server, client, code=CloseCode.POLICY_VIOLATION
         )
 
         await client.close_connection(STOP_REASON)

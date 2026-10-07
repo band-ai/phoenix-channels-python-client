@@ -23,6 +23,7 @@ from tests.support import (
     ReconnectCounter,
     deliver,
     make_client,
+    reconnect,
     wait_for_condition,
 )
 
@@ -229,8 +230,9 @@ async def test_reentering_does_not_report_a_reconnect(
     async with client:
         assert reconnects.count == 0
 
-        await phoenix_server.close_all_clients(code=CloseCode.SERVICE_RESTART)
+        await reconnect(phoenix_server, client)
 
+        # on_reconnect runs after the rejoin, which follows the new connection.
         assert await wait_for_condition(lambda: reconnects.count == 1)
 
 

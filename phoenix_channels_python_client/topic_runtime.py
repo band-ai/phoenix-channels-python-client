@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from websockets import ClientConnection
+from websockets.exceptions import ConnectionClosed
 
 from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
@@ -24,6 +25,8 @@ from phoenix_channels_python_client.topic_subscription import (
     TopicSubscription,
 )
 from phoenix_channels_python_client.utils import cancel_and_wait, make_message
+
+_JOIN_NOT_SENT = "Connection lost before join could be sent"
 
 
 class TopicRuntimeMixin:
@@ -262,10 +265,7 @@ class TopicRuntimeMixin:
         )
         self._complete_pending_futures(topic_subscription, unregister_error)
 
-        task = topic_subscription.process_topic_messages_task
-        if task and not task.done() and asyncio.current_task() is not task:
-            await cancel_and_wait(task)
-
+        await self._stop_topic_task(topic_subscription)
         self.logger.info("Unregistered topic %s", topic_name)
 
     def get_current_subscriptions(self) -> dict[str, TopicSubscription]:
@@ -288,7 +288,7 @@ class TopicRuntimeMixin:
         """Send the topic's join on its current join_ref and wait for the reply."""
         connection = self.connection
         if connection is None:
-            raise PHXConnectionError("Connection lost before join could be sent")
+            raise PHXConnectionError(_JOIN_NOT_SENT)
 
         join_message = make_message(
             topic=topic_subscription.name,
@@ -297,7 +297,10 @@ class TopicRuntimeMixin:
             ref=topic_subscription.join_ref,
             join_ref=topic_subscription.join_ref,
         )
-        await self._protocol_handler.send_message(connection, join_message)
+        try:
+            await self._protocol_handler.send_message(connection, join_message)
+        except ConnectionClosed as exc:
+            raise PHXConnectionError(_JOIN_NOT_SENT) from exc
         await asyncio.wait_for(
             topic_subscription.current_join_ready, timeout=self.join_timeout_s
         )
@@ -519,7 +522,7 @@ class TopicRuntimeMixin:
 
     async def _stop_topic_task(self, topic_subscription: TopicSubscription) -> None:
         task = topic_subscription.process_topic_messages_task
-        if task and not task.done():
+        if task and not task.done() and asyncio.current_task() is not task:
             await cancel_and_wait(task)
 
     def _restart_topic(

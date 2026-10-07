@@ -130,7 +130,12 @@ class SupervisorMixin:
         disconnect handling decides whether to reconnect. No-op if not
         currently connected or the connection is already closing."""
         connection = self.connection
-        if connection is None or connection.state is not State.OPEN:
+        if connection is None:
+            return
+        if connection.state is not State.OPEN:
+            self.logger.debug(
+                "Not forcing a close; connection is already %s", connection.state.name
+            )
             return
         reason = _truncate_close_reason(reason)
         self.logger.info("Forcing connection close: %s", reason)
@@ -409,6 +414,7 @@ class SupervisorMixin:
             await connection.close()
         except asyncio.CancelledError:
             # websockets enforces close_timeout only in the task awaiting close().
+            self.logger.debug("Close cancelled before the handshake ended; aborting")
             connection.transport.abort()
             raise
         except Exception:

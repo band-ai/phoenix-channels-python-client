@@ -22,7 +22,9 @@ from tests.support import (
     deliver,
     each_protocol,
     expect_message,
+    FAST_RECONNECT,
     make_client,
+    start_server_close,
     wait_for_condition,
 )
 
@@ -41,6 +43,17 @@ async def test_subscribing_registers_the_topic_with_its_callback(
 async def test_subscribing_before_connecting_raises(phoenix_server: FakePhoenixServer):
     with pytest.raises(PHXConnectionError):
         await make_client(phoenix_server).subscribe_to_topic(TOPIC)
+
+
+async def test_subscribing_while_the_server_closes_raises_a_connection_error(
+    phoenix_server: FakePhoenixServer,
+):
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        server_close = await start_server_close(phoenix_server, client)
+
+        with pytest.raises(PHXConnectionError):
+            await client.subscribe_to_topic(TOPIC)
+        await server_close
 
 
 @each_protocol
