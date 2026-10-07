@@ -21,6 +21,9 @@ class PHXEvent(Enum):
         return self.value
 
 
+# The client handles these itself: a crash rejoins, a close loses the topic.
+CLIENT_LIFECYCLE_EVENTS = frozenset({PHXEvent.error, PHXEvent.close})
+
 UserEvent = NewType("UserEvent", str)
 # Compatibility alias for existing imports and call sites.
 Event = UserEvent

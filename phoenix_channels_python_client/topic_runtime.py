@@ -41,6 +41,8 @@ class TopicRuntimeMixin:
     leave_timeout_s: float
     max_topic_queue_size: int
     callback_drain_timeout_s: float
+    _on_topic_lost: Callable[[str, Exception], Awaitable[None]] | None
+    _lifecycle_tasks: set[asyncio.Task[None]]
 
     def _set_subscription_ready(self, topic_subscription: TopicSubscription) -> None:
         if not topic_subscription.current_join_ready.done():
@@ -269,6 +271,11 @@ class TopicRuntimeMixin:
 
     def get_current_subscriptions(self) -> dict[str, TopicSubscription]:
         return self._topic_subscriptions.copy()
+
+    def is_topic_joined(self, topic: str) -> bool:
+        """Whether ``topic``'s channel is joined now, not just subscribed."""
+        subscription = self._topic_subscriptions.get(topic)
+        return subscription is not None and self._is_current_join_ready(subscription)
 
     def get_protocol_handler(self) -> PHXProtocolHandler:
         return self._protocol_handler
