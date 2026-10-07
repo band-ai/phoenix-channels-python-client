@@ -109,6 +109,11 @@ class TopicRuntimeMixin:
             while True:
                 message = await topic.queue.get()
                 if topic.restart_requested:
+                    self.logger.debug(
+                        "Topic processor for %s stopping for a rejoin; dropping %s",
+                        topic.name,
+                        message.event,
+                    )
                     return
 
                 if (
@@ -340,7 +345,7 @@ class TopicRuntimeMixin:
         try:
             # One task for both handlers, so a rejoin's drain waits for the whole
             # message.
-            topic.current_callback_task = asyncio.ensure_future(
+            topic.current_callback_task = asyncio.create_task(
                 _run_handlers(message, message_handler, event_handler)
             )
             await topic.current_callback_task

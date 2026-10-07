@@ -38,6 +38,9 @@ from tests.support import (
 # Short, so a callback that is never released gets cancelled promptly.
 CALLBACK_DRAIN_TIMEOUT_S = 0.05
 
+# Outlasts the test, so the drain waits for the held message's release.
+HELD_DRAIN_TIMEOUT_S = ASYNC_TIMEOUT_S
+
 # Long enough to tell apart from FAST_RECONNECT's other delays.
 TRY_AGAIN_LATER_MIN_DELAY_S = 0.2
 TRY_AGAIN_LATER_MAX_DELAY_S = 0.25
@@ -191,7 +194,7 @@ async def test_the_drain_lets_the_held_message_finish_its_event_handler(
     client = make_client(
         phoenix_server,
         reconnect_policy=FAST_RECONNECT,
-        callback_drain_timeout_s=ASYNC_TIMEOUT_S,
+        callback_drain_timeout_s=HELD_DRAIN_TIMEOUT_S,
     )
     async with client:
         await client.subscribe_to_topic(TOPIC, handlers.on_message)
@@ -218,13 +221,18 @@ async def test_the_drain_starts_no_message_queued_behind_the_held_one(
     client = make_client(
         phoenix_server,
         reconnect_policy=FAST_RECONNECT,
-        callback_drain_timeout_s=ASYNC_TIMEOUT_S,
+        callback_drain_timeout_s=HELD_DRAIN_TIMEOUT_S,
     )
     async with client:
         await client.subscribe_to_topic(TOPIC, handlers.on_message)
         held, queued, after_reconnect = 1, 2, 3
         await deliver(phoenix_server, client, payload={"id": held})
         await deliver(phoenix_server, client, payload={"id": queued})
+        subscription = client.get_current_subscriptions()[TOPIC]
+        # The drain must find it queued, or the test checks nothing.
+        assert await wait_for_condition(
+            lambda: handlers.running.is_set() and not subscription.queue.empty()
+        )
         await reconnect_while_draining(phoenix_server, client, handlers.running)
 
         handlers.release.set()
