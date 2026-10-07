@@ -16,7 +16,6 @@ from phoenix_channels_python_client.phx_messages import (
     PHXEvent,
 )
 from phoenix_channels_python_client.utils import make_message
-
 from tests.harness import (
     HARNESS_RECONNECT_DELAY_S,
     HARNESS_STABLE_RESET_S,

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Minimal Phoenix Channels client.
+"""Minimal Phoenix Channels client.
 
 Connects to a Phoenix Channels server, subscribes to one topic and logs every
 message until Ctrl+C or SIGTERM.
@@ -18,8 +17,8 @@ import asyncio
 import logging
 
 from phoenix_channels_python_client import (
-    PHXChannelsClient,
     PhoenixChannelsProtocolVersion,
+    PHXChannelsClient,
     setup_logging,
 )
 from phoenix_channels_python_client.phx_messages import ChannelMessage

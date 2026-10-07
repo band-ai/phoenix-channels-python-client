@@ -10,10 +10,8 @@ from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.phx_messages import ChannelMessage
-
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
-    wait_forever,
     ASYNC_TIMEOUT_S,
     FAST_RECONNECT,
     LEAVE_TIMEOUT_S,
@@ -25,6 +23,7 @@ from tests.support import (
     make_client,
     reconnect,
     wait_for_condition,
+    wait_forever,
 )
 
 # Long enough for a shutdown that isn't held to finish against the local server.

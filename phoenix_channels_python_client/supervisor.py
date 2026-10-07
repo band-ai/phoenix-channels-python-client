@@ -128,7 +128,8 @@ class SupervisorMixin:
     async def close_connection(self, reason: str) -> None:
         """Force-close the current connection so the supervisor's own
         disconnect handling decides whether to reconnect. No-op if not
-        currently connected or the connection is already closing."""
+        currently connected or the connection is already closing.
+        """
         connection = self.connection
         if connection is None:
             return
@@ -382,7 +383,7 @@ class SupervisorMixin:
     async def _wait_for_shutdown_or_timeout(self, delay_s: float) -> None:
         try:
             await asyncio.wait_for(self._shutdown_event.wait(), timeout=delay_s)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return
 
     async def _cleanup_connection(self) -> None:

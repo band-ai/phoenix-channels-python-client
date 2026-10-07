@@ -57,7 +57,7 @@ class FakePhoenixServer:
     def __init__(
         self,
         protocol: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V2,
-    ):
+    ) -> None:
         self.protocol = protocol
         self.host = LOOPBACK_HOST
         self.port = ANY_FREE_PORT

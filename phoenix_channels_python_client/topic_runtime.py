@@ -17,8 +17,8 @@ from phoenix_channels_python_client.phx_messages import (
     PHXEvent,
 )
 from phoenix_channels_python_client.protocol_handler import (
-    PHXProtocolHandler,
     PhoenixChannelsProtocolVersion,
+    PHXProtocolHandler,
 )
 from phoenix_channels_python_client.topic_subscription import (
     TopicProcessingState,
@@ -341,7 +341,7 @@ class TopicRuntimeMixin:
 
         try:
             await self._join(topic_subscription)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             await self._unregister_topic(
                 topic,
                 error=PHXTopicError(f"Timed out waiting to subscribe to {topic}"),
@@ -382,15 +382,14 @@ class TopicRuntimeMixin:
                 await self._send(self.connection, topic_leave_message)
             elif not _allow_disconnected:
                 self._ensure_can_send("unsubscribe")
-            else:
-                if not topic_subscription.unsubscribe_completed.done():
-                    topic_subscription.unsubscribe_completed.set_result(None)
+            elif not topic_subscription.unsubscribe_completed.done():
+                topic_subscription.unsubscribe_completed.set_result(None)
 
             await asyncio.wait_for(
                 topic_subscription.unsubscribe_completed,
                 timeout=self.leave_timeout_s,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise PHXTopicError(
                 f"Timed out waiting to unsubscribe from {topic}"
             ) from exc

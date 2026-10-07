@@ -11,7 +11,6 @@ from phoenix_channels_python_client.phx_messages import ChannelMessage
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
-
 from tests.fake_server import FakePhoenixServer
 from tests.support import make_client
 

@@ -9,7 +9,6 @@ from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPo
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
-
 from tests.fake_server import FakePhoenixServer
 from tests.support import TOPIC, make_client
 
@@ -144,7 +143,7 @@ CONTENTION_WINDOW_S = 1.2
 @pytest.mark.parametrize("protocol", [PhoenixChannelsProtocolVersion.V1])
 async def test_two_clients_contending_for_one_session_reconnect_at_a_bounded_fair_rate(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     metrics = await _run_contention_trial(
         phoenix_server, clients_n=2, duration_s=CONTENTION_WINDOW_S
     )

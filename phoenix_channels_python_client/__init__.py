@@ -1,5 +1,4 @@
-"""
-Phoenix Channels Python Client
+"""Phoenix Channels Python Client
 
 A Python client library for connecting to Phoenix Channels.
 """
@@ -14,8 +13,8 @@ from phoenix_channels_python_client.client import (
     ReconnectPolicy,
 )
 from phoenix_channels_python_client.protocol_handler import (
-    PHXProtocolHandler,
     PhoenixChannelsProtocolVersion,
+    PHXProtocolHandler,
 )
 from phoenix_channels_python_client.utils import setup_logging
 
