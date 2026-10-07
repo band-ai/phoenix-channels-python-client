@@ -58,7 +58,7 @@ async def test_subscribe_to_topic_raises_phxtopicerror_when_subscribing_to_unmat
             logger.debug("Received message: %s", message)
 
         with pytest.raises(PHXTopicError) as exc_info:
-            await client.subscribe_to_topic("invalid-topic", test_callback)
+            await client.subscribe_to_topic(REJECTED_TOPIC, test_callback)
 
         assert "unmatched topic" in str(exc_info.value).lower()
 
