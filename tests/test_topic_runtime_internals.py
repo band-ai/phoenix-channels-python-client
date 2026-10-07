@@ -18,7 +18,7 @@ from tests.harness import (
     TopicRuntimeHarness,
     make_subscription,
 )
-from tests.support import ASYNC_TIMEOUT_S, TOPIC
+from tests.support import ASYNC_TIMEOUT_S, TOPIC, wait_forever
 
 USER_EVENT = UserEvent("user:event")
 
@@ -133,6 +133,29 @@ async def test_a_rejoin_skips_a_topic_being_left() -> None:
     await runtime._rejoin_topics(generation=2)
 
     assert runtime.fake_handler.sent == []
+
+
+async def test_a_rejoin_skips_a_topic_unregistered_while_its_task_stops() -> None:
+    runtime = TopicRuntimeHarness()
+    topic = runtime.register(make_subscription())
+
+    async def unregister_when_stopped() -> None:
+        # Stands in for a shutdown landing while the rejoin stops this task.
+        try:
+            await wait_forever()
+        finally:
+            runtime._topic_subscriptions.pop(topic.name)
+
+    task = asyncio.create_task(unregister_when_stopped())
+    topic.process_topic_messages_task = task
+    # Let the task start, so the rejoin's cancel lands inside its try.
+    await asyncio.sleep(0)
+
+    await runtime._rejoin_topics(generation=2)
+
+    assert runtime.fake_handler.sent == []
+    assert topic.join_ref == DEFAULT_JOIN_REF
+    assert topic.process_topic_messages_task is task
 
 
 async def test_the_processor_exits_for_an_unknown_topic() -> None:
