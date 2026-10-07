@@ -33,7 +33,7 @@ from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 from phoenix_channels_python_client.utils import cancel_and_wait, make_message
 
-from tests.conftest import ASYNC_TIMEOUT_S
+from tests.support import ASYNC_TIMEOUT_S
 
 HEARTBEAT_REF = "5"
 
