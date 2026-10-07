@@ -83,6 +83,9 @@ class FakePhoenixServer:
         # Joined channels, (client id, topic) -> the join frame's join_ref, as
         # Phoenix stores it: always None on v1, whose frames carry no join_ref.
         self.members: dict[tuple[int, str], str | None] = {}
+        # This many more joins crash right after their ok reply, as a crash in
+        # a channel's after_join would.
+        self.crashes_after_join = 0
         self.enforce_single_connection_per_api_key = False
         self.connection_attempts_by_path: dict[str, int] = {}
         # The close code and reason each finished connection received, in order.
@@ -249,6 +252,9 @@ class FakePhoenixServer:
         if frame.topic in self.VALID_TOPICS:
             self.members[(self._client_ids[websocket], frame.topic)] = frame.join_ref
             await self._reply(websocket, frame, ReplyStatus.OK)
+            if self.crashes_after_join:
+                self.crashes_after_join -= 1
+                await self._end_channel(websocket, frame.topic, WireEvent.ERROR)
         else:
             await self._reply(websocket, frame, ReplyStatus.ERROR, "unmatched topic")
 
@@ -261,13 +267,7 @@ class FakePhoenixServer:
         # Phoenix answers a leave for a topic with no channel with an ok reply
         # alone; only a live channel also sends phx_close as it stops.
         await self._reply(websocket, frame, ReplyStatus.OK)
-        member = (self._client_ids[websocket], frame.topic)
-        if member not in self.members:
-            return
-        join_ref = self.members.pop(member)
-        await self._send(
-            websocket, Frame(join_ref, join_ref, frame.topic, WireEvent.CLOSE, {})
-        )
+        await self._end_channel(websocket, frame.topic, WireEvent.CLOSE)
 
     def _drop_memberships(self, client_id: int | None) -> None:
         for member in [member for member in self.members if member[0] == client_id]:
@@ -295,12 +295,21 @@ class FakePhoenixServer:
         await self._end_channels(topic, WireEvent.CLOSE)
 
     async def _end_channels(self, topic: str, event: WireEvent) -> None:
-        # Both frames carry the stored join_ref as ref and join_ref, with no payload.
-        for websocket, client_id in list(self._client_ids.items()):
-            if (client_id, topic) not in self.members:
-                continue
-            join_ref = self.members.pop((client_id, topic))
-            await self._send(websocket, Frame(join_ref, join_ref, topic, event, {}))
+        for websocket in list(self._client_ids):
+            await self._end_channel(websocket, topic, event)
+
+    async def _end_channel(
+        self, websocket: ServerConnection, topic: str, event: WireEvent
+    ) -> None:
+        """End one client's channel, if it has one, as Phoenix's channel exit does.
+
+        The frame carries the stored join_ref as ref and join_ref, with no payload.
+        """
+        member = (self._client_ids[websocket], topic)
+        if member not in self.members:
+            return
+        join_ref = self.members.pop(member)
+        await self._send(websocket, Frame(join_ref, join_ref, topic, event, {}))
 
     async def send_raw(self, text: str) -> None:
         """Send ``text`` as-is to every client, valid frame or not."""

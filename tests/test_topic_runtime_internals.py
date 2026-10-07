@@ -17,7 +17,7 @@ from tests.harness import (
     TopicRuntimeHarness,
     make_subscription,
 )
-from tests.support import ASYNC_TIMEOUT_S, TOPIC, wait_forever
+from tests.support import ASYNC_TIMEOUT_S, TOPIC, LostTopics, wait_forever
 
 USER_EVENT = UserEvent("user:event")
 
@@ -199,3 +199,50 @@ async def test_a_processor_error_unregisters_the_topic_with_that_error(
 
     assert TOPIC not in runtime._topic_subscriptions
     assert topic.current_join_ready.exception() is failure
+
+
+async def test_each_channel_rejoin_attempt_backs_off_further() -> None:
+    timed_out_rejoins = 3
+    runtime = TopicRuntimeHarness(waits_before_stop=timed_out_rejoins + 1)
+    topic = runtime.register(
+        make_subscription(conn_generation=runtime._conn_generation)
+    )
+    runtime._mark_channel_errored(topic)
+
+    try:
+        await asyncio.wait_for(runtime._recover_channel(topic), ASYNC_TIMEOUT_S)
+    finally:
+        await runtime._unregister_topic(TOPIC)
+
+    # Each unanswered rejoin times out, so every backoff is one attempt further.
+    assert runtime.rejoin_backoff_attempts == list(range(timed_out_rejoins + 1))
+    # The shutdown during the last backoff stops the rejoin it would have sent.
+    sent = [message.event for message in runtime.fake_handler.sent]
+    assert sent == [PHXEvent.join] * timed_out_rejoins
+
+
+async def test_losing_a_replaced_topic_reports_nothing_and_keeps_the_replacement() -> (
+    None
+):
+    lost = LostTopics()
+    runtime = TopicRuntimeHarness(on_topic_lost=lost)
+    replaced = make_subscription()
+    replacement = runtime.register(make_subscription())
+
+    await runtime._lose_topic(replaced, PHXTopicError("lost"))
+
+    assert runtime.get_current_subscriptions()[TOPIC] is replacement
+    assert not lost.lost
+
+
+async def test_a_failed_lifecycle_task_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def fail() -> NoReturn:
+        raise RuntimeError
+
+    task = TopicRuntimeHarness()._track_lifecycle_task(fail())
+    await asyncio.wait({task}, timeout=ASYNC_TIMEOUT_S)
+    await asyncio.sleep(0)  # done-callbacks run on the next loop turn
+
+    assert "Channel lifecycle task failed" in caplog.text

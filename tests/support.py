@@ -11,6 +11,8 @@ from websockets.frames import CloseCode
 from websockets.protocol import State
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
+from phoenix_channels_python_client.exceptions import PHXTopicError
+from phoenix_channels_python_client.phx_messages import ChannelMessage
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
@@ -46,6 +48,11 @@ POLL_INTERVAL_S = 0.01
 
 # Short enough that a test sees several heartbeats.
 HEARTBEAT_INTERVAL_S = 0.05
+
+# Join counts for one topic: the subscribe's join, then each rejoin after it.
+SUBSCRIBED = 1
+REJOINED_ONCE = 2
+REJOINED_TWICE = 3
 
 T = TypeVar("T")
 
@@ -134,6 +141,55 @@ class LostTopics:
 
     async def __call__(self, topic: str, error: Exception) -> None:
         self.lost.append((topic, error))
+
+    def only_error(self, topic: str = TOPIC) -> PHXTopicError:
+        """The error of the one loss recorded, which must be ``topic``'s."""
+        [(lost_topic, error)] = self.lost
+        assert lost_topic == topic
+        assert isinstance(error, PHXTopicError)
+        return error
+
+
+class CallbackError(Exception):
+    pass
+
+
+class BusyCallback:
+    """A topic callback that stays busy until released, then fails."""
+
+    def __init__(self) -> None:
+        self.running = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __call__(self, message: ChannelMessage) -> None:
+        del message
+        self.running.set()
+        await self.release.wait()
+        raise CallbackError
+
+
+def joins(server: FakePhoenixServer, topic: str = TOPIC) -> int:
+    return server.join_topics.count(topic)
+
+
+def only_client_id(server: FakePhoenixServer) -> int:
+    (client_id,) = server.current_client_ids()
+    return client_id
+
+
+async def crash_with_rejoin_in_flight(
+    server: FakePhoenixServer, client: PHXChannelsClient
+) -> int:
+    """Crash TOPIC's channel, leaving the client's joins unanswered; return its id.
+
+    Returns once the recovery's rejoin is sent and waiting for its reply.
+    """
+    client_id = only_client_id(server)
+    server.unanswered_join_ids.add(client_id)
+    await server.crash_channel(TOPIC)
+    assert await wait_for_condition(lambda: joins(server) == REJOINED_ONCE)
+    assert not client.is_topic_joined(TOPIC)
+    return client_id
 
 
 async def deliver(

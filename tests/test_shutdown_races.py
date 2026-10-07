@@ -20,6 +20,7 @@ from tests.support import (
     TOPIC,
     UNPARSEABLE_FRAME,
     ReconnectCounter,
+    crash_with_rejoin_in_flight,
     deliver,
     make_client,
     reconnect,
@@ -129,12 +130,7 @@ async def test_shutdown_during_recovery_leaves_no_tasks(
     before = asyncio.all_tasks()
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         await client.subscribe_to_topic(TOPIC)
-        joined = phoenix_server.join_topics.count(TOPIC)
-        phoenix_server.unanswered_join_ids.update(phoenix_server.current_client_ids())
-        await phoenix_server.crash_channel(TOPIC)
-        assert await wait_for_condition(
-            lambda: phoenix_server.join_topics.count(TOPIC) > joined
-        )
+        await crash_with_rejoin_in_flight(phoenix_server, client)
 
     # The server's handler for the closed connection finishes on its own.
     assert await wait_for_condition(lambda: not asyncio.all_tasks() - before)

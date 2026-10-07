@@ -196,36 +196,49 @@ class TopicRuntimeMixin:
             PHXTopicError(f"Channel for topic {topic.name} crashed"),
         )
 
-    def _is_on_current_connection(self, topic: TopicSubscription) -> bool:
+    def _is_connected(self) -> bool:
         # The state stays CONNECTED while _cleanup_connection runs, but it
         # clears the connection at once.
-        return (
-            self._state == ClientState.CONNECTED
-            and self.connection is not None
-            and topic.conn_generation == self._conn_generation
-        )
+        return self._state == ClientState.CONNECTED and self.connection is not None
+
+    def _is_on_current_connection(self, topic: TopicSubscription) -> bool:
+        return self._is_connected() and topic.conn_generation == self._conn_generation
 
     def _is_recovering(self, topic: TopicSubscription) -> bool:
         return topic.recovery_task is not None and not topic.recovery_task.done()
+
+    def _channel_recoveries(self) -> list[asyncio.Task[None]]:
+        return [
+            topic.recovery_task
+            for topic in self._topic_subscriptions.values()
+            if topic.recovery_task is not None
+        ]
 
     def _track_lifecycle_task(
         self, work: Coroutine[Any, Any, None]
     ) -> asyncio.Task[None]:
         task = asyncio.create_task(work)
         self._lifecycle_tasks.add(task)
-        task.add_done_callback(self._lifecycle_tasks.discard)
+        task.add_done_callback(self._finish_lifecycle_task)
         return task
 
+    def _finish_lifecycle_task(self, task: asyncio.Task[None]) -> None:
+        self._lifecycle_tasks.discard(task)
+        # Nothing awaits these tasks, so an unexpected failure is reported here.
+        if not task.cancelled() and (error := task.exception()):
+            self.logger.error("Channel lifecycle task failed", exc_info=error)
+
     def _start_channel_recovery(self, topic: TopicSubscription) -> None:
-        # Off the current connection, the socket rejoin owns the topic.
+        # Off the current connection, the socket rejoin owns the topic. A running
+        # recovery keeps going until the channel stays joined.
         if not self._is_on_current_connection(topic) or self._is_recovering(topic):
             return
         self.logger.info("Recovering channel for topic %s", topic.name)
         topic.recovery_task = self._track_lifecycle_task(self._recover_channel(topic))
 
     def _start_topic_loss(self, topic: TopicSubscription, error: Exception) -> None:
-        if topic.recovery_task is not None:
-            topic.recovery_task.cancel()
+        # A task of its own, so a slow on_topic_lost holds up nothing else; the
+        # loss unregisters the topic, which also cancels its recovery.
         self._track_lifecycle_task(self._lose_topic(topic, error))
 
     def _can_recover(self, topic: TopicSubscription) -> bool:
@@ -250,7 +263,7 @@ class TopicRuntimeMixin:
             try:
                 await self._rejoin_topic(topic, self._conn_generation)
             except PHXTopicError as exc:
-                await self._lose_topic(topic, self._rejoin_rejected(topic, exc))
+                self._start_topic_loss(topic, self._rejoin_rejected(topic, exc))
                 return
             except (TimeoutError, PHXConnectionError) as exc:
                 self.logger.warning(
@@ -261,13 +274,15 @@ class TopicRuntimeMixin:
                     exc,
                 )
                 continue
-            if self._should_rejoin(topic):
+            # The channel can crash again before this task resumes from the join
+            # reply; then the error is already handled and the loop goes on.
+            if self._is_current_join_ready(topic):
                 self.logger.info(
                     "Recovered channel for topic %s after %s attempt(s)",
                     topic.name,
                     attempt,
                 )
-            return
+                return
 
     def _rejoin_rejected(
         self, topic: TopicSubscription, error: PHXTopicError
@@ -276,7 +291,7 @@ class TopicRuntimeMixin:
 
     async def _lose_topic(self, topic: TopicSubscription, error: Exception) -> None:
         # A topic already unsubscribed or replaced is not ours to report.
-        if self._topic_subscriptions.get(topic.name) is not topic:
+        if not self._is_registered(topic):
             return
         await self._unregister_topic(topic.name, error=error)
         self.logger.warning("Lost topic %s: %s", topic.name, error)
@@ -427,7 +442,7 @@ class TopicRuntimeMixin:
         return str(self._ref_counter)
 
     def _ensure_can_send(self, operation: str) -> None:
-        if self._state != ClientState.CONNECTED or self.connection is None:
+        if not self._is_connected():
             raise PHXConnectionError(
                 f"Cannot {operation} while client is {self._state}. Wait for "
                 "reconnection."
@@ -666,11 +681,16 @@ class TopicRuntimeMixin:
         self._restart_topic(topic_subscription, generation)
         await self._join(topic_subscription)
 
-    def _should_rejoin(self, topic_subscription: TopicSubscription) -> bool:
-        is_registered = (
+    def _is_registered(self, topic_subscription: TopicSubscription) -> bool:
+        return (
             self._topic_subscriptions.get(topic_subscription.name) is topic_subscription
         )
-        return is_registered and not topic_subscription.leave_requested.is_set()
+
+    def _should_rejoin(self, topic_subscription: TopicSubscription) -> bool:
+        return (
+            self._is_registered(topic_subscription)
+            and not topic_subscription.leave_requested.is_set()
+        )
 
     async def _stop_topic_task(self, topic_subscription: TopicSubscription) -> None:
         await _cancel_unless_current(topic_subscription.process_topic_messages_task)
@@ -698,8 +718,6 @@ class TopicRuntimeMixin:
             return
 
         if isinstance(exc, PHXTopicError):
-            # A task of its own, so a slow on_topic_lost can't hold up the
-            # rejoin of the other topics or on_reconnect.
             self._start_topic_loss(topic, self._rejoin_rejected(topic, exc))
             return
 

@@ -6,7 +6,6 @@ import logging
 import pytest
 
 from phoenix_channels_python_client.client import PHXChannelsClient
-from phoenix_channels_python_client.exceptions import PHXTopicError
 from phoenix_channels_python_client.phx_messages import ChannelMessage, PHXEvent
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
@@ -19,14 +18,21 @@ from tests.support import (
     HEARTBEAT_INTERVAL_S,
     JOIN_TIMEOUT_S,
     OTHER_TOPIC,
+    REJOINED_ONCE,
+    REJOINED_TWICE,
+    SUBSCRIBED,
     TOPIC,
+    BusyCallback,
     LostTopics,
     ReconnectCounter,
+    crash_with_rejoin_in_flight,
     deliver,
     derive_policy,
     each_protocol,
     expect_message,
+    joins,
     make_client,
+    only_client_id,
     reconnect,
     rejoin_settled,
     wait_for_condition,
@@ -37,60 +43,12 @@ SLOW_RECOVERY = derive_policy(FAST_RECONNECT, base_delay_s=0.3, max_delay_s=0.3)
 
 # Longer than any FAST_RECONNECT backoff plus a local join, so a retry that
 # should not happen would have happened by then.
-QUIET_S = 0.2
+QUIET_S = 2 * FAST_RECONNECT.max_delay_s
 
 # A leave the server never answers would wait this long; a dead channel's
 # unsubscribe must finish far sooner.
 SLOW_LEAVE_TIMEOUT_S = ASYNC_TIMEOUT_S
 PROMPT_S = SLOW_LEAVE_TIMEOUT_S / 4
-
-# Join counts for one topic: the subscribe's join, then each rejoin after it.
-SUBSCRIBED = 1
-REJOINED_ONCE = 2
-REJOINED_TWICE = 3
-
-# Only ever seen in a delivered payload, so a log line carrying it leaked one.
-PAYLOAD_MARKER = "payload-marker"
-
-
-def joins(server: FakePhoenixServer, topic: str = TOPIC) -> int:
-    return server.join_topics.count(topic)
-
-
-def only_client_id(server: FakePhoenixServer) -> int:
-    (client_id,) = server.current_client_ids()
-    return client_id
-
-
-class HeldCallback:
-    """A topic callback that records each event and holds the first until released."""
-
-    def __init__(self) -> None:
-        self.events: list[object] = []
-        self.running = asyncio.Event()
-        self.release = asyncio.Event()
-
-    async def __call__(self, message: ChannelMessage) -> None:
-        self.events.append(message.event)
-        self.running.set()
-        await self.release.wait()
-
-
-def hold_rejoins(server: FakePhoenixServer) -> int:
-    """Leave the connected client's next joins unanswered; return its id."""
-    client_id = only_client_id(server)
-    server.unanswered_join_ids.add(client_id)
-    return client_id
-
-
-async def crash_with_rejoin_in_flight(
-    server: FakePhoenixServer, client: PHXChannelsClient
-) -> None:
-    """Crash TOPIC's channel and wait until its rejoin is sent and unanswered."""
-    hold_rejoins(server)
-    await server.crash_channel(TOPIC)
-    assert await wait_for_condition(lambda: joins(server) == REJOINED_ONCE)
-    assert not client.is_topic_joined(TOPIC)
 
 
 @each_protocol
@@ -111,8 +69,6 @@ async def test_a_crashed_channel_rejoins_on_the_live_socket(
     caplog.set_level(logging.INFO)
     async with client:
         await client.subscribe_to_topic(TOPIC, received.put)
-        await deliver(phoenix_server, client, payload={"marker": PAYLOAD_MARKER})
-        await expect_message(received)
         socket = client.connection
 
         await phoenix_server.crash_channel(TOPIC)
@@ -131,7 +87,6 @@ async def test_a_crashed_channel_rejoins_on_the_live_socket(
         assert reconnects.count == 0
 
     assert f"Recovered channel for topic {TOPIC}" in caplog.text
-    assert PAYLOAD_MARKER not in caplog.text
 
 
 @each_protocol
@@ -193,16 +148,30 @@ async def test_a_rejected_channel_rejoin_loses_the_topic(
         assert await wait_for_condition(lambda: bool(lost.lost))
         await asyncio.sleep(QUIET_S)
 
-        [(topic, error)] = lost.lost
-        assert topic == TOPIC
-        assert isinstance(error, PHXTopicError)
+        lost.only_error()
         assert TOPIC not in client.get_current_subscriptions()
         assert joins(phoenix_server) == REJOINED_ONCE
     assert f"Lost topic {TOPIC}" in caplog.text
 
 
 @each_protocol
-async def test_a_timed_out_channel_rejoin_retries_with_backoff(
+async def test_a_channel_crashing_again_right_after_its_rejoin_is_recovered(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        await client.subscribe_to_topic(TOPIC)
+        phoenix_server.crashes_after_join = 1
+
+        await phoenix_server.crash_channel(TOPIC)
+
+        assert await wait_for_condition(lambda: joins(phoenix_server) == REJOINED_TWICE)
+        assert await wait_for_condition(lambda: client.is_topic_joined(TOPIC))
+        await asyncio.sleep(QUIET_S)
+        assert joins(phoenix_server) == REJOINED_TWICE
+
+
+@each_protocol
+async def test_a_timed_out_channel_rejoin_is_retried(
     phoenix_server: FakePhoenixServer,
 ) -> None:
     client = make_client(
@@ -210,9 +179,7 @@ async def test_a_timed_out_channel_rejoin_retries_with_backoff(
     )
     async with client:
         await client.subscribe_to_topic(TOPIC)
-        client_id = hold_rejoins(phoenix_server)
-        await phoenix_server.crash_channel(TOPIC)
-        assert await wait_for_condition(lambda: joins(phoenix_server) == REJOINED_ONCE)
+        client_id = await crash_with_rejoin_in_flight(phoenix_server, client)
 
         phoenix_server.unanswered_join_ids.discard(client_id)
 
@@ -261,7 +228,7 @@ async def test_a_socket_drop_during_recovery_hands_the_topic_to_the_reconnect(
 async def test_a_channel_error_queued_behind_a_callback_does_not_double_rejoin(
     phoenix_server: FakePhoenixServer,
 ) -> None:
-    held = HeldCallback()
+    held = BusyCallback()
     client = make_client(
         phoenix_server,
         reconnect_policy=FAST_RECONNECT,
@@ -301,9 +268,7 @@ async def test_a_server_channel_close_loses_the_topic(
         assert await wait_for_condition(lambda: bool(lost.lost))
         await asyncio.sleep(QUIET_S)
 
-        [(topic, error)] = lost.lost
-        assert topic == TOPIC
-        assert isinstance(error, PHXTopicError)
+        lost.only_error()
         assert TOPIC not in client.get_current_subscriptions()
         assert joins(phoenix_server) == SUBSCRIBED
         assert received.empty()

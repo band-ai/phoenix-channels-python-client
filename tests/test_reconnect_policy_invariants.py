@@ -149,18 +149,14 @@ def test_the_hold_down_jitter_spans_the_configured_ratios_of_the_cooldown(
     assert highest == pytest.approx(floor * JITTER_HIGH_RATIO)
 
 
-def test_the_exponential_delay_grows_by_the_factor_up_to_its_cap() -> None:
+def test_the_exponential_delay_doubles_up_to_its_cap() -> None:
     client = _make_client(COOLDOWN_POLICY)
-    attempts = range(10)
+    # COOLDOWN_POLICY's base, doubled by the default factor, then held at its cap.
+    expected = [0.01, 0.02, 0.04, 0.08, 0.1, 0.1]
 
-    delays = [client._exponential_delay(attempt) for attempt in attempts]
+    delays = [client._exponential_delay(attempt) for attempt in range(len(expected))]
 
-    assert delays[0] == pytest.approx(COOLDOWN_POLICY.base_delay_s)
-    for earlier, later in pairwise(delays):
-        assert later == pytest.approx(
-            min(earlier * COOLDOWN_POLICY.factor, COOLDOWN_POLICY.max_delay_s)
-        )
-    assert delays[-1] == pytest.approx(COOLDOWN_POLICY.max_delay_s)
+    assert delays == pytest.approx(expected)
 
 
 def test_a_channel_rejoin_waits_half_to_all_of_its_backoff_without_rapid_floors(

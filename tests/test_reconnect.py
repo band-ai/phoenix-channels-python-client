@@ -21,6 +21,7 @@ from tests.support import (
     STOP_REASON,
     TOPIC,
     UNPARSEABLE_FRAME,
+    BusyCallback,
     LostTopics,
     ReconnectCounter,
     deliver,
@@ -51,30 +52,10 @@ UNRECOGNISED_CLOSE_CODE = 4001
 REFUSED_HANDSHAKES = 2
 
 
-class CallbackError(Exception):
-    pass
-
-
 class RejoinOutcome(StrEnum):
     REJOINED = "rejoined"
     UNREGISTERED = "unregistered"
     JOIN_FAILED = "join failed"
-
-
-class BusyCallback:
-    """A topic callback that stays busy until released, then fails."""
-
-    def __init__(self) -> None:
-        self.running = asyncio.Event()
-        self.release = asyncio.Event()
-
-    async def __call__(self, message: ChannelMessage) -> None:
-        del message
-        self.running.set()
-        await self.release.wait()
-        raise CallbackError
-
-
 async def reconnect_while_draining(
     server: FakePhoenixServer, client: PHXChannelsClient, busy: BusyCallback
 ) -> None:
@@ -240,10 +221,7 @@ async def test_a_rejected_rejoin_after_reconnect_reports_the_lost_topic(
         await reconnect(phoenix_server, client)
 
         assert await wait_for_condition(lambda: bool(lost.lost))
-        [(topic, error)] = lost.lost
-        assert topic == TOPIC
-        assert isinstance(error, PHXTopicError)
-        assert f"Failed to rejoin topic {TOPIC}" in str(error)
+        assert f"Failed to rejoin topic {TOPIC}" in str(lost.only_error())
 
 
 @each_protocol
@@ -259,12 +237,12 @@ async def test_a_rejoin_that_times_out_keeps_retrying_on_the_live_socket(
         phoenix_server.unanswered_join_ids.add(client_id)
 
         await reconnect(phoenix_server, client)
-        generation = client._conn_generation
+        socket = client.connection
         assert await wait_for_condition(rejoin_settled(client))
         phoenix_server.unanswered_join_ids.discard(client_id)
 
         assert await wait_for_condition(lambda: client.is_topic_joined(TOPIC))
-        assert client._conn_generation == generation
+        assert client.connection is socket
         await assert_delivers_after_rejoin(phoenix_server, client, TOPIC, received)
 
 
