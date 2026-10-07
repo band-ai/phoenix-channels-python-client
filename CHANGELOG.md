@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.2.5...phoenix-channels-python-client-v0.2.6) (2026-10-07)
+
+
+### Bug Fixes
+
+* **client:** stop logging "never retrieved" for a rejected join ([#57](https://github.com/band-ai/phoenix-channels-python-client/issues/57)) ([3789853](https://github.com/band-ai/phoenix-channels-python-client/commit/3789853821bb8e1fb9416539d5ea0cf8ec8dc96f))
+
 ## [0.2.5](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.2.4...phoenix-channels-python-client-v0.2.5) (2026-10-07)
 
 
