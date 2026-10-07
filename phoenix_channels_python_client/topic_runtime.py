@@ -704,10 +704,12 @@ class TopicRuntimeMixin:
             return
 
         self.logger.warning(
-            "Transient rejoin failure for topic %s, will retry on next reconnect: %s",
+            "Transient rejoin failure for topic %s: %s: %s",
             topic.name,
+            type(exc).__name__,
             exc,
         )
+        self._start_channel_recovery(topic)
 
     def _drain_topic_queue(self, topic_subscription: TopicSubscription) -> None:
         dropped = 0
