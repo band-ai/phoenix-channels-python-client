@@ -113,11 +113,11 @@ Phoenix reserves `phx_join`, `phx_reply`, `phx_leave`, `phx_close` and
 `phx_error`. Don't use these names for your own events.
 
 - The client sends `phx_join` and `phx_leave` and consumes their `phx_reply`.
-- A server `phx_close` or `phx_error` reaches your message handler like any
-  other message; the client does not rejoin or unsubscribe on its own.
-- For an event-specific handler on these, register `PHXEvent.close` or
-  `PHXEvent.error` from `phoenix_channels_python_client.phx_messages`; the
-  plain strings don't match.
+- The client handles `phx_error` and `phx_close` itself, and neither reaches
+  your handlers: a crashed channel is rejoined, and a channel the server
+  closes loses its topic (see [Channel recovery](#channel-recovery)).
+- `add_event_handler` raises `ValueError` for `PHXEvent.error` and
+  `PHXEvent.close`. Use `on_topic_lost` and `is_topic_joined()` instead.
 
 ## Protocol Versions
 
@@ -272,6 +272,7 @@ Everything after `api_key` is keyword-only:
 | `on_reconnect` | `None` | `async () -> None`, called after topics are rejoined |
 | `on_disconnect` | `None` | `async (error: Exception \| None) -> None`; `None` on a clean close |
 | `on_heartbeat_ack` | `None` | Synchronous `() -> None`; runs on the message path, so keep it fast |
+| `on_topic_lost` | `None` | `async (topic: str, error: Exception) -> None`, called when the client drops a topic you didn't unsubscribe |
 | `additional_headers` | `None` | Extra handshake headers sent on every (re)connect |
 
 Exceptions raised in callbacks are logged, not raised.
@@ -302,6 +303,14 @@ A `ReconnectPolicy` is validated when it is built: an out-of-range or unknown fi
 base = ReconnectPolicy()
 policy = ReconnectPolicy.model_validate(base.model_dump() | {"max_delay_s": 10.0})
 ```
+
+### Channel recovery
+
+A channel can fail while the socket stays up. When its process crashes, the server sends `phx_error`, and the client rejoins that topic on the same socket, waiting the `ReconnectPolicy` backoff (`base_delay_s`, `factor`, `max_delay_s`, with equal jitter) before each attempt. A rejoin that times out is retried the same way, including one after a socket reconnect. A drop of the socket hands the topic to the socket's own rejoin.
+
+The client drops the topic and calls `on_topic_lost(topic, error)` once when the server rejects a rejoin, after a crash or a reconnect, or closes the channel with `phx_close`. It never calls it for `unsubscribe_from_topic()`, `shutdown()` or a failed first `subscribe_to_topic()`, which raises instead. Subscribing to the topic again from the callback works.
+
+`get_current_subscriptions()` lists the subscribed topics. `is_topic_joined(topic)` tells whether a topic's channel is joined right now: it's false while the socket is down or a crashed channel waits to rejoin. Unsubscribing a topic whose channel is being recovered completes without waiting for a leave reply.
 
 ### Heartbeats
 
