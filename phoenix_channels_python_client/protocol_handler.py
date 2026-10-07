@@ -27,11 +27,6 @@ class PhoenixChannelsProtocolVersion(StrEnum):
 DEFAULT_PROTOCOL_VERSION = PhoenixChannelsProtocolVersion.V2
 
 
-def _as_ref(value: object) -> str | None:
-    """A frame's ref or join_ref as a string; servers may send numbers."""
-    return None if value is None else str(value)
-
-
 class PHXProtocolHandler:
     def __init__(
         self,
@@ -84,8 +79,8 @@ class PHXProtocolHandler:
                 topic=topic,
                 event=Event(event),
                 payload=payload,
-                ref=_as_ref(ref),
-                join_ref=_as_ref(join_ref),
+                ref=ref,
+                join_ref=join_ref,
             )
 
         if not isinstance(parsed_data, dict):
@@ -107,8 +102,8 @@ class PHXProtocolHandler:
             topic=topic,
             event=Event(event),
             payload=payload,
-            ref=_as_ref(parsed_data.get("ref")),
-            join_ref=_as_ref(parsed_data.get("join_ref")),
+            ref=parsed_data.get("ref"),
+            join_ref=parsed_data.get("join_ref"),
         )
 
     def serialize_message(self, message: ChannelMessage) -> str:
