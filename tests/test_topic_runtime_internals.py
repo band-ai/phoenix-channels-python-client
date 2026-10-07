@@ -78,16 +78,17 @@ async def test_unregistering_an_unknown_topic_does_nothing() -> None:
 
 async def test_a_connection_lost_before_the_join_is_sent_fails_the_subscribe() -> None:
     runtime = TopicRuntimeHarness()
-
-    def lose_connection_after_the_check(_: str) -> None:
+    # An uncontended lock doesn't yield, so holding it opens the window.
+    async with runtime._topics_lock:
+        subscribe = asyncio.create_task(runtime.subscribe_to_topic(TOPIC))
+        await asyncio.sleep(0)
+        assert not subscribe.done()
         runtime.connection = None
-
-    runtime._ensure_can_send = lose_connection_after_the_check  # type: ignore[method-assign]
 
     with pytest.raises(
         PHXConnectionError, match="Connection lost before join could be sent"
     ):
-        await runtime.subscribe_to_topic(TOPIC)
+        await asyncio.wait_for(subscribe, ASYNC_TIMEOUT_S)
     assert TOPIC not in runtime._topic_subscriptions
 
 
