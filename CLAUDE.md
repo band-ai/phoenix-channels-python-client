@@ -6,13 +6,18 @@ A modern, async Python client library for Phoenix Channels.
 
 ```bash
 # Install for development
-pip install -e ".[dev]"
+uv sync --extra dev
 
 # Run tests
-pytest
+uv run pytest
 
-# Lint (pre-commit)
-pre-commit run --all-files
+# Lint, format and type-check
+uv run ruff check
+uv run ruff format --check
+uv run pyrefly check
+
+# Every pre-commit hook
+uv run pre-commit run --all-files
 ```
 
 ## Coding Style
@@ -22,7 +27,7 @@ pre-commit run --all-files
 - **DRY (Don't Repeat Yourself):** Eliminate duplicate logic, behavior, and structural redundancy across the codebase.
 - **Reuse Before Inventing:** Scan the existing codebase first. Prefer reusing, improving, or extending what we already have over introducing parallel implementations or reinventing local solutions.
 - **No Magic Numbers or Strings:** Replace raw inline literals and string values with descriptive, well-named constants, enums, or configuration parameters.
-- **Ruff (strict):** CI always runs `uv run ruff check`. Imports stay at module top-level (PLC0415); also enforce isort, bugbear, pyupgrade, simplify, async, pylint convention/error/warning, pytest-style, and related rules (see `pyproject.toml`). Use `TYPE_CHECKING` for circular-type-only imports; reserve `# noqa: …` only with a real reason on the same line.
+- **Ruff (strict):** CI always runs `uv run ruff check` with every rule enabled (`select = ["ALL"]`); `pyproject.toml` lists the few ignored rules and why. Imports stay at module top-level (PLC0415). Use `TYPE_CHECKING` for circular-type-only imports; reserve `# noqa: …` only with a real reason on the same line.
 - **Strong Types:** Prefer typed models and enums over bare dict/str payloads. Use Pydantic for structured data (config, API shapes, persisted state). Prefer `StrEnum` (or other enums) for closed string sets instead of free-form string literals.
 - **Clean Code & Simple Flows:** Prioritize high readability and linear, straightforward execution paths. Keep control flow flat, minimize nesting, and favor simple, predictable logic over clever or overly complex patterns.
 - **Match-Case Over If-Else Forests:** Prefer pattern matching (`match`/`case`) or lookup structures over deeply nested, sprawling if-else chains.
@@ -51,8 +56,8 @@ pre-commit run --all-files
 
 ## Git Workflow
 
-- **PR Titles:** Every PR title must be a Conventional Commit (`type(scope): description`) — squash-merge uses it as the commit subject, and that's what release-please parses to decide the next version and changelog. Enforced by CI (`pr-title.yml`); the allowed types are release-please's own, defined once in `release-please-config.json`'s `changelog-sections` — don't duplicate that list elsewhere. See release-please for how it maps commit types to version bumps.
-- **Branch Naming:** Name branches `<type>/<slug>-<LINEAR-ID>`, using the same types as PR titles and ending in the Linear issue the PR addresses (e.g. `feat/add-user-auth-ENG-123`) — every PR needs a Linear ticket. Use `git lb` to create a branch from a Linear issue if it's installed; otherwise ask for the proper branch name. Enforced by CI (`branch-name.yml`), reading the same type list as the PR-title check. Ask for the Linear ticket ID (or confirmation that it's fine to open the PR without one) before starting work and creating the branch — this repo has no single default team, so it can't be guessed. Asking late, after the branch and PR already exist, just trades the same question for a failing required check.
+- **PR Titles:** Every PR title must be a Conventional Commit (`type(scope): description`) — squash-merge uses it as the commit subject, and that's what release-please parses to decide the next version and changelog. Enforced by CI (`pr-conventions.yml`); the allowed types are release-please's own, defined once in `release-please-config.json`'s `changelog-sections` — don't duplicate that list elsewhere. See release-please for how it maps commit types to version bumps.
+- **Branch Naming:** Name branches `<type>/<slug>-<LINEAR-ID>`, using the same types as PR titles and ending in the Linear issue the PR addresses (e.g. `feat/add-user-auth-ENG-123`) — every PR needs a Linear ticket. Use `git lb` to create a branch from a Linear issue if it's installed; otherwise ask for the proper branch name. Enforced by CI (`pr-conventions.yml`), reading the same type list as the PR-title check. Ask for the Linear ticket ID (or confirmation that it's fine to open the PR without one) before starting work and creating the branch — this repo has no single default team, so it can't be guessed. Asking late, after the branch and PR already exist, just trades the same question for a failing required check.
 
 ## When Debugging
 

@@ -17,8 +17,8 @@ from phoenix_channels_python_client.phx_messages import (
     PHXEvent,
 )
 from phoenix_channels_python_client.protocol_handler import (
-    PHXProtocolHandler,
     PhoenixChannelsProtocolVersion,
+    PHXProtocolHandler,
 )
 from phoenix_channels_python_client.topic_subscription import (
     TopicProcessingState,
@@ -84,7 +84,8 @@ class TopicRuntimeMixin:
                     and message.join_ref != topic.join_ref
                 ):
                     self.logger.debug(
-                        "Dropping stale queued message for topic %s. got=%s expected=%s",
+                        "Dropping stale queued message for topic %s. got=%s "
+                        "expected=%s",
                         topic.name,
                         message.join_ref,
                         topic.join_ref,
@@ -95,7 +96,7 @@ class TopicRuntimeMixin:
                 self.logger.debug(
                     "Processing message for topic %s in state %s: %s",
                     topic.name,
-                    current_state.value,
+                    current_state,
                     message,
                 )
 
@@ -279,7 +280,8 @@ class TopicRuntimeMixin:
     def _ensure_can_send(self, operation: str) -> None:
         if self._state != ClientState.CONNECTED or self.connection is None:
             raise PHXConnectionError(
-                f"Cannot {operation} while client is {self._state.value}. Wait for reconnection."
+                f"Cannot {operation} while client is {self._state}. Wait for "
+                "reconnection."
             )
 
     async def _send(
@@ -341,7 +343,7 @@ class TopicRuntimeMixin:
 
         try:
             await self._join(topic_subscription)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             await self._unregister_topic(
                 topic,
                 error=PHXTopicError(f"Timed out waiting to subscribe to {topic}"),
@@ -382,15 +384,14 @@ class TopicRuntimeMixin:
                 await self._send(self.connection, topic_leave_message)
             elif not _allow_disconnected:
                 self._ensure_can_send("unsubscribe")
-            else:
-                if not topic_subscription.unsubscribe_completed.done():
-                    topic_subscription.unsubscribe_completed.set_result(None)
+            elif not topic_subscription.unsubscribe_completed.done():
+                topic_subscription.unsubscribe_completed.set_result(None)
 
             await asyncio.wait_for(
                 topic_subscription.unsubscribe_completed,
                 timeout=self.leave_timeout_s,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise PHXTopicError(
                 f"Timed out waiting to unsubscribe from {topic}"
             ) from exc
@@ -515,7 +516,7 @@ class TopicRuntimeMixin:
         self._restart_topic(topic_subscription, generation)
         try:
             await self._join(topic_subscription)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # handled per topic
             await self._handle_rejoin_failure(topic_subscription.name, exc)
 
     def _should_rejoin(self, topic_subscription: TopicSubscription) -> bool:

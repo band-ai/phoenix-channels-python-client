@@ -5,14 +5,16 @@ import json
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from enum import StrEnum
-from typing import NamedTuple
+from typing import NamedTuple, Self
 from urllib.parse import parse_qs, urlparse
 
 from websockets.asyncio.server import Server, ServerConnection, serve
+from websockets.exceptions import ConnectionClosed
 from websockets.frames import CloseCode
 from websockets.http11 import Request
 
 from phoenix_channels_python_client.protocol_handler import (
+    DEFAULT_PROTOCOL_VERSION,
     PhoenixChannelsProtocolVersion,
 )
 
@@ -56,8 +58,8 @@ class FakePhoenixServer:
 
     def __init__(
         self,
-        protocol: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V2,
-    ):
+        protocol: PhoenixChannelsProtocolVersion = DEFAULT_PROTOCOL_VERSION,
+    ) -> None:
         self.protocol = protocol
         self.host = LOOPBACK_HOST
         self.port = ANY_FREE_PORT
@@ -148,6 +150,7 @@ class FakePhoenixServer:
     async def _hold_handshake(
         self, connection: ServerConnection, request: Request
     ) -> None:
+        del connection, request
         if not self.handshake_gate.is_set():
             self.handshake_pending.set()
             await self.handshake_gate.wait()
@@ -182,7 +185,7 @@ class FakePhoenixServer:
                 frame = self._decode(message)
                 if frame is not None:
                     await self.handle_frame(websocket, frame)
-        except Exception:
+        except ConnectionClosed:
             pass
         finally:
             self._clients.discard(websocket)
@@ -314,7 +317,7 @@ class FakePhoenixServer:
             self.server.close()
             await self.server.wait_closed()
 
-    async def __aenter__(self) -> FakePhoenixServer:
+    async def __aenter__(self) -> Self:
         await self.start()
         return self
 

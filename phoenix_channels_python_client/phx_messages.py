@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import Enum, unique
 from functools import cached_property
-from typing import Any, NewType
+from typing import Annotated, Any, NewType
 
+from pydantic import BaseModel, ConfigDict, Field
 
 PHOENIX_TOPIC = "phoenix"
 
@@ -26,11 +26,15 @@ UserEvent = NewType("UserEvent", str)
 Event = UserEvent
 ChannelEvent = PHXEvent | UserEvent
 
+# Servers may send a ref as a JSON number; the client matches refs as strings.
+Ref = Annotated[str | None, Field(coerce_numbers_to_str=True)]
 
-@dataclass(frozen=True)
-class BasePHXMessage:
+
+class BasePHXMessage(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     topic: str
-    ref: str | None
+    ref: Ref
     payload: dict[str, Any]
 
     @cached_property
@@ -41,16 +45,14 @@ class BasePHXMessage:
         return subtopic
 
 
-@dataclass(frozen=True)
 class PHXMessage(BasePHXMessage):
     event: Event
-    join_ref: str | None = None
+    join_ref: Ref = None
 
 
-@dataclass(frozen=True)
 class PHXEventMessage(BasePHXMessage):
     event: PHXEvent
-    join_ref: str | None = None
+    join_ref: Ref = None
 
 
 ChannelMessage = PHXMessage | PHXEventMessage

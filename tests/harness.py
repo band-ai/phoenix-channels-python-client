@@ -1,5 +1,7 @@
-"""Stand-ins for driving the client's internals directly, for races and
-defensive branches the fake server can't trigger. Prefer the fake server."""
+"""Stand-ins for driving the client's internals directly.
+
+They reach races and defensive branches the fake server can't. Prefer the fake server.
+"""
 
 from __future__ import annotations
 
@@ -18,13 +20,12 @@ from phoenix_channels_python_client.client_types import (
 )
 from phoenix_channels_python_client.phx_messages import ChannelMessage
 from phoenix_channels_python_client.protocol_handler import (
-    PHXProtocolHandler,
     PhoenixChannelsProtocolVersion,
+    PHXProtocolHandler,
 )
 from phoenix_channels_python_client.supervisor import SupervisorMixin
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
-
 from tests.support import TOPIC
 
 # Short, so harness joins and leaves that get no reply time out promptly.
@@ -32,6 +33,9 @@ HARNESS_TIMEOUT_S = 0.01
 
 # What the harness's stubbed reconnect delay returns.
 HARNESS_RECONNECT_DELAY_S = 0.001
+
+# A connection up at least this long counts as stable; short, to keep tests fast.
+HARNESS_STABLE_RESET_S = 0.01
 
 DEFAULT_JOIN_REF = "1"
 
@@ -54,6 +58,7 @@ class FakeSocket:
     close_raises: bool = False
 
     async def close(self, code: int | None = None, reason: str = "") -> None:
+        del code, reason
         if self.close_raises:
             raise RuntimeError("close boom")
 
@@ -69,8 +74,11 @@ async def connect_to(url: str) -> ClientConnection:
 
 
 class FakeRoutingProtocolHandler:
-    def __init__(self, error: Exception | None = None) -> None:
+    """Keeps each connection up for ``uptime_s``, then ends it with ``error``."""
+
+    def __init__(self, error: Exception | None = None, uptime_s: float = 0.0) -> None:
         self.error = error
+        self.uptime_s = uptime_s
 
     async def process_websocket_messages(
         self,
@@ -80,6 +88,7 @@ class FakeRoutingProtocolHandler:
         **kwargs: Any,
     ) -> None:
         del connection, subscriptions, conn_generation, kwargs
+        await asyncio.sleep(self.uptime_s)
         if self.error is not None:
             raise self.error
 
@@ -133,15 +142,18 @@ class SupervisorHarness(SupervisorMixin):
         *,
         pending_heartbeat_ref: str | None = None,
         forced_close_pending: bool = False,
+        connection_uptime_s: float = 0.0,
     ) -> None:
         self.logger = logging.getLogger(__name__)
         self.channel_socket_url = "ws://unit-test/socket"
         self.channel_socket_url_redacted = "ws://unit-test/socket?api_key=***"
         self.auto_reconnect = True
-        self.reconnect_policy = ReconnectPolicy(stable_reset_s=0.0)
+        self.reconnect_policy = ReconnectPolicy(stable_reset_s=HARNESS_STABLE_RESET_S)
         self.connection: ClientConnection | None = None
         self._topic_subscriptions: dict[str, TopicSubscription] = {}
-        self._protocol_handler: Any = FakeRoutingProtocolHandler()
+        self._protocol_handler: Any = FakeRoutingProtocolHandler(
+            uptime_s=connection_uptime_s
+        )
         self._shutdown_event = asyncio.Event()
         self._connected_event = asyncio.Event()
         self._conn_generation = 0

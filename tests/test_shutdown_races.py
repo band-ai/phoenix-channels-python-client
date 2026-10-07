@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Self
 
 import pytest
 from websockets.frames import CloseCode
@@ -10,10 +11,8 @@ from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.phx_messages import ChannelMessage
-
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
-    wait_forever,
     ASYNC_TIMEOUT_S,
     FAST_RECONNECT,
     LEAVE_TIMEOUT_S,
@@ -25,6 +24,7 @@ from tests.support import (
     make_client,
     reconnect,
     wait_for_condition,
+    wait_forever,
 )
 
 # Long enough for a shutdown that isn't held to finish against the local server.
@@ -43,13 +43,14 @@ class HeldCallback:
         self.cancelled = asyncio.Event()
         self.release = asyncio.Event()
 
-    def __enter__(self) -> HeldCallback:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
         self.release.set()
 
     async def __call__(self, message: ChannelMessage) -> None:
+        del message
         self.running.set()
         try:
             await wait_forever()
@@ -177,6 +178,7 @@ async def test_shutdown_from_a_topic_callback_cancels_the_callback(
     callback_cancelled = asyncio.Event()
 
     async def stop_from_callback(message: ChannelMessage) -> None:
+        del message
         try:
             await client.shutdown(STOP_REASON)
         except asyncio.CancelledError:

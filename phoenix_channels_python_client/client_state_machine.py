@@ -31,8 +31,6 @@ def transition_client_state(
     }
 
     if new_state not in allowed_transitions[current]:
-        raise RuntimeError(
-            f"Invalid state transition {current.value} -> {new_state.value}"
-        )
+        raise RuntimeError(f"Invalid state transition {current} -> {new_state}")
 
     return new_state

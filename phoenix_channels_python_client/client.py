@@ -5,21 +5,18 @@ import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
 from types import TracebackType
+from typing import Self
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from websockets import ClientConnection
 
 from phoenix_channels_python_client.client_state_machine import transition_client_state
-from phoenix_channels_python_client.client_types import (
-    ClientState,
-    ReconnectPolicy,
-    reconnect_policy_is_invalid,
-    validate_reconnect_policy,
-)
+from phoenix_channels_python_client.client_types import ClientState, ReconnectPolicy
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.protocol_handler import (
-    PHXProtocolHandler,
+    DEFAULT_PROTOCOL_VERSION,
     PhoenixChannelsProtocolVersion,
+    PHXProtocolHandler,
 )
 from phoenix_channels_python_client.reconnect_controller import ReconnectControllerMixin
 from phoenix_channels_python_client.supervisor import SupervisorMixin
@@ -74,12 +71,12 @@ def _build_channel_socket_urls(
 
 
 class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
-    def __init__(
+    def __init__(  # noqa: PLR0913  # the public options
         self,
         websocket_url: str,
         api_key: str,
         *,
-        protocol_version: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V2,
+        protocol_version: PhoenixChannelsProtocolVersion = DEFAULT_PROTOCOL_VERSION,
         auto_reconnect: bool = True,
         reconnect_policy: ReconnectPolicy | None = None,
         join_timeout_s: float = 10.0,
@@ -91,7 +88,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         on_disconnect: DisconnectCallback | None = None,
         on_heartbeat_ack: HeartbeatAckCallback | None = None,
         additional_headers: dict[str, str] | None = None,
-    ):
+    ) -> None:
         self.logger = logger
 
         if heartbeat_interval_s is not None and heartbeat_interval_s <= 0:
@@ -105,10 +102,6 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
             raise ValueError("max_topic_queue_size must be > 0")
         if callback_drain_timeout_s <= 0:
             raise ValueError("callback_drain_timeout_s must be > 0")
-        try:
-            validate_reconnect_policy(reconnect_policy or ReconnectPolicy())
-        except ValueError as exc:
-            raise ValueError("Invalid reconnect policy configuration") from exc
 
         vsn = (
             "2.0.0"
@@ -172,11 +165,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
             and self.connection is None
         )
 
-    @staticmethod
-    def reconnect_policy_is_invalid(policy: ReconnectPolicy) -> bool:
-        return reconnect_policy_is_invalid(policy)
-
-    async def __aenter__(self) -> PHXChannelsClient:
+    async def __aenter__(self) -> Self:
         self.logger.debug("Entering PHXChannelsClient context")
         if self._state != ClientState.CLOSED or self._active_shutdown is not None:
             raise PHXConnectionError("Client is already running")
@@ -259,7 +248,5 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
             return
 
         transitioned_state = transition_client_state(self._state, new_state)
-        self.logger.debug(
-            "Client state transition: %s -> %s", self._state.value, new_state.value
-        )
+        self.logger.debug("Client state transition: %s -> %s", self._state, new_state)
         self._state = transitioned_state

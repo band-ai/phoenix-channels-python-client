@@ -16,9 +16,9 @@ from phoenix_channels_python_client.phx_messages import (
     PHXEvent,
 )
 from phoenix_channels_python_client.utils import make_message
-
 from tests.harness import (
     HARNESS_RECONNECT_DELAY_S,
+    HARNESS_STABLE_RESET_S,
     FakeSocket,
     SupervisorHarness,
     connect_to,
@@ -27,6 +27,9 @@ from tests.harness import (
 from tests.support import wait_forever
 
 HEARTBEAT_REF = "5"
+
+# Past the harness's stable reset, with margin for the loop clock's resolution.
+STABLE_UPTIME_S = 2 * HARNESS_STABLE_RESET_S
 
 Connect = Callable[[str], Awaitable[ClientConnection]]
 
@@ -67,12 +70,13 @@ async def test_the_initial_connect_retries_before_succeeding(
     use_connect: Callable[[Connect], None],
 ) -> None:
     harness = SupervisorHarness()
+    failures = 1
     attempts = 0
 
     async def fail_then_connect(_: str) -> ClientConnection:
         nonlocal attempts
         attempts += 1
-        if attempts == 1:
+        if attempts <= failures:
             raise RuntimeError("transient connect fail")
         return fake_connection()
 
@@ -80,8 +84,9 @@ async def test_the_initial_connect_retries_before_succeeding(
 
     async def stop_on_the_second_wait(delay_s: float) -> None:
         nonlocal waits
+        del delay_s
         waits += 1
-        if waits >= 2:
+        if waits > failures:
             harness._shutdown_event.set()
 
     harness._wait_for_shutdown_or_timeout = stop_on_the_second_wait  # type: ignore[method-assign]
@@ -89,7 +94,7 @@ async def test_the_initial_connect_retries_before_succeeding(
 
     await harness._supervisor_loop()
 
-    assert attempts >= 2
+    assert attempts > failures
     assert harness._initial_connection_future is not None
     assert harness._initial_connection_future.result() is None
 
@@ -111,7 +116,7 @@ async def test_a_rejoin_error_does_not_stop_the_supervisor(
 async def test_a_connection_outliving_stable_reset_clears_the_rapid_history(
     use_connect: Callable[[Connect], None],
 ) -> None:
-    harness = SupervisorHarness()  # stable_reset_s=0: every connection is stable
+    harness = SupervisorHarness(connection_uptime_s=STABLE_UPTIME_S)
     harness._rapid_disconnects.extend([1.0, 2.0])
     use_connect(connect_to)
 
@@ -160,7 +165,7 @@ async def test_cleanup_survives_a_socket_that_fails_to_close() -> None:
 
 @pytest.mark.parametrize("install_signal_handlers", [True, False])
 async def test_run_forever_raises_the_supervisors_failure(
-    install_signal_handlers: bool,
+    *, install_signal_handlers: bool
 ) -> None:
     failure = RuntimeError()
 
