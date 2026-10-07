@@ -85,21 +85,36 @@ def make_client(
 
 
 async def wait_for_condition(
-    condition: Callable[[], bool], timeout: float = ASYNC_TIMEOUT_S
+    condition: Callable[[], bool],
+    timeout: float = ASYNC_TIMEOUT_S,
+    interval: float = POLL_INTERVAL_S,
 ) -> bool:
-    """Poll ``condition`` until it is true; False if ``timeout`` passes first."""
+    """Poll ``condition`` until it is true; False if ``timeout`` passes first.
+
+    An ``interval`` of 0 checks on every loop turn, to catch a short-lived state.
+    """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while loop.time() < deadline:
         if condition():
             return True
-        await asyncio.sleep(POLL_INTERVAL_S)
+        await asyncio.sleep(interval)
     return False
 
 
 async def wait_forever() -> None:
     """A stand-in for work that only ends when cancelled."""
     await asyncio.Event().wait()
+
+
+class ReconnectCounter:
+    """An ``on_reconnect`` callback that counts how often it ran."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    async def __call__(self) -> None:
+        self.count += 1
 
 
 async def deliver(
