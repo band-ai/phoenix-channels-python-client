@@ -214,6 +214,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._shutdown_event.set()
 
         await self._unsubscribe_all()
+        # Includes on_topic_lost callbacks still running for topics already gone.
+        await cancel_and_wait(*self._lifecycle_tasks)
         await self._stop_supervisor()
         await self._cleanup_connection()
         self._connected_event.clear()

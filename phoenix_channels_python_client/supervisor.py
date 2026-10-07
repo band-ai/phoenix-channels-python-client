@@ -389,9 +389,13 @@ class SupervisorMixin:
             PHXConnectionError("Connection lost before the join completed")
         )
         connection = self.connection
+        # The socket rejoin after the reconnect takes over channel recoveries.
+        recoveries = [
+            topic.recovery_task for topic in self._topic_subscriptions.values()
+        ]
         running = [
             task
-            for task in (self._heartbeat_task, self._message_routing_task)
+            for task in (self._heartbeat_task, self._message_routing_task, *recoveries)
             if task is not None and not task.done()
         ]
         self.connection = None
