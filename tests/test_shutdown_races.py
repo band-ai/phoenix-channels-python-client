@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 from websockets.frames import CloseCode
+from websockets.protocol import State
 
 from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.client_types import ClientState
@@ -18,6 +19,7 @@ from tests.support import (
     LEAVE_TIMEOUT_S,
     STOP_REASON,
     TOPIC,
+    UNPARSEABLE_FRAME,
     deliver,
     make_client,
     wait_for_condition,
@@ -211,3 +213,22 @@ async def test_forced_close_racing_shutdown_does_not_leak_into_the_next_session(
             phoenix_server.get_connection_attempts(FakePhoenixServer.SOCKET_PATH)
             == attempts
         )
+
+
+async def test_shutdown_during_a_close_still_closes_the_socket(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    # Without a heartbeat task to stop first, the supervisor goes straight to close.
+    async with make_client(phoenix_server, heartbeat_interval_s=None) as client:
+        socket = client.connection
+        assert socket is not None
+
+        # The server must stay unresponsive until the assert, or the closing
+        # handshake completes on its own.
+        with phoenix_server.unresponsive():
+            await phoenix_server.send_raw(UNPARSEABLE_FRAME)
+            assert await wait_for_condition(lambda: client.connection is None)
+
+            await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
+
+            assert socket.state is State.CLOSED
