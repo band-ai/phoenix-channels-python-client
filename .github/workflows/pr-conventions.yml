@@ -14,8 +14,9 @@ jobs:
   title:
     name: Validate PR Title
     runs-on: ubuntu-latest
-    # Bot PRs (dependabot, release-please) follow their own conventions.
-    if: "!contains(github.actor, '[bot]')"
+    # Bot PRs (dependabot, release-please) follow their own conventions. Gate on
+    # the PR's author: a person editing or updating a bot's PR triggers the run.
+    if: &human-author "!endsWith(github.event.pull_request.user.login, '[bot]')"
     steps:
       - &checkout-types
         name: Check out the type list
@@ -64,8 +65,7 @@ jobs:
   branch:
     name: Validate Branch Name
     runs-on: ubuntu-latest
-    # Bot PRs (dependabot, release-please) follow their own conventions.
-    if: "!contains(github.actor, '[bot]')"
+    if: *human-author
     steps:
       - *checkout-types
 
