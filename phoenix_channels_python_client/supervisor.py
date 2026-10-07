@@ -19,9 +19,9 @@ from phoenix_channels_python_client.client_types import (
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.phx_messages import (
+    HEARTBEAT_EVENT,
     PHOENIX_TOPIC,
     ChannelMessage,
-    Event,
 )
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.shutdown_signals import handle_shutdown_signals
@@ -170,7 +170,7 @@ class SupervisorMixin:
 
                 heartbeat_message = make_message(
                     topic=PHOENIX_TOPIC,
-                    event=Event("heartbeat"),
+                    event=HEARTBEAT_EVENT,
                     payload={},
                     ref=ref,
                 )
