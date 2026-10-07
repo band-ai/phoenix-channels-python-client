@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable
 from itertools import pairwise
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from websockets.frames import CloseCode
@@ -55,10 +56,17 @@ def _delay_after_rapid_disconnects(client: PHXChannelsClient, count: int) -> flo
     return client._compute_reconnect_delay(attempt=0)
 
 
-def test_the_logged_socket_url_hides_the_api_key() -> None:
-    client = _make_client()
+def _query(url: str) -> dict[str, list[str]]:
+    return parse_qs(urlsplit(url).query)
 
-    assert API_KEY in client.channel_socket_url
+
+def test_the_logged_socket_url_masks_the_api_key() -> None:
+    client = _make_client()
+    sent = _query(client.channel_socket_url)
+    logged = _query(client.channel_socket_url_redacted)
+
+    assert API_KEY in sent["api_key"]
+    assert logged.keys() == sent.keys()
     assert API_KEY not in client.channel_socket_url_redacted
 
 
@@ -98,6 +106,20 @@ def test_the_rapid_cooldown_steps_from_its_base_up_to_its_cap() -> None:
     for earlier, later in pairwise(cooldowns):
         assert later == pytest.approx(min(earlier + step, cap))
     assert cooldowns[-1] == pytest.approx(cap)
+
+
+def test_a_reconnect_without_rapid_disconnects_waits_half_to_all_of_its_delay(
+    random_draw: Callable[[float], None],
+) -> None:
+    client = _make_client(COOLDOWN_POLICY)
+
+    random_draw(0.0)
+    lowest = _delay_after_rapid_disconnects(client, 0)
+    random_draw(1.0)
+    highest = _delay_after_rapid_disconnects(client, 0)
+
+    assert lowest == pytest.approx(COOLDOWN_POLICY.base_delay_s / 2)
+    assert highest == pytest.approx(COOLDOWN_POLICY.base_delay_s)
 
 
 def test_the_hold_down_jitter_spans_the_configured_ratios_of_the_cooldown(

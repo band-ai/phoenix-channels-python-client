@@ -22,9 +22,13 @@ MAX_CLIENT_RATE_PER_S = 4.0
 MAX_TWO_CLIENT_RATE_PER_S = 7.0
 MAX_FOUR_CLIENT_RATE_PER_S = 12.0
 
-# Jain's fairness index over the clients' rates; 1.0 is perfectly even.
+# Jain's fairness index over the clients' rates; 1.0 is perfectly even. Repeated
+# two-client trials even out; more clients or one short window vary more.
 MIN_TWO_CLIENT_FAIRNESS = 0.7
 MIN_FAIRNESS = 0.6
+
+# Long enough for a join or leave while clients keep taking over the session.
+CONTENDED_TOPIC_TIMEOUT_S = 1.0
 
 
 @dataclass(frozen=True)
@@ -89,8 +93,8 @@ async def contending_clients(
                     _client_path(idx),
                     api_key=SHARED_API_KEY,
                     reconnect_policy=policy,
-                    join_timeout_s=1.0,
-                    leave_timeout_s=1.0,
+                    join_timeout_s=CONTENDED_TOPIC_TIMEOUT_S,
+                    leave_timeout_s=CONTENDED_TOPIC_TIMEOUT_S,
                 )
             )
             await client.subscribe_to_topic(TOPIC)
