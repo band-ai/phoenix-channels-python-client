@@ -58,6 +58,7 @@ uv run pre-commit run --all-files
 
 - **PR Titles:** Every PR title must be a Conventional Commit (`type(scope): description`) — squash-merge uses it as the commit subject, and that's what release-please parses to decide the next version and changelog. Enforced by CI (`pr-conventions.yml`); the allowed types are release-please's own, defined once in `release-please-config.json`'s `changelog-sections` — don't duplicate that list elsewhere. See release-please for how it maps commit types to version bumps.
 - **Branch Naming:** Name branches `<type>/<slug>-<LINEAR-ID>`, using the same types as PR titles and ending in the Linear issue the PR addresses (e.g. `feat/add-user-auth-ENG-123`) — every PR needs a Linear ticket. Use `git lb` to create a branch from a Linear issue if it's installed; otherwise ask for the proper branch name. Enforced by CI (`pr-conventions.yml`), reading the same type list as the PR-title check. Ask for the Linear ticket ID (or confirmation that it's fine to open the PR without one) before starting work and creating the branch — this repo has no single default team, so it can't be guessed. Asking late, after the branch and PR already exist, just trades the same question for a failing required check.
+- **Finalize the PR:** Before asking for review, update the PR title and description to match the final diff. Keep the description short and simple: state the PR's scope, what it changes and why, so a reviewer knows what to expect and where the change ends.
 
 ## When Debugging
 
