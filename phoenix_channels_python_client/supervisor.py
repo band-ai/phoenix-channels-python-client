@@ -330,11 +330,8 @@ class SupervisorMixin:
             return None
 
         if close.forced:
-            # The remote's echoed close code isn't guaranteed to match
-            # what we sent (websockets' close_code reflects the code
-            # *received*, not sent), so classification would be
-            # unreliable here; a forced close always reconnects like
-            # any other unclassified disconnect.
+            # websockets reports the close code it received, not the one we
+            # sent, so classifying a forced close would be unreliable.
             decision = ReconnectDecision(should_reconnect=True)
         else:
             decision = self._deps._classify_disconnect(close.code, close.reason)

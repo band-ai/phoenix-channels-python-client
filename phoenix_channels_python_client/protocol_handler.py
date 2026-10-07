@@ -44,7 +44,7 @@ class _RawFrame(NamedTuple):
     payload: object
 
 
-def _decode_v1(parsed: object) -> _RawFrame:
+def _decode_v1(parsed: object, label: str) -> _RawFrame:
     match parsed:
         case dict():
             return _RawFrame(
@@ -56,22 +56,22 @@ def _decode_v1(parsed: object) -> _RawFrame:
             )
         case _:
             raise TypeError(
-                f"Protocol v1 expects object format, got {type(parsed).__name__}"
+                f"Protocol {label} expects object format, got {type(parsed).__name__}"
             )
 
 
-def _decode_v2(parsed: object) -> _RawFrame:
+def _decode_v2(parsed: object, label: str) -> _RawFrame:
     match parsed:
         case [join_ref, ref, topic, event, payload]:
             return _RawFrame(join_ref, ref, topic, event, payload)
         case list():
             raise ValueError(
-                "Protocol v2 expects 5-element array "
+                f"Protocol {label} expects 5-element array "
                 "[join_ref, ref, topic, event, payload]"
             )
         case _:
             raise TypeError(
-                f"Protocol v2 expects array format, got {type(parsed).__name__}"
+                f"Protocol {label} expects array format, got {type(parsed).__name__}"
             )
 
 
@@ -96,7 +96,7 @@ class _ProtocolSpec(NamedTuple):
 
     vsn: str
     label: str
-    decode: Callable[[object], _RawFrame]
+    decode: Callable[[object, str], _RawFrame]
 
 
 _PROTOCOL_SPECS = {
@@ -132,7 +132,7 @@ class PHXProtocolHandler:
         parsed_data = json.loads(raw_message)
         self.logger.debug("Decoded data: %s", parsed_data)
         spec = _PROTOCOL_SPECS[self.protocol_version]
-        return _to_message(spec.label, spec.decode(parsed_data))
+        return _to_message(spec.label, spec.decode(parsed_data, spec.label))
 
     def serialize_message(self, message: ChannelMessage) -> str:
         self.logger.debug("Serializing message: %s", message)

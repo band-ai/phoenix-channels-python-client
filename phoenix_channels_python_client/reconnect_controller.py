@@ -69,11 +69,14 @@ class ReconnectControllerMixin:
             self.reconnect_policy.rapid_second_min_delay_s,
         )
 
+    def _rapid_cooldown_steps(self, rapid_count: int) -> int:
+        """Steps into the cooldown; negative while a floor still applies."""
+        return rapid_count - len(self._rapid_floors())
+
     def _rapid_min_delay(self, rapid_count: int) -> float:
-        floors = self._rapid_floors()
-        if rapid_count < len(floors):
-            return floors[rapid_count]
-        steps = rapid_count - len(floors)
+        steps = self._rapid_cooldown_steps(rapid_count)
+        if steps < 0:
+            return self._rapid_floors()[rapid_count]
         return min(
             self.reconnect_policy.rapid_cooldown_base_s
             + (self.reconnect_policy.rapid_cooldown_step_s * steps),
@@ -94,7 +97,7 @@ class ReconnectControllerMixin:
         if delay <= 0:
             return 0.0
 
-        if rapid_count >= len(self._rapid_floors()):
+        if self._rapid_cooldown_steps(rapid_count) >= 0:
             low_ratio = self.reconnect_policy.rapid_hold_down_jitter_low_ratio
             high_ratio = self.reconnect_policy.rapid_hold_down_jitter_high_ratio
             min_jittered = delay * low_ratio
