@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from enum import StrEnum
 from typing import NamedTuple
 from urllib.parse import parse_qs, urlparse
@@ -261,6 +262,19 @@ class FakePhoenixServer:
         """Send ``text`` as-is to every client, valid frame or not."""
         for websocket in list(self._clients):
             await websocket.send(text)
+
+    @contextmanager
+    def unresponsive(self) -> Iterator[None]:
+        """Stop reading from every client until exit, like a peer that hangs."""
+        transports = [websocket.transport for websocket in self._clients]
+        for transport in transports:
+            transport.pause_reading()
+        try:
+            yield
+        finally:
+            for transport in transports:
+                if not transport.is_closing():
+                    transport.resume_reading()
 
     async def close_all_clients(
         self,
