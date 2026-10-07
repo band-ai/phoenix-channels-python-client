@@ -380,11 +380,11 @@ async def test_a_full_topic_queue_drops_its_oldest_message(
 
     async with make_client(phoenix_server, max_topic_queue_size=1) as client:
         await client.subscribe_to_topic(TOPIC, held_on_the_first_message)
-        await deliver(phoenix_server, client, payload={"id": 1})
+        first_id, later_ids = 1, (2, 3, 4)
+        await deliver(phoenix_server, client, payload={"id": first_id})
         await asyncio.wait_for(first_started.wait(), ASYNC_TIMEOUT_S)
 
         # With one queue slot, each later message pushes out the one before it.
-        later_ids = (2, 3, 4)
         for message_id in later_ids:
             await deliver(phoenix_server, client, payload={"id": message_id})
         subscription = client.get_current_subscriptions()[TOPIC]
@@ -393,7 +393,7 @@ async def test_a_full_topic_queue_drops_its_oldest_message(
         )
         release_first.set()
 
-        assert await wait_for_condition(lambda: handled == [1, later_ids[-1]])
+        assert await wait_for_condition(lambda: handled == [first_id, later_ids[-1]])
 
 
 async def test_a_message_from_an_older_join_is_not_delivered(
