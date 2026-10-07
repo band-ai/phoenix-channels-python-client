@@ -147,6 +147,7 @@ class SupervisorHarness(SupervisorMixin):
         self.logger = logging.getLogger(__name__)
         self.channel_socket_url = "ws://unit-test/socket"
         self.channel_socket_url_redacted = "ws://unit-test/socket?api_key=***"
+        self.additional_headers: dict[str, str] = {}
         self.auto_reconnect = True
         self.reconnect_policy = ReconnectPolicy(stable_reset_s=HARNESS_STABLE_RESET_S)
         self.connection: ClientConnection | None = None
