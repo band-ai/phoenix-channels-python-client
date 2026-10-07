@@ -47,6 +47,7 @@ def _truncate_close_reason(reason: str) -> str:
 
 class _SupervisorRuntimeDeps(Protocol):
     async def _rejoin_topics(self, generation: int) -> None: ...
+    def _fail_pending_joins(self, error: Exception) -> None: ...
     def _record_disconnect(self, connection_uptime_s: float) -> None: ...
     def _should_suppress_reconnect(self) -> bool: ...
     def _compute_reconnect_delay(self, attempt: int) -> float: ...
@@ -380,6 +381,9 @@ class SupervisorMixin:
             return
 
     async def _cleanup_connection(self) -> None:
+        cast(_SupervisorRuntimeDeps, self)._fail_pending_joins(
+            PHXConnectionError("Connection lost before the join completed")
+        )
         connection = self.connection
         running = [
             task

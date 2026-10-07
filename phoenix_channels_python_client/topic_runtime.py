@@ -233,6 +233,10 @@ class TopicRuntimeMixin:
         if topic_subscription.leave_requested.is_set():
             self._set_future_exception(topic_subscription.unsubscribe_completed, error)
 
+    def _fail_pending_joins(self, error: Exception) -> None:
+        for topic_subscription in self._topic_subscriptions.values():
+            self._set_future_exception(topic_subscription.current_join_ready, error)
+
     def _set_future_exception(
         self,
         future: asyncio.Future[None],
