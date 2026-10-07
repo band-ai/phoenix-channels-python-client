@@ -6,7 +6,7 @@ import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
-from typing import Protocol, cast
+from typing import NamedTuple, Protocol, cast
 
 from websockets import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
@@ -19,9 +19,9 @@ from phoenix_channels_python_client.client_types import (
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.phx_messages import (
+    HEARTBEAT_EVENT,
     PHOENIX_TOPIC,
     ChannelMessage,
-    Event,
 )
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.shutdown_signals import handle_shutdown_signals
@@ -45,7 +45,14 @@ def _truncate_close_reason(reason: str) -> str:
     return encoded[:_MAX_CLOSE_REASON_BYTES].decode("utf-8", errors="ignore")
 
 
+class _CloseDetails(NamedTuple):
+    code: int | None
+    reason: str
+    forced: bool
+
+
 class _SupervisorRuntimeDeps(Protocol):
+    def _generate_ref(self) -> str: ...
     async def _rejoin_topics(self, generation: int) -> None: ...
     def _fail_pending_joins(self, error: Exception) -> None: ...
     def _record_disconnect(self, connection_uptime_s: float) -> None: ...
@@ -90,6 +97,10 @@ class SupervisorMixin:
     _on_disconnect: Callable[[Exception | None], Awaitable[None]] | None
     _on_heartbeat_ack: Callable[[], None] | None
     _forced_close_pending: bool
+
+    @property
+    def _deps(self) -> _SupervisorRuntimeDeps:
+        return cast(_SupervisorRuntimeDeps, self)
 
     async def _start_processing(
         self, connection: ClientConnection, conn_generation: int
@@ -165,12 +176,12 @@ class SupervisorMixin:
                         self._pending_heartbeat_ref,
                     )
 
-                ref = self._generate_ref()  # type: ignore[missing-attribute]  # provided by TopicRuntimeMixin
+                ref = self._deps._generate_ref()
                 self._pending_heartbeat_ref = ref
 
                 heartbeat_message = make_message(
                     topic=PHOENIX_TOPIC,
-                    event=Event("heartbeat"),
+                    event=HEARTBEAT_EVENT,
                     payload={},
                     ref=ref,
                 )
@@ -189,203 +200,183 @@ class SupervisorMixin:
             self.logger.debug("Heartbeat loop cancelled")
             raise
 
-    async def _supervisor_loop(  # noqa: C901, PLR0912, PLR0915  # INT-1707: split
-        self,
-    ) -> None:
+    async def _supervisor_loop(self) -> None:
         attempt = 0
-        runtime_deps = cast(_SupervisorRuntimeDeps, self)
-
         try:
             while not self._shutdown_event.is_set():
-                connected_since: float | None = None
-                safe_channel_socket_url = getattr(
-                    self,
-                    "channel_socket_url_redacted",
-                    self.channel_socket_url,
-                )
                 try:
-                    connect_kwargs = {}
-                    if additional_headers := getattr(self, "additional_headers", None):
-                        connect_kwargs["additional_headers"] = additional_headers
-                    connection = await connect(
-                        self.channel_socket_url, **connect_kwargs
-                    )
-                except asyncio.CancelledError:
-                    raise
+                    connection = await self._connect()
                 except Exception as exc:  # noqa: BLE001  # each failure is retried
-                    if not self.auto_reconnect:
-                        if (
-                            self._initial_connection_future
-                            and not self._initial_connection_future.done()
-                        ):
-                            self._initial_connection_future.set_exception(
-                                PHXConnectionError(
-                                    "Failed to connect to "
-                                    f"{safe_channel_socket_url}: {exc}"
-                                )
-                            )
-                        self.logger.error(  # noqa: TRY400  # expected; no traceback
-                            "Connection failed and auto_reconnect=False: %s", exc
-                        )
+                    if not self._retry_after_connect_failure(exc):
                         break
-
-                    runtime_deps._record_disconnect(connection_uptime_s=0.0)
-                    if runtime_deps._should_suppress_reconnect():
-                        self._terminal_error = PHXConnectionError(
-                            "Reconnect suppressed after repeated rapid disconnects. "
-                            "Likely duplicate connection or unstable endpoint."
-                        )
-                        self.logger.error(  # noqa: TRY400  # not about this error
-                            "%s", self._terminal_error
-                        )
-                        break
-
-                    if self._state == ClientState.CONNECTING:
-                        runtime_deps._transition_state(ClientState.RECONNECTING)
-
-                    delay = runtime_deps._compute_reconnect_delay(attempt=attempt)
+                    delay = self._deps._compute_reconnect_delay(attempt=attempt)
                     attempt += 1
                     await self._wait_for_shutdown_or_timeout(delay)
                     continue
 
-                self.connection = connection
-                if self._shutdown_event.is_set():
-                    # shutdown() began during the handshake; its own cleanup
-                    # closes this socket.
+                if not self._adopt_connection(connection):
                     break
-                self._conn_generation += 1
-                generation = self._conn_generation
-                self._connected_event.set()
-                runtime_deps._transition_state(ClientState.CONNECTED)
                 connected_since = asyncio.get_running_loop().time()
-
-                self._pending_heartbeat_ref = None
-                self._message_routing_task = asyncio.create_task(
-                    self._start_processing(connection, generation)
-                )
-                if self._heartbeat_interval_s is not None:
-                    self._heartbeat_task = asyncio.create_task(
-                        self._heartbeat_loop(connection)
-                    )
-
-                try:
-                    await runtime_deps._rejoin_topics(generation)
-                except Exception:
-                    self.logger.exception("Unexpected error while rejoining topics")
-
-                if (
-                    self._initial_connection_future
-                    and not self._initial_connection_future.done()
-                ):
-                    self._initial_connection_future.set_result(None)
-
-                if (
-                    generation > 1
-                    and self._on_reconnect is not None
-                    and not self._shutdown_event.is_set()
-                ):
-                    await self._invoke_callback_safely(
-                        "on_reconnect", self._on_reconnect
-                    )
-
-                try:
-                    await self._message_routing_task
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    if isinstance(exc, ConnectionClosed):
-                        self.logger.info(
-                            "Message routing stopped due to websocket close code=%s "
-                            "reason=%s",
-                            exc.rcvd.code if exc.rcvd is not None else None,
-                            exc.rcvd.reason if exc.rcvd is not None else "",
-                        )
-                    else:
-                        self.logger.exception("Message routing task failed")
-                    routing_error = exc
-                else:
-                    routing_error = None
-
-                close_code, close_reason = runtime_deps._extract_close_details(
-                    connection=connection,
-                    routing_error=routing_error,
-                )
-                forced_close = self._forced_close_pending
-
-                await self._cleanup_connection()
-
-                if self._on_disconnect is not None:
-                    await self._invoke_callback_safely(
-                        "on_disconnect", self._on_disconnect, routing_error
-                    )
-
-                if self._shutdown_event.is_set():
+                routing = await self._start_session(connection)
+                routing_error = await self._await_routing(routing)
+                close = await self._end_session(connection, routing_error)
+                decision = self._decide_reconnect(close)
+                if decision is None:
                     break
 
-                if not self.auto_reconnect:
+                uptime = asyncio.get_running_loop().time() - connected_since
+                if self._suppressed_after_disconnect(uptime):
                     break
-
-                if forced_close:
-                    # The remote's echoed close code isn't guaranteed to match
-                    # what we sent (websockets' close_code reflects the code
-                    # *received*, not sent), so classification would be
-                    # unreliable here; a forced close always reconnects like
-                    # any other unclassified disconnect.
-                    decision = ReconnectDecision(should_reconnect=True)
-                else:
-                    decision = runtime_deps._classify_disconnect(
-                        close_code, close_reason
-                    )
-                if decision.terminal_error is not None:
-                    self._terminal_error = decision.terminal_error
-                    self.logger.error("%s", self._terminal_error)
-                    break
-
-                if not decision.should_reconnect:
-                    self.logger.info(
-                        "Reconnect disabled for close code %s reason=%s",
-                        close_code,
-                        close_reason,
-                    )
-                    break
-
-                uptime = 0.0
-                if connected_since is not None:
-                    uptime = asyncio.get_running_loop().time() - connected_since
-
-                runtime_deps._record_disconnect(connection_uptime_s=uptime)
-                if runtime_deps._should_suppress_reconnect():
-                    self._terminal_error = PHXConnectionError(
-                        "Reconnect suppressed after repeated rapid disconnects. "
-                        "Likely duplicate connection or unstable endpoint."
-                    )
-                    self.logger.error("%s", self._terminal_error)
-                    break
-
                 if uptime >= self.reconnect_policy.stable_reset_s:
                     attempt = 0
                     self._rapid_disconnects.clear()
                 else:
                     attempt += 1
 
-                runtime_deps._transition_state(ClientState.RECONNECTING)
-                delay = runtime_deps._compute_reconnect_delay(attempt=attempt)
-                delay = runtime_deps._apply_disconnect_delay_override(delay, decision)
+                self._deps._transition_state(ClientState.RECONNECTING)
+                delay = self._deps._compute_reconnect_delay(attempt=attempt)
+                delay = self._deps._apply_disconnect_delay_override(delay, decision)
                 await self._wait_for_shutdown_or_timeout(delay)
-
         finally:
-            if (
-                self._initial_connection_future
-                and not self._initial_connection_future.done()
-            ):
-                self._initial_connection_future.set_exception(
-                    PHXConnectionError(
-                        "Connection supervisor stopped before connecting"
-                    )
+            self._settle_supervisor_exit()
+
+    async def _connect(self) -> ClientConnection:
+        return await connect(
+            self.channel_socket_url, additional_headers=self.additional_headers
+        )
+
+    def _retry_after_connect_failure(self, exc: Exception) -> bool:
+        if not self.auto_reconnect:
+            self._settle_initial_connection(
+                PHXConnectionError(
+                    f"Failed to connect to {self.channel_socket_url_redacted}: {exc}"
                 )
-            self._connected_event.clear()
-            if self._state != ClientState.SHUTTING_DOWN:
-                runtime_deps._transition_state(ClientState.CLOSED)
+            )
+            self.logger.error("Connection failed and auto_reconnect=False: %s", exc)
+            return False
+        if self._suppressed_after_disconnect(0.0):
+            return False
+        if self._state != ClientState.SHUTTING_DOWN:
+            self._deps._transition_state(ClientState.RECONNECTING)
+        return True
+
+    def _adopt_connection(self, connection: ClientConnection) -> bool:
+        self.connection = connection
+        if self._shutdown_event.is_set():
+            # shutdown() began during the handshake; its own cleanup closes
+            # this socket.
+            return False
+        self._conn_generation += 1
+        self._connected_event.set()
+        self._deps._transition_state(ClientState.CONNECTED)
+        return True
+
+    async def _start_session(self, connection: ClientConnection) -> asyncio.Task[None]:
+        generation = self._conn_generation
+        self._pending_heartbeat_ref = None
+        routing = self._message_routing_task = asyncio.create_task(
+            self._start_processing(connection, generation)
+        )
+        if self._heartbeat_interval_s is not None:
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(connection))
+
+        try:
+            await self._deps._rejoin_topics(generation)
+        except Exception:
+            self.logger.exception("Unexpected error while rejoining topics")
+
+        self._settle_initial_connection(None)
+        if (
+            generation > 1
+            and self._on_reconnect is not None
+            and not self._shutdown_event.is_set()
+        ):
+            await self._invoke_callback_safely("on_reconnect", self._on_reconnect)
+        return routing
+
+    async def _await_routing(self, routing: asyncio.Task[None]) -> Exception | None:
+        try:
+            await routing
+        except ConnectionClosed as exc:
+            self.logger.info(
+                "Message routing stopped due to websocket close code=%s reason=%s",
+                exc.rcvd.code if exc.rcvd is not None else None,
+                exc.rcvd.reason if exc.rcvd is not None else "",
+            )
+            return exc
+        except Exception as exc:
+            self.logger.exception("Message routing task failed")
+            return exc
+        return None
+
+    async def _end_session(
+        self, connection: ClientConnection, routing_error: Exception | None
+    ) -> _CloseDetails:
+        code, reason = self._deps._extract_close_details(
+            connection=connection, routing_error=routing_error
+        )
+        close = _CloseDetails(code, reason, forced=self._forced_close_pending)
+
+        await self._cleanup_connection()
+
+        if self._on_disconnect is not None:
+            await self._invoke_callback_safely(
+                "on_disconnect", self._on_disconnect, routing_error
+            )
+        return close
+
+    def _decide_reconnect(self, close: _CloseDetails) -> ReconnectDecision | None:
+        if self._shutdown_event.is_set() or not self.auto_reconnect:
+            return None
+
+        if close.forced:
+            # websockets reports the close code it received, not the one we
+            # sent, so classifying a forced close would be unreliable.
+            decision = ReconnectDecision(should_reconnect=True)
+        else:
+            decision = self._deps._classify_disconnect(close.code, close.reason)
+        if decision.terminal_error is not None:
+            self._terminal_error = decision.terminal_error
+            self.logger.error("%s", self._terminal_error)
+            return None
+
+        if not decision.should_reconnect:
+            self.logger.info(
+                "Reconnect disabled for close code %s reason=%s",
+                close.code,
+                close.reason,
+            )
+            return None
+        return decision
+
+    def _suppressed_after_disconnect(self, uptime_s: float) -> bool:
+        self._deps._record_disconnect(connection_uptime_s=uptime_s)
+        if not self._deps._should_suppress_reconnect():
+            return False
+        self._terminal_error = PHXConnectionError(
+            "Reconnect suppressed after repeated rapid disconnects. "
+            "Likely duplicate connection or unstable endpoint."
+        )
+        self.logger.error("%s", self._terminal_error)
+        return True
+
+    def _settle_initial_connection(self, error: Exception | None) -> None:
+        """Resolve ``__aenter__``'s wait, unless it already ended or was cancelled."""
+        future = self._initial_connection_future
+        if future is None or future.done():
+            return
+        if error is None:
+            future.set_result(None)
+        else:
+            future.set_exception(error)
+
+    def _settle_supervisor_exit(self) -> None:
+        self._settle_initial_connection(
+            PHXConnectionError("Connection supervisor stopped before connecting")
+        )
+        self._connected_event.clear()
+        if self._state != ClientState.SHUTTING_DOWN:
+            self._deps._transition_state(ClientState.CLOSED)
 
     async def _wait_for_shutdown_or_timeout(self, delay_s: float) -> None:
         try:
@@ -394,7 +385,7 @@ class SupervisorMixin:
             return
 
     async def _cleanup_connection(self) -> None:
-        cast(_SupervisorRuntimeDeps, self)._fail_pending_joins(
+        self._deps._fail_pending_joins(
             PHXConnectionError("Connection lost before the join completed")
         )
         connection = self.connection
@@ -440,7 +431,6 @@ class SupervisorMixin:
         ``False`` and schedule ``shutdown()`` on the client's loop from their
         own handler.
         """
-        runtime_deps = cast(_SupervisorRuntimeDeps, self)
         supervisor = self._supervisor_task
         if supervisor is None:
             raise PHXConnectionError(
@@ -465,7 +455,7 @@ class SupervisorMixin:
         # No await since leaving the `with`, so this sees `signaled` exactly as
         # handle_shutdown_signals judged it consumed.
         if signaled.is_set():
-            await runtime_deps.shutdown("Signal received")
+            await self._deps.shutdown("Signal received")
         if self._terminal_error is not None:
             raise self._terminal_error
         if supervisor.cancelled() and self._shutdown_event.is_set():

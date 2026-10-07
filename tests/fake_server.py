@@ -5,13 +5,14 @@ import json
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from enum import StrEnum
+from http import HTTPStatus
 from typing import NamedTuple, Self
 from urllib.parse import parse_qs, urlparse
 
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 from websockets.frames import CloseCode
-from websockets.http11 import Request
+from websockets.http11 import Request, Response
 
 from phoenix_channels_python_client.protocol_handler import (
     DEFAULT_PROTOCOL_VERSION,
@@ -86,6 +87,9 @@ class FakePhoenixServer:
         self.handshake_gate = asyncio.Event()
         self.handshake_gate.set()
         self.handshake_pending = asyncio.Event()
+        # Refused handshakes never reach `handler`, so they are counted here.
+        self.refused_handshakes = 0
+        self._refusals_left = 0
 
     def _encode(self, frame: Frame) -> str:
         match self.protocol:
@@ -147,14 +151,19 @@ class FakePhoenixServer:
             return ""
         return values[0]
 
-    async def _hold_handshake(
+    async def _process_request(
         self, connection: ServerConnection, request: Request
-    ) -> None:
-        del connection, request
+    ) -> Response | None:
+        del request
         if not self.handshake_gate.is_set():
             self.handshake_pending.set()
             await self.handshake_gate.wait()
             self.handshake_pending.clear()
+        if not self._refusals_left:
+            return None
+        self._refusals_left -= 1
+        self.refused_handshakes += 1
+        return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "refused\n")
 
     async def handler(self, websocket: ServerConnection) -> None:
         client_id = self._next_client_id
@@ -267,6 +276,15 @@ class FakePhoenixServer:
             await websocket.send(text)
 
     @contextmanager
+    def refusing(self, count: int) -> Iterator[None]:
+        """Refuse the next ``count`` opening handshakes made before exit."""
+        self._refusals_left = count
+        try:
+            yield
+        finally:
+            self._refusals_left = 0
+
+    @contextmanager
     def unresponsive(self) -> Iterator[None]:
         """Stop reading from every client until exit, like a peer that hangs."""
         transports = [websocket.transport for websocket in self._clients]
@@ -306,7 +324,7 @@ class FakePhoenixServer:
 
     async def start(self) -> None:
         self.server = await serve(
-            self.handler, self.host, self.port, process_request=self._hold_handshake
+            self.handler, self.host, self.port, process_request=self._process_request
         )
         self.port = self.server.sockets[0].getsockname()[1]
 

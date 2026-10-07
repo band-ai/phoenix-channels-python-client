@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 
 import pytest
-from websockets import ClientConnection
 
 from phoenix_channels_python_client.client_types import ReconnectDecision
 from phoenix_channels_python_client.exceptions import PHXConnectionError
@@ -21,7 +19,6 @@ from tests.harness import (
     HARNESS_STABLE_RESET_S,
     FakeSocket,
     SupervisorHarness,
-    connect_to,
     fake_connection,
 )
 from tests.support import wait_forever
@@ -31,80 +28,37 @@ HEARTBEAT_REF = "5"
 # Past the harness's stable reset, with margin for the loop clock's resolution.
 STABLE_UPTIME_S = 2 * HARNESS_STABLE_RESET_S
 
-Connect = Callable[[str], Awaitable[ClientConnection]]
-
-
-@pytest.fixture
-def use_connect(monkeypatch: pytest.MonkeyPatch) -> Callable[[Connect], None]:
-    """Swap the supervisor's ``websockets.connect`` for a stand-in."""
-
-    def use(connect: Connect) -> None:
-        monkeypatch.setattr(
-            "phoenix_channels_python_client.supervisor.connect", connect
-        )
-
-    return use
-
-
-async def fail_to_connect(_: str) -> ClientConnection:
-    raise RuntimeError("connect fail")
-
 
 def heartbeat_reply(ref: str) -> ChannelMessage:
     return make_message(topic=PHOENIX_TOPIC, event=PHXEvent.reply, payload={}, ref=ref)
 
 
-async def test_a_suppressed_reconnect_after_a_failed_connect_is_terminal(
-    use_connect: Callable[[Connect], None],
-) -> None:
-    harness = SupervisorHarness()
+async def test_a_suppressed_reconnect_after_a_failed_connect_is_terminal() -> None:
+    harness = SupervisorHarness(connect_failures=1)
     harness.suppress_values = [True]
-    use_connect(fail_to_connect)
 
     await harness._supervisor_loop()
 
     assert isinstance(harness._terminal_error, PHXConnectionError)
 
 
-async def test_the_initial_connect_retries_before_succeeding(
-    use_connect: Callable[[Connect], None],
-) -> None:
-    harness = SupervisorHarness()
+async def test_the_initial_connect_retries_before_succeeding() -> None:
     failures = 1
-    attempts = 0
-
-    async def fail_then_connect(_: str) -> ClientConnection:
-        nonlocal attempts
-        attempts += 1
-        if attempts <= failures:
-            raise RuntimeError("transient connect fail")
-        return fake_connection()
-
-    waits = 0
-
-    async def stop_on_the_second_wait(delay_s: float) -> None:
-        nonlocal waits
-        del delay_s
-        waits += 1
-        if waits > failures:
-            harness._shutdown_event.set()
-
-    harness._wait_for_shutdown_or_timeout = stop_on_the_second_wait  # type: ignore[method-assign]
-    use_connect(fail_then_connect)
+    # One wait per failed connect, then the one after the connection ends.
+    harness = SupervisorHarness(
+        connect_failures=failures, waits_before_stop=failures + 1
+    )
 
     await harness._supervisor_loop()
 
-    assert attempts > failures
+    assert harness.connect_attempts == failures + 1
     assert harness._initial_connection_future is not None
     assert harness._initial_connection_future.result() is None
 
 
-async def test_a_rejoin_error_does_not_stop_the_supervisor(
-    use_connect: Callable[[Connect], None],
-) -> None:
+async def test_a_rejoin_error_does_not_stop_the_supervisor() -> None:
     harness = SupervisorHarness()
     harness.rejoin_error = RuntimeError("rejoin boom")
-    use_connect(connect_to)
 
     await harness._supervisor_loop()
 
@@ -113,26 +67,20 @@ async def test_a_rejoin_error_does_not_stop_the_supervisor(
     assert harness.wait_delays == [HARNESS_RECONNECT_DELAY_S]
 
 
-async def test_a_connection_outliving_stable_reset_clears_the_rapid_history(
-    use_connect: Callable[[Connect], None],
-) -> None:
+async def test_a_connection_outliving_stable_reset_clears_the_rapid_history() -> None:
     harness = SupervisorHarness(connection_uptime_s=STABLE_UPTIME_S)
     harness._rapid_disconnects.extend([1.0, 2.0])
-    use_connect(connect_to)
 
     await harness._supervisor_loop()
 
     assert not harness._rapid_disconnects
 
 
-async def test_a_forced_close_reconnects_without_classifying_the_disconnect(
-    use_connect: Callable[[Connect], None],
-) -> None:
+async def test_a_forced_close_reconnects_without_classifying_the_disconnect() -> None:
     harness = SupervisorHarness(forced_close_pending=True)
     # What the real _classify_disconnect would decide for whatever code the
     # remote happened to echo back; the forced-close path must not consult it.
     harness.disconnect_decision = ReconnectDecision(should_reconnect=False)
-    use_connect(connect_to)
 
     await harness._supervisor_loop()
 

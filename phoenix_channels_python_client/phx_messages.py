@@ -24,6 +24,8 @@ class PHXEvent(Enum):
 UserEvent = NewType("UserEvent", str)
 # Compatibility alias for existing imports and call sites.
 Event = UserEvent
+# Not a PHXEvent member: that would reroute make_message and change a public enum.
+HEARTBEAT_EVENT = Event("heartbeat")
 ChannelEvent = PHXEvent | UserEvent
 
 # Servers may send a ref as a JSON number; the client matches refs as strings.
