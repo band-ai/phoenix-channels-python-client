@@ -8,6 +8,7 @@ from typing import Any, TypeVar
 
 import pytest
 from websockets.frames import CloseCode
+from websockets.protocol import State
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
 from phoenix_channels_python_client.protocol_handler import (
@@ -85,21 +86,36 @@ def make_client(
 
 
 async def wait_for_condition(
-    condition: Callable[[], bool], timeout: float = ASYNC_TIMEOUT_S
+    condition: Callable[[], bool],
+    timeout: float = ASYNC_TIMEOUT_S,
+    interval: float = POLL_INTERVAL_S,
 ) -> bool:
-    """Poll ``condition`` until it is true; False if ``timeout`` passes first."""
+    """Poll ``condition`` until it is true; False if ``timeout`` passes first.
+
+    An ``interval`` of 0 checks on every loop turn, to catch a short-lived state.
+    """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while loop.time() < deadline:
         if condition():
             return True
-        await asyncio.sleep(POLL_INTERVAL_S)
+        await asyncio.sleep(interval)
     return False
 
 
 async def wait_forever() -> None:
     """A stand-in for work that only ends when cancelled."""
     await asyncio.Event().wait()
+
+
+class ReconnectCounter:
+    """An ``on_reconnect`` callback that counts how often it ran."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    async def __call__(self) -> None:
+        self.count += 1
 
 
 async def deliver(
@@ -134,6 +150,21 @@ async def reconnect(
 ) -> None:
     """Close every connection with ``code`` and wait for the client to reconnect."""
     await reconnect_after(client, server.close_all_clients(code=code))
+
+
+async def start_server_close(
+    server: FakePhoenixServer,
+    client: PHXChannelsClient,
+    code: int = CloseCode.SERVICE_RESTART,
+) -> asyncio.Task[None]:
+    """Start the server closing the client's socket and return once the socket is
+    closing, before the client has dropped it. Await the returned task to finish."""
+    socket = client.connection
+    assert socket is not None
+    closing = asyncio.create_task(server.close_all_clients(code=code))
+    # Every loop turn, since the client drops a closing socket within a few.
+    assert await wait_for_condition(lambda: socket.state is State.CLOSING, interval=0)
+    return closing
 
 
 def rejoin_settled(client: PHXChannelsClient, topic: str = TOPIC) -> Callable[[], bool]:

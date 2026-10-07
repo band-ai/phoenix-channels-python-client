@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from websockets import ClientConnection
+from websockets.exceptions import ConnectionClosed
 
 from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
@@ -233,6 +234,10 @@ class TopicRuntimeMixin:
         if topic_subscription.leave_requested.is_set():
             self._set_future_exception(topic_subscription.unsubscribe_completed, error)
 
+    def _fail_pending_joins(self, error: Exception) -> None:
+        for topic_subscription in self._topic_subscriptions.values():
+            self._set_future_exception(topic_subscription.current_join_ready, error)
+
     def _set_future_exception(
         self,
         future: asyncio.Future[None],
@@ -258,10 +263,7 @@ class TopicRuntimeMixin:
         )
         self._complete_pending_futures(topic_subscription, unregister_error)
 
-        task = topic_subscription.process_topic_messages_task
-        if task and not task.done() and asyncio.current_task() is not task:
-            await cancel_and_wait(task)
-
+        await self._stop_topic_task(topic_subscription)
         self.logger.info("Unregistered topic %s", topic_name)
 
     def get_current_subscriptions(self) -> dict[str, TopicSubscription]:
@@ -280,6 +282,17 @@ class TopicRuntimeMixin:
                 f"Cannot {operation} while client is {self._state.value}. Wait for reconnection."
             )
 
+    async def _send(
+        self, connection: ClientConnection, message: ChannelMessage
+    ) -> None:
+        """Send ``message``; a socket already closing raises PHXConnectionError."""
+        try:
+            await self._protocol_handler.send_message(connection, message)
+        except ConnectionClosed as exc:
+            raise PHXConnectionError(
+                f"Connection lost before {message.event} could be sent"
+            ) from exc
+
     async def _join(self, topic_subscription: TopicSubscription) -> None:
         """Send the topic's join on its current join_ref and wait for the reply."""
         connection = self.connection
@@ -293,7 +306,7 @@ class TopicRuntimeMixin:
             ref=topic_subscription.join_ref,
             join_ref=topic_subscription.join_ref,
         )
-        await self._protocol_handler.send_message(connection, join_message)
+        await self._send(connection, join_message)
         await asyncio.wait_for(
             topic_subscription.current_join_ready, timeout=self.join_timeout_s
         )
@@ -366,9 +379,7 @@ class TopicRuntimeMixin:
                     ref=leave_ref,
                     join_ref=topic_subscription.join_ref,
                 )
-                await self._protocol_handler.send_message(
-                    self.connection, topic_leave_message
-                )
+                await self._send(self.connection, topic_leave_message)
             elif not _allow_disconnected:
                 self._ensure_can_send("unsubscribe")
             else:
@@ -496,11 +507,12 @@ class TopicRuntimeMixin:
             return
 
         await self._drain_callback(topic_subscription)
-        # The topic may be left or unregistered while the callback drains.
+        await self._stop_topic_task(topic_subscription)
+        # The topic may be left or unregistered during any await before the restart.
         if not self._should_rejoin(topic_subscription):
             return
 
-        await self._restart_topic(topic_subscription, generation)
+        self._restart_topic(topic_subscription, generation)
         try:
             await self._join(topic_subscription)
         except Exception as exc:
@@ -512,13 +524,14 @@ class TopicRuntimeMixin:
         )
         return is_registered and not topic_subscription.leave_requested.is_set()
 
-    async def _restart_topic(
+    async def _stop_topic_task(self, topic_subscription: TopicSubscription) -> None:
+        task = topic_subscription.process_topic_messages_task
+        if task and not task.done() and asyncio.current_task() is not task:
+            await cancel_and_wait(task)
+
+    def _restart_topic(
         self, topic_subscription: TopicSubscription, generation: int
     ) -> None:
-        previous_task = topic_subscription.process_topic_messages_task
-        if previous_task and not previous_task.done():
-            await cancel_and_wait(previous_task)
-
         topic_subscription.conn_generation = generation
         topic_subscription.join_ref = self._generate_ref()
         topic_subscription.current_join_ready = (

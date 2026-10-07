@@ -10,6 +10,7 @@ from typing import Protocol, cast
 
 from websockets import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
+from websockets.protocol import State
 
 from phoenix_channels_python_client.client_types import (
     ClientState,
@@ -46,6 +47,7 @@ def _truncate_close_reason(reason: str) -> str:
 
 class _SupervisorRuntimeDeps(Protocol):
     async def _rejoin_topics(self, generation: int) -> None: ...
+    def _fail_pending_joins(self, error: Exception) -> None: ...
     def _record_disconnect(self, connection_uptime_s: float) -> None: ...
     def _should_suppress_reconnect(self) -> bool: ...
     def _compute_reconnect_delay(self, attempt: int) -> float: ...
@@ -126,9 +128,14 @@ class SupervisorMixin:
     async def close_connection(self, reason: str) -> None:
         """Force-close the current connection so the supervisor's own
         disconnect handling decides whether to reconnect. No-op if not
-        currently connected."""
+        currently connected or the connection is already closing."""
         connection = self.connection
         if connection is None:
+            return
+        if connection.state is not State.OPEN:
+            self.logger.debug(
+                "Not forcing a close; connection is already %s", connection.state.name
+            )
             return
         reason = _truncate_close_reason(reason)
         self.logger.info("Forcing connection close: %s", reason)
@@ -265,7 +272,11 @@ class SupervisorMixin:
                 ):
                     self._initial_connection_future.set_result(None)
 
-                if generation > 1 and self._on_reconnect is not None:
+                if (
+                    generation > 1
+                    and self._on_reconnect is not None
+                    and not self._shutdown_event.is_set()
+                ):
                     await self._invoke_callback_safely(
                         "on_reconnect", self._on_reconnect
                     )
@@ -375,6 +386,9 @@ class SupervisorMixin:
             return
 
     async def _cleanup_connection(self) -> None:
+        cast(_SupervisorRuntimeDeps, self)._fail_pending_joins(
+            PHXConnectionError("Connection lost before the join completed")
+        )
         connection = self.connection
         running = [
             task
@@ -398,6 +412,11 @@ class SupervisorMixin:
     async def _close_websocket(self, connection: ClientConnection) -> None:
         try:
             await connection.close()
+        except asyncio.CancelledError:
+            # websockets enforces close_timeout only in the task awaiting close().
+            self.logger.debug("Close cancelled before the handshake ended; aborting")
+            connection.transport.abort()
+            raise
         except Exception:
             self.logger.exception("Failed while closing websocket connection")
 
