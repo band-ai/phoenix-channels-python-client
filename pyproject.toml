@@ -11,6 +11,7 @@ license = "MIT"
 authors = [{ name = "Phoenix Channels Python Client" }]
 requires-python = ">=3.11"
 dependencies = [
+    "pydantic>=2.8",
     "websockets>=14.2",
 ]
 classifiers = [
