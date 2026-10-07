@@ -83,12 +83,24 @@ class ReconnectControllerMixin:
             self.reconnect_policy.rapid_cooldown_max_s,
         )
 
-    def _compute_reconnect_delay(self, attempt: int) -> float:
-        base_delay = min(
+    def _exponential_delay(self, attempt: int) -> float:
+        """The policy's capped exponential backoff for ``attempt``, unjittered."""
+        return min(
             self.reconnect_policy.max_delay_s,
             self.reconnect_policy.base_delay_s
             * (self.reconnect_policy.factor ** max(attempt, 0)),
         )
+
+    def _equal_jitter(self, delay: float) -> float:
+        # Equal jitter avoids synchronization while keeping a meaningful minimum delay.
+        return self._random_between(delay / 2, delay)
+
+    def _channel_rejoin_delay(self, attempt: int) -> float:
+        # No rapid-disconnect floors: those describe socket churn, not one channel.
+        return self._equal_jitter(self._exponential_delay(attempt))
+
+    def _compute_reconnect_delay(self, attempt: int) -> float:
+        base_delay = self._exponential_delay(attempt)
 
         rapid_count = len(self._rapid_disconnects)
         min_delay = self._rapid_min_delay(rapid_count)
@@ -121,8 +133,7 @@ class ReconnectControllerMixin:
             )
             return computed
 
-        # Equal jitter avoids synchronization while keeping a meaningful minimum delay.
-        computed = self._random_between(delay / 2, delay)
+        computed = self._equal_jitter(delay)
         logger.debug(
             "Computed reconnect delay with equal jitter. attempt=%s rapid_count=%s "
             "base_delay_s=%s min_delay_s=%s computed_delay_s=%s",
