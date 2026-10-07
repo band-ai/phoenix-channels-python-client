@@ -282,7 +282,7 @@ Exceptions raised in callbacks are logged, not raised.
 
 - `async with` waits for the first connection. With `auto_reconnect=True` it keeps retrying; with `auto_reconnect=False` a failed first connection raises `PHXConnectionError`.
 - `run_forever()` returns `None` after `shutdown()`, a signal, or a close that doesn't reconnect. It raises `PHXConnectionError` on a terminal close, after repeated rapid disconnects, or when the client has never entered `async with`.
-- `subscribe_to_topic()` raises `PHXTopicError` on a rejected join, a join timeout or a duplicate subscription.
+- `subscribe_to_topic()` raises `PHXTopicError` on a rejected join, a join timeout or a duplicate subscription, and `PHXConnectionError` while disconnected or if the connection drops before the join completes.
 - `await client.close_connection(reason)` force-closes the current connection; the client then reconnects if `auto_reconnect` is on. It does nothing if the client isn't connected or the connection is already closing.
 - Exceptions live in `phoenix_channels_python_client.exceptions`.
 

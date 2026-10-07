@@ -265,39 +265,25 @@ async def test_a_callback_outlasting_the_drain_is_cancelled_and_the_topic_rejoin
         )
 
 
-async def test_a_topic_unregistered_during_a_rejoin_is_not_joined_again(
+async def test_a_subscribe_interrupted_by_a_disconnect_fails_fast(
     phoenix_server: FakePhoenixServer,
 ):
-    busy = BusyCallback()
-    reconnected = asyncio.Event()
-
-    async def on_reconnect() -> None:
-        reconnected.set()
-
-    client = make_client(
-        phoenix_server,
-        reconnect_policy=FAST_RECONNECT,
-        join_timeout_s=JOIN_TIMEOUT_S,
-        # Outlasts the pending join, so it times out while TOPIC drains.
-        callback_drain_timeout_s=ASYNC_TIMEOUT_S,
-        on_reconnect=on_reconnect,
-    )
-
-    async with client:
-        await client.subscribe_to_topic(TOPIC, busy)
+    # The default join timeout outlasts ASYNC_TIMEOUT_S, so only failing fast passes.
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         phoenix_server.unanswered_join_ids.update(phoenix_server.current_client_ids())
-        pending_join = asyncio.create_task(client.subscribe_to_topic(OTHER_TOPIC))
+        subscribe = asyncio.create_task(client.subscribe_to_topic(TOPIC))
         assert await wait_for_condition(
-            lambda: OTHER_TOPIC in client.get_current_subscriptions()
+            lambda: TOPIC in client.get_current_subscriptions()
         )
-        await reconnect_while_draining(phoenix_server, client, busy)
 
-        with pytest.raises(PHXTopicError):
-            await asyncio.wait_for(pending_join, ASYNC_TIMEOUT_S)
-        busy.release.set()
+        await reconnect(phoenix_server, client)
 
-        await asyncio.wait_for(reconnected.wait(), ASYNC_TIMEOUT_S)
-        assert phoenix_server.join_topics.count(OTHER_TOPIC) == 1
+        with pytest.raises(PHXConnectionError):
+            await asyncio.wait_for(subscribe, ASYNC_TIMEOUT_S)
+        assert TOPIC not in client.get_current_subscriptions()
+        await client.subscribe_to_topic(TOPIC)
+        # The first subscribe's join and the retry's; the rejoin sent none.
+        assert phoenix_server.join_topics.count(TOPIC) == 2
 
 
 async def test_shutdown_during_a_rejoin_does_not_report_a_reconnect(
