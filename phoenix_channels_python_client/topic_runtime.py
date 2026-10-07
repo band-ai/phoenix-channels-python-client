@@ -362,17 +362,14 @@ class TopicRuntimeMixin:
         if topic_subscription is None:
             raise PHXTopicError(f"Topic {topic} not subscribed")
 
-        is_connected = (
-            self._state == ClientState.CONNECTED and self.connection is not None
-        )
-        if not is_connected and not _allow_disconnected:
+        if not _allow_disconnected:
             self._ensure_can_send("unsubscribe")
-            return
+        connection = self.connection if self._state == ClientState.CONNECTED else None
 
         topic_subscription.leave_requested.set()
 
         try:
-            if is_connected and self.connection is not None:
+            if connection is not None:
                 leave_ref = self._generate_ref()
                 topic_leave_message = make_message(
                     topic=topic,
@@ -381,9 +378,7 @@ class TopicRuntimeMixin:
                     ref=leave_ref,
                     join_ref=topic_subscription.join_ref,
                 )
-                await self._send(self.connection, topic_leave_message)
-            elif not _allow_disconnected:
-                self._ensure_can_send("unsubscribe")
+                await self._send(connection, topic_leave_message)
             elif not topic_subscription.unsubscribe_completed.done():
                 topic_subscription.unsubscribe_completed.set_result(None)
 
