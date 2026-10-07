@@ -165,7 +165,7 @@ async def test_cleanup_survives_a_socket_that_fails_to_close() -> None:
 
 @pytest.mark.parametrize("install_signal_handlers", [True, False])
 async def test_run_forever_raises_the_supervisors_failure(
-    install_signal_handlers: bool,
+    *, install_signal_handlers: bool
 ) -> None:
     failure = RuntimeError()
 

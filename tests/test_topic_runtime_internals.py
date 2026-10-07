@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import NoReturn
 
 import pytest
 
@@ -192,7 +192,7 @@ async def test_a_processor_error_unregisters_the_topic_with_that_error(
     topic = runtime.register(make_subscription())
     failure = RuntimeError("state boom")
 
-    def fail(_: Any) -> Any:
+    def fail(_: object) -> NoReturn:
         raise failure
 
     monkeypatch.setattr(runtime, "_determine_processing_state", fail)

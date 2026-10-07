@@ -1,5 +1,6 @@
-"""Stand-ins for driving the client's internals directly, for races and
-defensive branches the fake server can't trigger. Prefer the fake server.
+"""Stand-ins for driving the client's internals directly.
+
+They reach races and defensive branches the fake server can't. Prefer the fake server.
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ class FakeSocket:
     close_raises: bool = False
 
     async def close(self, code: int | None = None, reason: str = "") -> None:
+        del code, reason
         if self.close_raises:
             raise RuntimeError("close boom")
 

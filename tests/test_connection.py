@@ -106,9 +106,10 @@ async def test_close_connection_before_entering_does_nothing(
 async def test_additional_headers_are_sent_on_the_ws_handshake(
     phoenix_server: FakePhoenixServer,
 ) -> None:
-    """`additional_headers` ride the WebSocket handshake, so a caller can send the
-    API key as an `x-api-key` header (for proxy in-header injection) rather than
-    only in the URL query.
+    """`additional_headers` ride the WebSocket handshake.
+
+    So a caller can send the API key as an `x-api-key` header (for proxy in-header
+    injection) rather than only in the URL query.
     """
     headers = {"x-api-key": "header-only-value"}
 
@@ -175,6 +176,7 @@ async def test_raising_lifecycle_callbacks_do_not_stop_reconnecting(
     phoenix_server: FakePhoenixServer,
 ) -> None:
     async def fail_on_disconnect(error: Exception | None) -> None:
+        del error
         raise ValueError("callback boom")
 
     async def fail_on_reconnect() -> None:
@@ -194,18 +196,18 @@ async def test_raising_lifecycle_callbacks_do_not_stop_reconnecting(
 
 
 @pytest.mark.parametrize(
-    ("option", "value", "message"),
+    ("options", "message"),
     [
-        ("heartbeat_interval_s", 0, "heartbeat_interval_s must be > 0"),
-        ("heartbeat_interval_s", -1.0, "heartbeat_interval_s must be > 0"),
-        ("join_timeout_s", 0, "join_timeout_s must be > 0"),
-        ("leave_timeout_s", 0, "leave_timeout_s must be > 0"),
-        ("max_topic_queue_size", 0, "max_topic_queue_size must be > 0"),
-        ("callback_drain_timeout_s", 0, "callback_drain_timeout_s must be > 0"),
+        ({"heartbeat_interval_s": 0}, "heartbeat_interval_s must be > 0"),
+        ({"heartbeat_interval_s": -1.0}, "heartbeat_interval_s must be > 0"),
+        ({"join_timeout_s": 0}, "join_timeout_s must be > 0"),
+        ({"leave_timeout_s": 0}, "leave_timeout_s must be > 0"),
+        ({"max_topic_queue_size": 0}, "max_topic_queue_size must be > 0"),
+        ({"callback_drain_timeout_s": 0}, "callback_drain_timeout_s must be > 0"),
     ],
 )
 def test_an_out_of_range_client_option_is_rejected(
-    option: str, value: Any, message: str
+    options: dict[str, Any], message: str
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        make_client(FakePhoenixServer(), **{option: value})
+        make_client(FakePhoenixServer(), **options)

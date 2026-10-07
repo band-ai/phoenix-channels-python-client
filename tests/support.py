@@ -156,8 +156,9 @@ async def start_server_close(
     client: PHXChannelsClient,
     code: int = CloseCode.SERVICE_RESTART,
 ) -> asyncio.Task[None]:
-    """Start the server closing the client's socket and return once the socket is
-    closing, before the client has dropped it. Await the returned task to finish.
+    """Start the server closing the client's socket; return once it is closing.
+
+    That is before the client has dropped it. Await the returned task to finish.
     """
     socket = client.connection
     assert socket is not None
@@ -168,9 +169,7 @@ async def start_server_close(
 
 
 def rejoin_settled(client: PHXChannelsClient, topic: str = TOPIC) -> Callable[[], bool]:
-    """True once the topic's join on the current connection has an outcome, or
-    the topic is gone.
-    """
+    """True once the topic's current join has an outcome, or the topic is gone."""
 
     def settled() -> bool:
         subscription = client.get_current_subscriptions().get(topic)

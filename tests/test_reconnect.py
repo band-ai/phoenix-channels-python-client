@@ -43,7 +43,7 @@ SUPPRESS_AFTER_DISCONNECTS = 3
 UNRECOGNISED_CLOSE_CODE = 4001
 
 
-class CallbackFailure(Exception):
+class CallbackError(Exception):
     pass
 
 
@@ -55,9 +55,10 @@ class BusyCallback:
         self.release = asyncio.Event()
 
     async def __call__(self, message: ChannelMessage) -> None:
+        del message
         self.running.set()
         await self.release.wait()
-        raise CallbackFailure
+        raise CallbackError
 
 
 async def reconnect_while_draining(
@@ -313,7 +314,7 @@ async def test_shutdown_during_a_rejoin_does_not_report_a_reconnect(
 @each_protocol
 @pytest.mark.parametrize("install_signal_handlers", [True, False])
 async def test_rapid_disconnects_suppress_reconnecting_and_fail_run_forever(
-    phoenix_server: FakePhoenixServer, install_signal_handlers: bool
+    phoenix_server: FakePhoenixServer, *, install_signal_handlers: bool
 ) -> None:
     policy = ReconnectPolicy.model_validate(
         FAST_RECONNECT.model_dump()

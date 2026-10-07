@@ -5,10 +5,11 @@ import json
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from enum import StrEnum
-from typing import NamedTuple
+from typing import NamedTuple, Self
 from urllib.parse import parse_qs, urlparse
 
 from websockets.asyncio.server import Server, ServerConnection, serve
+from websockets.exceptions import ConnectionClosed
 from websockets.frames import CloseCode
 from websockets.http11 import Request
 
@@ -148,6 +149,7 @@ class FakePhoenixServer:
     async def _hold_handshake(
         self, connection: ServerConnection, request: Request
     ) -> None:
+        del connection, request
         if not self.handshake_gate.is_set():
             self.handshake_pending.set()
             await self.handshake_gate.wait()
@@ -182,7 +184,7 @@ class FakePhoenixServer:
                 frame = self._decode(message)
                 if frame is not None:
                     await self.handle_frame(websocket, frame)
-        except Exception:
+        except ConnectionClosed:
             pass
         finally:
             self._clients.discard(websocket)
@@ -314,7 +316,7 @@ class FakePhoenixServer:
             self.server.close()
             await self.server.wait_closed()
 
-    async def __aenter__(self) -> FakePhoenixServer:
+    async def __aenter__(self) -> Self:
         await self.start()
         return self
 
