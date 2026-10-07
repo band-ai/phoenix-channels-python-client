@@ -500,11 +500,12 @@ class TopicRuntimeMixin:
             return
 
         await self._drain_callback(topic_subscription)
-        # The topic may be left or unregistered while the callback drains.
+        await self._stop_topic_task(topic_subscription)
+        # The topic may be left or unregistered during any await before the restart.
         if not self._should_rejoin(topic_subscription):
             return
 
-        await self._restart_topic(topic_subscription, generation)
+        self._restart_topic(topic_subscription, generation)
         try:
             await self._join(topic_subscription)
         except Exception as exc:
@@ -516,13 +517,14 @@ class TopicRuntimeMixin:
         )
         return is_registered and not topic_subscription.leave_requested.is_set()
 
-    async def _restart_topic(
+    async def _stop_topic_task(self, topic_subscription: TopicSubscription) -> None:
+        task = topic_subscription.process_topic_messages_task
+        if task and not task.done():
+            await cancel_and_wait(task)
+
+    def _restart_topic(
         self, topic_subscription: TopicSubscription, generation: int
     ) -> None:
-        previous_task = topic_subscription.process_topic_messages_task
-        if previous_task and not previous_task.done():
-            await cancel_and_wait(previous_task)
-
         topic_subscription.conn_generation = generation
         topic_subscription.join_ref = self._generate_ref()
         topic_subscription.current_join_ready = (
