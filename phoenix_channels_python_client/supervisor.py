@@ -398,6 +398,10 @@ class SupervisorMixin:
     async def _close_websocket(self, connection: ClientConnection) -> None:
         try:
             await connection.close()
+        except asyncio.CancelledError:
+            # websockets enforces close_timeout only in the task awaiting close().
+            connection.transport.abort()
+            raise
         except Exception:
             self.logger.exception("Failed while closing websocket connection")
 
