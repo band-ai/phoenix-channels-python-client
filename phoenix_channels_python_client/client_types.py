@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Self
 
 from pydantic import (
@@ -16,7 +16,7 @@ from pydantic import (
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 
 
-class ClientState(Enum):
+class ClientState(StrEnum):
     CONNECTING = "connecting"
     CONNECTED = "connected"
     RECONNECTING = "reconnecting"

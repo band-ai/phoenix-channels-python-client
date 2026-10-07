@@ -96,7 +96,7 @@ class TopicRuntimeMixin:
                 self.logger.debug(
                     "Processing message for topic %s in state %s: %s",
                     topic.name,
-                    current_state.value,
+                    current_state,
                     message,
                 )
 
@@ -280,7 +280,7 @@ class TopicRuntimeMixin:
     def _ensure_can_send(self, operation: str) -> None:
         if self._state != ClientState.CONNECTED or self.connection is None:
             raise PHXConnectionError(
-                f"Cannot {operation} while client is {self._state.value}. Wait for "
+                f"Cannot {operation} while client is {self._state}. Wait for "
                 "reconnection."
             )
 

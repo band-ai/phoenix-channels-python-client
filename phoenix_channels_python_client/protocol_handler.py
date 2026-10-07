@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from enum import Enum
+from enum import StrEnum
 
 from websockets import ClientConnection
 
@@ -19,7 +19,7 @@ from phoenix_channels_python_client.utils import make_message
 logger = logging.getLogger(__name__)
 
 
-class PhoenixChannelsProtocolVersion(Enum):
+class PhoenixChannelsProtocolVersion(StrEnum):
     V1 = "1.0"
     V2 = "2.0"
 
@@ -41,7 +41,7 @@ class PHXProtocolHandler:
         self.logger = logger.getChild("ProtocolHandler")
         self.logger.debug(
             "Initialized PHXProtocolHandler for protocol version %s",
-            self.protocol_version.value,
+            self.protocol_version,
         )
 
     def parse_message(self, raw_message: str | bytes) -> ChannelMessage:
@@ -145,7 +145,7 @@ class PHXProtocolHandler:
         self.logger.debug(
             "Serializing %s to Phoenix Channels %s format",
             message,
-            self.protocol_version.value,
+            self.protocol_version,
         )
         text_message = self.serialize_message(message)
 
