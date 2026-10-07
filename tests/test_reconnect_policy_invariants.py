@@ -122,6 +122,12 @@ def test_a_reconnect_without_rapid_disconnects_waits_half_to_all_of_its_delay(
     assert highest == pytest.approx(COOLDOWN_POLICY.base_delay_s)
 
 
+def test_a_zero_base_delay_reconnects_immediately() -> None:
+    client = _make_client(derive_policy(COOLDOWN_POLICY, base_delay_s=0.0))
+
+    assert _delay_after_rapid_disconnects(client, 0) == 0.0
+
+
 def test_the_hold_down_jitter_spans_the_configured_ratios_of_the_cooldown(
     random_draw: Callable[[float], None],
 ) -> None:
