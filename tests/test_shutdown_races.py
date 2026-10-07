@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Self
 
 import pytest
 from websockets.frames import CloseCode
@@ -42,13 +43,14 @@ class HeldCallback:
         self.cancelled = asyncio.Event()
         self.release = asyncio.Event()
 
-    def __enter__(self) -> HeldCallback:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
         self.release.set()
 
     async def __call__(self, message: ChannelMessage) -> None:
+        del message
         self.running.set()
         try:
             await wait_forever()
@@ -176,6 +178,7 @@ async def test_shutdown_from_a_topic_callback_cancels_the_callback(
     callback_cancelled = asyncio.Event()
 
     async def stop_from_callback(message: ChannelMessage) -> None:
+        del message
         try:
             await client.shutdown(STOP_REASON)
         except asyncio.CancelledError:

@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import pytest
 from websockets import ClientConnection
 
+from phoenix_channels_python_client.phx_messages import ChannelMessage
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
     PHXProtocolHandler,
@@ -41,16 +42,16 @@ class ScriptedConnection:
         self.sent.append(text)
 
 
-class QueueEmptiedWhileFull(asyncio.Queue[Any]):
+class QueueEmptiedWhileFull(asyncio.Queue[ChannelMessage]):
     """Reports full, but is empty by the time the oldest message is dropped."""
 
     def full(self) -> bool:
         return True
 
-    def get_nowait(self) -> Any:
+    def get_nowait(self) -> NoReturn:
         raise asyncio.QueueEmpty
 
-    async def put(self, item: Any) -> None:
+    async def put(self, item: ChannelMessage) -> None:
         cast(Any, self)._queue.append(item)
 
 
@@ -153,7 +154,7 @@ def test_a_message_subtopic_is_what_follows_the_first_colon(
 def test_an_unexpected_parse_failure_is_reported_as_a_value_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fail(_: str | bytes) -> Any:
+    def fail(_: str | bytes) -> NoReturn:
         raise RuntimeError("boom")
 
     monkeypatch.setattr(

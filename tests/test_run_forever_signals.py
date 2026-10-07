@@ -39,6 +39,7 @@ def host_handlers() -> Iterator[tuple[Handler, list[int]]]:
     received: list[int] = []
 
     def sentinel(signum: int, frame: FrameType | None) -> None:
+        del frame
         received.append(signum)
 
     originals = {sig: signal.signal(sig, sentinel) for sig in SHUTDOWN_SIGNALS}
@@ -49,11 +50,11 @@ def host_handlers() -> Iterator[tuple[Handler, list[int]]]:
             signal.signal(sig, original)
 
 
-def installed(handler: Any) -> bool:
+def installed(handler: object) -> bool:
     return all(signal.getsignal(sig) is handler for sig in SHUTDOWN_SIGNALS)
 
 
-def send(sig: signal.Signals, expected_handler: Any) -> None:
+def send(sig: signal.Signals, expected_handler: object) -> None:
     # A regression fails here instead of delivering a real signal to pytest.
     assert signal.getsignal(sig) is expected_handler
     signal.raise_signal(sig)  # the Python handler runs before this returns
@@ -187,6 +188,7 @@ async def test_a_newer_host_handler_stays_and_may_chain_to_ours(
 async def test_cancelled_run_forever_restores_and_hands_back_the_signal(
     phoenix_server: FakePhoenixServer,
     host_handlers: tuple[Handler, list[int]],
+    *,
     with_signal: bool,
 ) -> None:
     sentinel, received = host_handlers
