@@ -90,6 +90,7 @@ def test_a_v1_frame_parses_into_a_message() -> None:
         (V2, json.dumps({"bad": "shape"}), TypeError),
         (V2, json.dumps([1, 2, 3]), ValueError),
         (V2, json.dumps([None, None, "", "evt", {}]), TypeError),
+        (V2, json.dumps([None, None, TOPIC, "", {}]), TypeError),
         (V1, json.dumps([1, 2, 3]), TypeError),
         (V1, json.dumps({"topic": "", "event": "x", "payload": {}}), TypeError),
         (V1, json.dumps({"topic": "t", "event": "", "payload": {}}), TypeError),
@@ -102,6 +103,32 @@ def test_a_malformed_frame_is_rejected(
 ) -> None:
     with pytest.raises(expected_exception):
         PHXProtocolHandler(protocol).parse_message(raw)
+
+
+@pytest.mark.parametrize(
+    "protocol,raw",
+    [
+        (V2, json.dumps([None, None, TOPIC, "evt", None])),
+        (V1, json.dumps({"topic": TOPIC, "event": "evt", "payload": "not-a-dict"})),
+    ],
+)
+def test_a_frame_without_an_object_payload_parses_with_an_empty_one(
+    protocol: PhoenixChannelsProtocolVersion, raw: str
+) -> None:
+    assert PHXProtocolHandler(protocol).parse_message(raw).payload == {}
+
+
+@pytest.mark.parametrize(
+    "topic,subtopic", [("room:lobby", "lobby"), ("room:a:b", "a:b"), ("lobby", None)]
+)
+def test_a_message_subtopic_is_what_follows_the_first_colon(
+    topic: str, subtopic: str | None
+) -> None:
+    message = PHXProtocolHandler(V2).parse_message(
+        json.dumps([None, None, topic, "evt", {}])
+    )
+
+    assert message.subtopic == subtopic
 
 
 def test_an_unexpected_parse_failure_is_reported_as_a_value_error(

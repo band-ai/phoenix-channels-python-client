@@ -26,6 +26,9 @@ REJECTED_TOPIC = FakePhoenixServer.REJECTED_TOPIC
 # A custom (non-phx_) event for tests that only need some server push.
 EVENT = "test_event"
 
+# Not a Phoenix frame in either protocol, so the client can't parse it.
+UNPARSEABLE_FRAME = "not a phoenix frame"
+
 # Tests that stop the client don't care why; this is only logged.
 STOP_REASON = "test stop"
 
