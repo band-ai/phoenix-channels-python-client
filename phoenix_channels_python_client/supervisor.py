@@ -189,7 +189,9 @@ class SupervisorMixin:
             self.logger.debug("Heartbeat loop cancelled")
             raise
 
-    async def _supervisor_loop(self) -> None:
+    async def _supervisor_loop(  # noqa: C901, PLR0912, PLR0915  # INT-1707: split
+        self,
+    ) -> None:
         attempt = 0
         runtime_deps = cast(_SupervisorRuntimeDeps, self)
 
