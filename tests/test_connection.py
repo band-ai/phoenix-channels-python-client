@@ -6,7 +6,6 @@ from typing import Any
 import pytest
 from websockets.frames import CloseCode
 
-from phoenix_channels_python_client.client import ReconnectPolicy
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 
 from tests.fake_server import FakePhoenixServer
@@ -201,11 +200,6 @@ async def test_raising_lifecycle_callbacks_do_not_stop_reconnecting(
         ("leave_timeout_s", 0, "leave_timeout_s must be > 0"),
         ("max_topic_queue_size", 0, "max_topic_queue_size must be > 0"),
         ("callback_drain_timeout_s", 0, "callback_drain_timeout_s must be > 0"),
-        (
-            "reconnect_policy",
-            ReconnectPolicy(base_delay_s=-1),
-            "Invalid reconnect policy configuration",
-        ),
     ],
 )
 def test_an_out_of_range_client_option_is_rejected(

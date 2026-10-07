@@ -10,12 +10,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from websockets import ClientConnection
 
 from phoenix_channels_python_client.client_state_machine import transition_client_state
-from phoenix_channels_python_client.client_types import (
-    ClientState,
-    ReconnectPolicy,
-    reconnect_policy_is_invalid,
-    validate_reconnect_policy,
-)
+from phoenix_channels_python_client.client_types import ClientState, ReconnectPolicy
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.protocol_handler import (
     PHXProtocolHandler,
@@ -105,10 +100,6 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
             raise ValueError("max_topic_queue_size must be > 0")
         if callback_drain_timeout_s <= 0:
             raise ValueError("callback_drain_timeout_s must be > 0")
-        try:
-            validate_reconnect_policy(reconnect_policy or ReconnectPolicy())
-        except ValueError as exc:
-            raise ValueError("Invalid reconnect policy configuration") from exc
 
         vsn = (
             "2.0.0"
@@ -171,10 +162,6 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
             and not self._topic_subscriptions
             and self.connection is None
         )
-
-    @staticmethod
-    def reconnect_policy_is_invalid(policy: ReconnectPolicy) -> bool:
-        return reconnect_policy_is_invalid(policy)
 
     async def __aenter__(self) -> PHXChannelsClient:
         self.logger.debug("Entering PHXChannelsClient context")
