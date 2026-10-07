@@ -92,7 +92,7 @@ async def test_forced_close_during_a_terminal_server_close_does_not_reconnect(
 
         with pytest.raises(PHXConnectionError):
             await asyncio.wait_for(run, ASYNC_TIMEOUT_S)
-        await server_close
+        await asyncio.wait_for(server_close, ASYNC_TIMEOUT_S)
 
 
 async def test_close_connection_before_entering_does_nothing(
@@ -194,7 +194,7 @@ async def test_raising_lifecycle_callbacks_do_not_stop_reconnecting(
 
 
 @pytest.mark.parametrize(
-    "option,value,message",
+    ("option", "value", "message"),
     [
         ("heartbeat_interval_s", 0, "heartbeat_interval_s must be > 0"),
         ("heartbeat_interval_s", -1.0, "heartbeat_interval_s must be > 0"),

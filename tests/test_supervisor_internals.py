@@ -70,12 +70,13 @@ async def test_the_initial_connect_retries_before_succeeding(
     use_connect: Callable[[Connect], None],
 ) -> None:
     harness = SupervisorHarness()
+    failures = 1
     attempts = 0
 
     async def fail_then_connect(_: str) -> ClientConnection:
         nonlocal attempts
         attempts += 1
-        if attempts == 1:
+        if attempts <= failures:
             raise RuntimeError("transient connect fail")
         return fake_connection()
 
@@ -83,8 +84,9 @@ async def test_the_initial_connect_retries_before_succeeding(
 
     async def stop_on_the_second_wait(delay_s: float) -> None:
         nonlocal waits
+        del delay_s
         waits += 1
-        if waits >= 2:
+        if waits > failures:
             harness._shutdown_event.set()
 
     harness._wait_for_shutdown_or_timeout = stop_on_the_second_wait  # type: ignore[method-assign]
@@ -92,7 +94,7 @@ async def test_the_initial_connect_retries_before_succeeding(
 
     await harness._supervisor_loop()
 
-    assert attempts >= 2
+    assert attempts > failures
     assert harness._initial_connection_future is not None
     assert harness._initial_connection_future.result() is None
 
