@@ -26,8 +26,6 @@ from phoenix_channels_python_client.topic_subscription import (
 )
 from phoenix_channels_python_client.utils import cancel_and_wait, make_message
 
-_JOIN_NOT_SENT = "Connection lost before join could be sent"
-
 
 class TopicRuntimeMixin:
     logger: logging.Logger
@@ -284,11 +282,22 @@ class TopicRuntimeMixin:
                 f"Cannot {operation} while client is {self._state.value}. Wait for reconnection."
             )
 
+    async def _send(
+        self, connection: ClientConnection, message: ChannelMessage
+    ) -> None:
+        """Send ``message``; a socket already closing raises PHXConnectionError."""
+        try:
+            await self._protocol_handler.send_message(connection, message)
+        except ConnectionClosed as exc:
+            raise PHXConnectionError(
+                f"Connection lost before {message.event} could be sent"
+            ) from exc
+
     async def _join(self, topic_subscription: TopicSubscription) -> None:
         """Send the topic's join on its current join_ref and wait for the reply."""
         connection = self.connection
         if connection is None:
-            raise PHXConnectionError(_JOIN_NOT_SENT)
+            raise PHXConnectionError("Connection lost before join could be sent")
 
         join_message = make_message(
             topic=topic_subscription.name,
@@ -297,10 +306,7 @@ class TopicRuntimeMixin:
             ref=topic_subscription.join_ref,
             join_ref=topic_subscription.join_ref,
         )
-        try:
-            await self._protocol_handler.send_message(connection, join_message)
-        except ConnectionClosed as exc:
-            raise PHXConnectionError(_JOIN_NOT_SENT) from exc
+        await self._send(connection, join_message)
         await asyncio.wait_for(
             topic_subscription.current_join_ready, timeout=self.join_timeout_s
         )
@@ -373,9 +379,7 @@ class TopicRuntimeMixin:
                     ref=leave_ref,
                     join_ref=topic_subscription.join_ref,
                 )
-                await self._protocol_handler.send_message(
-                    self.connection, topic_leave_message
-                )
+                await self._send(self.connection, topic_leave_message)
             elif not _allow_disconnected:
                 self._ensure_can_send("unsubscribe")
             else:
