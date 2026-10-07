@@ -37,7 +37,9 @@ class TopicSubscription:
     )
     conn_generation: int = 0
     dropped_message_count: int = 0
-    current_callback_task: Future[None] | None = None
+    current_callback_task: Task[None] | None = None
+    # A rejoin sets this before draining; the topic task then takes no new message.
+    restart_requested: bool = False
     # Rejoins the channel after a crash, while the socket stays up.
     recovery_task: Task[None] | None = None
 

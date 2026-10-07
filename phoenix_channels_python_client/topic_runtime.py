@@ -41,6 +41,17 @@ async def _cancel_unless_current(task: asyncio.Task[None] | None) -> None:
         await cancel_and_wait(task)
 
 
+async def _run_handlers(
+    message: ChannelMessage,
+    message_handler: Callable[[ChannelMessage], Awaitable[None]] | None,
+    event_handler: Callable[[dict[str, Any]], Awaitable[None]] | None,
+) -> None:
+    if message_handler is not None:
+        await message_handler(message)
+    if event_handler is not None:
+        await event_handler(message.payload)
+
+
 class TopicRuntimeMixin:
     logger: logging.Logger
     connection: ClientConnection | None
@@ -97,6 +108,13 @@ class TopicRuntimeMixin:
         try:
             while True:
                 message = await topic.queue.get()
+                if topic.restart_requested:
+                    self.logger.debug(
+                        "Topic processor for %s stopping for a rejoin; dropping %s",
+                        topic.name,
+                        message.event,
+                    )
+                    return
 
                 if (
                     self._protocol_handler.protocol_version
@@ -318,30 +336,19 @@ class TopicRuntimeMixin:
         )
 
         message_handler, event_handler = self._snapshot_handlers(topic, message)
+        if message_handler is None and event_handler is None:
+            self.logger.warning(
+                "No handler found for event %s on topic %s", message.event, topic.name
+            )
+            return
 
         try:
-            has_message_handler = message_handler is not None
-            has_specific_handler = event_handler is not None
-
-            if has_message_handler:
-                topic.current_callback_task = asyncio.ensure_future(
-                    message_handler(message)
-                )
-                await topic.current_callback_task
-
-            if has_specific_handler:
-                topic.current_callback_task = asyncio.ensure_future(
-                    event_handler(message.payload)
-                )
-                await topic.current_callback_task
-
-            if not has_message_handler and not has_specific_handler:
-                self.logger.warning(
-                    "No handler found for event %s on topic %s",
-                    message.event,
-                    topic.name,
-                )
-
+            # One task for both handlers, so a rejoin's drain waits for the whole
+            # message.
+            topic.current_callback_task = asyncio.create_task(
+                _run_handlers(message, message_handler, event_handler)
+            )
+            await topic.current_callback_task
         except Exception:
             self.logger.exception("Error in topic callback for %s", topic.name)
         finally:
@@ -672,6 +679,7 @@ class TopicRuntimeMixin:
         if not self._should_rejoin(topic_subscription):
             return
 
+        topic_subscription.restart_requested = True
         await self._drain_callback(topic_subscription)
         await self._stop_topic_task(topic_subscription)
         # The topic may be left or unregistered during any await before the restart.
@@ -699,6 +707,7 @@ class TopicRuntimeMixin:
         self, topic_subscription: TopicSubscription, generation: int
     ) -> None:
         topic_subscription.conn_generation = generation
+        topic_subscription.restart_requested = False
         topic_subscription.join_ref = self._generate_ref()
         topic_subscription.current_join_ready = (
             asyncio.get_running_loop().create_future()

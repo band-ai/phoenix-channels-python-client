@@ -268,7 +268,7 @@ Everything after `api_key` is keyword-only:
 | `join_timeout_s` | `10.0` | Wait for a join reply |
 | `leave_timeout_s` | `5.0` | Wait for a leave reply |
 | `max_topic_queue_size` | `1000` | Per-topic buffer; the oldest message is dropped when full |
-| `callback_drain_timeout_s` | `2.0` | How long a running callback may finish before a rejoin cancels it |
+| `callback_drain_timeout_s` | `2.0` | How long the message being handled (its message handler, then its event handler) may finish before a rejoin cancels it; queued messages are dropped |
 | `on_reconnect` | `None` | `async () -> None`, called after topics are rejoined |
 | `on_disconnect` | `None` | `async (error: Exception \| None) -> None`; `None` on a clean close |
 | `on_heartbeat_ack` | `None` | Synchronous `() -> None`; runs on the message path, so keep it fast |
