@@ -3,13 +3,18 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+import pytest
+
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
-from phoenix_channels_python_client.phx_messages import Message
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
 
-from tests.test_v2_protocol.conftest import FakePhoenixServer
+from tests.fake_server import FakePhoenixServer
+from tests.support import TOPIC, make_client
+
+# Clients sharing one API key, so the server lets only one stay connected.
+SHARED_API_KEY = "shared-agent"
 
 
 @dataclass(frozen=True)
@@ -61,12 +66,7 @@ async def _run_contention_trial(
     duration_s: float,
 ) -> ContentionMetrics:
     phoenix_server.enforce_single_connection_per_api_key = True
-    phoenix_server.duplicate_close_code = 1013
-    phoenix_server.duplicate_close_reason = "duplicate session"
     phoenix_server.connection_attempts_by_path.clear()
-
-    async def callback(message: Message) -> None:
-        _ = message
 
     policy = _stress_policy()
     clients: list[PHXChannelsClient] = []
@@ -74,16 +74,16 @@ async def _run_contention_trial(
 
     try:
         for idx in range(clients_n):
-            client = PHXChannelsClient(
-                f"ws://{phoenix_server.host}:{phoenix_server.port}/socket/stress-{idx}",
-                api_key="shared-agent",
-                protocol_version=PhoenixChannelsProtocolVersion.V2,
+            client = make_client(
+                phoenix_server,
+                f"/socket/stress-{idx}",
+                api_key=SHARED_API_KEY,
                 reconnect_policy=policy,
                 join_timeout_s=1.0,
                 leave_timeout_s=1.0,
             )
             await client.__aenter__()
-            await client.subscribe_to_topic("test-topic", callback)
+            await client.subscribe_to_topic(TOPIC)
             clients.append(client)
 
         run_tasks = [asyncio.create_task(client.run_forever()) for client in clients]
@@ -134,3 +134,20 @@ async def test_duplicate_session_four_clients_stress_scales_without_cascade(
     assert max(metric.max_rate_per_s for metric in trials) <= 4.0
     assert max(metric.total_rate_per_s for metric in trials) <= 12.0
     assert min(metric.fairness for metric in trials) >= 0.6
+
+
+# How long the two contending clients run before their attempts are counted.
+CONTENTION_WINDOW_S = 1.2
+
+
+# V2 runs in the duplicate-session stress tests above.
+@pytest.mark.parametrize("protocol", [PhoenixChannelsProtocolVersion.V1])
+async def test_two_clients_contending_for_one_session_reconnect_at_a_bounded_fair_rate(
+    phoenix_server: FakePhoenixServer,
+):
+    metrics = await _run_contention_trial(
+        phoenix_server, clients_n=2, duration_s=CONTENTION_WINDOW_S
+    )
+
+    assert metrics.max_rate_per_s <= 4.0
+    assert metrics.fairness >= 0.6
