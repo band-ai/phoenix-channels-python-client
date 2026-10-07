@@ -65,6 +65,12 @@ FAST_RECONNECT = ReconnectPolicy(
     rapid_hold_down_jitter_low_ratio=0.5,
 )
 
+
+def derive_policy(base: ReconnectPolicy, **changes: object) -> ReconnectPolicy:
+    """``base`` with ``changes``, validated; ``model_copy`` would skip validation."""
+    return ReconnectPolicy.model_validate(base.model_dump() | changes)
+
+
 # Runs the test once per protocol version, through the `protocol` fixture.
 each_protocol = pytest.mark.parametrize(
     "protocol",
@@ -156,9 +162,9 @@ async def start_server_close(
     client: PHXChannelsClient,
     code: int = CloseCode.SERVICE_RESTART,
 ) -> asyncio.Task[None]:
-    """Start the server closing the client's socket; return once it is closing.
+    """Start closing the client's socket; return while it is still closing.
 
-    That is before the client has dropped it. Await the returned task to finish.
+    The client hasn't dropped the socket yet. Await the returned task to finish.
     """
     socket = client.connection
     assert socket is not None

@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from websockets.frames import CloseCode
 
-from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
+from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
 from phoenix_channels_python_client.phx_messages import ChannelMessage
 from tests.fake_server import FakePhoenixServer
@@ -20,6 +20,7 @@ from tests.support import (
     UNPARSEABLE_FRAME,
     ReconnectCounter,
     deliver,
+    derive_policy,
     each_protocol,
     expect_message,
     make_client,
@@ -107,12 +108,10 @@ async def test_with_auto_reconnect_disabled_a_service_restart_disconnects(
 async def test_try_again_later_holds_the_reconnect_for_its_cooldown(
     phoenix_server: FakePhoenixServer,
 ) -> None:
-    policy = ReconnectPolicy.model_validate(
-        FAST_RECONNECT.model_dump()
-        | {
-            "try_again_later_min_delay_s": TRY_AGAIN_LATER_MIN_DELAY_S,
-            "try_again_later_max_delay_s": TRY_AGAIN_LATER_MAX_DELAY_S,
-        }
+    policy = derive_policy(
+        FAST_RECONNECT,
+        try_again_later_min_delay_s=TRY_AGAIN_LATER_MIN_DELAY_S,
+        try_again_later_max_delay_s=TRY_AGAIN_LATER_MAX_DELAY_S,
     )
     async with make_client(phoenix_server, reconnect_policy=policy) as client:
         await client.subscribe_to_topic(TOPIC)
@@ -316,14 +315,12 @@ async def test_shutdown_during_a_rejoin_does_not_report_a_reconnect(
 async def test_rapid_disconnects_suppress_reconnecting_and_fail_run_forever(
     phoenix_server: FakePhoenixServer, *, install_signal_handlers: bool
 ) -> None:
-    policy = ReconnectPolicy.model_validate(
-        FAST_RECONNECT.model_dump()
-        | {
-            # Long enough that every drop right after a join counts as rapid.
-            "rapid_disconnect_uptime_s": 1.0,
-            "rapid_window_s": 2.0,
-            "rapid_suppress_disconnect_count": SUPPRESS_AFTER_DISCONNECTS,
-        }
+    policy = derive_policy(
+        FAST_RECONNECT,
+        # Long enough that every drop right after a join counts as rapid.
+        rapid_disconnect_uptime_s=1.0,
+        rapid_window_s=2.0,
+        rapid_suppress_disconnect_count=SUPPRESS_AFTER_DISCONNECTS,
     )
     # Every connection up to suppression drops right after its join.
     phoenix_server.close_on_join_ids.update(range(1, 2 * SUPPRESS_AFTER_DISCONNECTS))
