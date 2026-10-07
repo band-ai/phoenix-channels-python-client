@@ -19,8 +19,10 @@ from tests.support import (
     JOIN_TIMEOUT_S,
     LEAVE_TIMEOUT_S,
     OTHER_TOPIC,
+    STOP_REASON,
     TOPIC,
     UNPARSEABLE_FRAME,
+    ReconnectCounter,
     deliver,
     each_protocol,
     expect_message,
@@ -296,6 +298,29 @@ async def test_a_topic_unregistered_during_a_rejoin_is_not_joined_again(
 
         await asyncio.wait_for(reconnected.wait(), ASYNC_TIMEOUT_S)
         assert phoenix_server.join_topics.count(OTHER_TOPIC) == 1
+
+
+async def test_shutdown_during_a_rejoin_does_not_report_a_reconnect(
+    phoenix_server: FakePhoenixServer,
+):
+    reconnects = ReconnectCounter()
+    client = make_client(
+        phoenix_server, reconnect_policy=FAST_RECONNECT, on_reconnect=reconnects
+    )
+    async with client:
+        await client.subscribe_to_topic(TOPIC)
+        subscription = client.get_current_subscriptions()[TOPIC]
+        joined_on = subscription.conn_generation
+        phoenix_server.unanswered_join_ids.add(phoenix_server.next_client_id)
+
+        await phoenix_server.close_all_clients()
+        # Set just before the rejoin sends its join, so it now waits on the reply.
+        assert await wait_for_condition(
+            lambda: subscription.conn_generation > joined_on
+        )
+        await client.shutdown(STOP_REASON)
+
+    assert reconnects.count == 0
 
 
 @each_protocol
