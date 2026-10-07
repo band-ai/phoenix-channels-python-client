@@ -13,6 +13,9 @@ from tests.support import (
 # Short enough that a test sees several heartbeats.
 HEARTBEAT_INTERVAL_S = 0.05
 
+# More than one ack shows the heartbeat repeats.
+REPEATED_ACKS = 2
+
 
 async def test_heartbeats_are_sent_and_acknowledged(
     phoenix_server: FakePhoenixServer,
@@ -24,7 +27,7 @@ async def test_heartbeats_are_sent_and_acknowledged(
         heartbeat_interval_s=HEARTBEAT_INTERVAL_S,
         on_heartbeat_ack=lambda: acks.append(None),
     ):
-        assert await wait_for_condition(lambda: len(acks) >= 2)
+        assert await wait_for_condition(lambda: len(acks) >= REPEATED_ACKS)
 
 
 async def test_heartbeats_can_be_disabled(phoenix_server: FakePhoenixServer) -> None:

@@ -86,19 +86,19 @@ def make_client(
 
 async def wait_for_condition(
     condition: Callable[[], bool],
-    timeout: float = ASYNC_TIMEOUT_S,
-    interval: float = POLL_INTERVAL_S,
+    timeout_s: float = ASYNC_TIMEOUT_S,
+    interval_s: float = POLL_INTERVAL_S,
 ) -> bool:
-    """Poll ``condition`` until it is true; False if ``timeout`` passes first.
+    """Poll ``condition`` until it is true; False if ``timeout_s`` passes first.
 
-    An ``interval`` of 0 checks on every loop turn, to catch a short-lived state.
+    An ``interval_s`` of 0 checks on every loop turn, to catch a short-lived state.
     """
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = loop.time() + timeout_s
     while loop.time() < deadline:
         if condition():
             return True
-        await asyncio.sleep(interval)
+        await asyncio.sleep(interval_s)
     return False
 
 
@@ -138,7 +138,7 @@ async def reconnect_after(
 ) -> None:
     """Run ``drop_connection`` and wait until the client holds a new connection."""
     generation = client._conn_generation
-    await drop_connection
+    await asyncio.wait_for(drop_connection, ASYNC_TIMEOUT_S)
     assert await wait_for_condition(lambda: client._conn_generation > generation)
 
 
@@ -163,7 +163,7 @@ async def start_server_close(
     assert socket is not None
     closing = asyncio.create_task(server.close_all_clients(code=code))
     # Every loop turn, since the client drops a closing socket within a few.
-    assert await wait_for_condition(lambda: socket.state is State.CLOSING, interval=0)
+    assert await wait_for_condition(lambda: socket.state is State.CLOSING, interval_s=0)
     return closing
 
 

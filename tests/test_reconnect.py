@@ -143,16 +143,17 @@ async def test_messages_queued_before_a_reconnect_are_dropped(
     )
     async with client:
         await client.subscribe_to_topic(TOPIC, stuck_on_the_first_message)
-        await deliver(phoenix_server, client, payload={"id": 1})
+        first, queued, after_reconnect = 1, 2, 3
+        await deliver(phoenix_server, client, payload={"id": first})
         await asyncio.wait_for(first_started.wait(), ASYNC_TIMEOUT_S)
-        await deliver(phoenix_server, client, payload={"id": 2})
+        await deliver(phoenix_server, client, payload={"id": queued})
 
         await reconnect(phoenix_server, client)
         assert await wait_for_condition(rejoin_settled(client))
-        await deliver(phoenix_server, client, payload={"id": 3})
+        await deliver(phoenix_server, client, payload={"id": after_reconnect})
 
-        assert await wait_for_condition(lambda: 3 in handled)
-        assert handled == [1, 3]
+        assert await wait_for_condition(lambda: after_reconnect in handled)
+        assert handled == [first, after_reconnect]
 
 
 @each_protocol
@@ -283,7 +284,7 @@ async def test_a_subscribe_interrupted_by_a_disconnect_fails_fast(
         assert TOPIC not in client.get_current_subscriptions()
         await client.subscribe_to_topic(TOPIC)
         # The first subscribe's join and the retry's; the rejoin sent none.
-        assert phoenix_server.join_topics.count(TOPIC) == 2
+        assert phoenix_server.join_topics == [TOPIC, TOPIC]
 
 
 async def test_shutdown_during_a_rejoin_does_not_report_a_reconnect(

@@ -54,7 +54,7 @@ async def test_subscribing_while_the_server_closes_raises_a_connection_error(
 
         with pytest.raises(PHXConnectionError):
             await client.subscribe_to_topic(TOPIC)
-        await server_close
+        await asyncio.wait_for(server_close, ASYNC_TIMEOUT_S)
 
 
 @each_protocol
@@ -124,7 +124,7 @@ async def test_unsubscribing_while_the_server_closes_raises_a_connection_error(
 
         with pytest.raises(PHXConnectionError):
             await client.unsubscribe_from_topic(TOPIC)
-        await server_close
+        await asyncio.wait_for(server_close, ASYNC_TIMEOUT_S)
 
 
 @each_protocol
@@ -173,7 +173,7 @@ async def test_unsubscribing_lets_the_running_callback_finish_and_drops_queued_e
     assert TOPIC in client.get_current_subscriptions()
 
     release_callback.set()
-    await unsubscribe
+    await asyncio.wait_for(unsubscribe, ASYNC_TIMEOUT_S)
 
     assert TOPIC not in client.get_current_subscriptions()
     assert handled == [0]
@@ -384,13 +384,16 @@ async def test_a_full_topic_queue_drops_its_oldest_message(
         await asyncio.wait_for(first_started.wait(), ASYNC_TIMEOUT_S)
 
         # With one queue slot, each later message pushes out the one before it.
-        for message_id in (2, 3, 4):
+        later_ids = (2, 3, 4)
+        for message_id in later_ids:
             await deliver(phoenix_server, client, payload={"id": message_id})
         subscription = client.get_current_subscriptions()[TOPIC]
-        assert await wait_for_condition(lambda: subscription.dropped_message_count == 2)
+        assert await wait_for_condition(
+            lambda: subscription.dropped_message_count == len(later_ids) - 1
+        )
         release_first.set()
 
-        assert await wait_for_condition(lambda: handled == [1, 4])
+        assert await wait_for_condition(lambda: handled == [1, later_ids[-1]])
 
 
 async def test_a_message_from_an_older_join_is_not_delivered(
