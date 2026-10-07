@@ -19,6 +19,9 @@ from tests.support import EVENT, TOPIC
 V1 = PhoenixChannelsProtocolVersion.V1
 V2 = PhoenixChannelsProtocolVersion.V2
 
+# v1 servers may send refs as JSON numbers.
+INTEGER_REF = 1
+
 
 @dataclass
 class ScriptedConnection:
@@ -82,6 +85,22 @@ def test_a_v1_frame_parses_into_a_message() -> None:
     )
 
     assert (message.topic, message.event, message.ref) == (TOPIC, EVENT, "1")
+
+
+def test_a_v1_frame_with_integer_refs_parses_as_strings() -> None:
+    message = PHXProtocolHandler(V1).parse_message(
+        json.dumps(
+            {
+                "topic": TOPIC,
+                "event": EVENT,
+                "ref": INTEGER_REF,
+                "join_ref": INTEGER_REF,
+                "payload": {},
+            }
+        )
+    )
+
+    assert (message.ref, message.join_ref) == (str(INTEGER_REF), str(INTEGER_REF))
 
 
 @pytest.mark.parametrize(

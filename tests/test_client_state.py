@@ -3,13 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from phoenix_channels_python_client.client_state_machine import transition_client_state
-from phoenix_channels_python_client.client_types import (
-    ClientState,
-    ReconnectPolicy,
-    reconnect_policy_is_invalid,
-)
+from phoenix_channels_python_client.client_types import ClientState, ReconnectPolicy
 
 
 def test_transitioning_to_the_same_state_is_allowed() -> None:
@@ -50,9 +47,8 @@ def test_an_invalid_state_transition_raises() -> None:
         },
     ],
 )
-def test_an_out_of_range_reconnect_policy_is_invalid(kwargs: dict[str, Any]) -> None:
-    assert reconnect_policy_is_invalid(ReconnectPolicy(**kwargs)) is True
-
-
-def test_the_default_reconnect_policy_is_valid() -> None:
-    assert reconnect_policy_is_invalid(ReconnectPolicy()) is False
+def test_an_out_of_range_reconnect_policy_cannot_be_built(
+    kwargs: dict[str, Any],
+) -> None:
+    with pytest.raises(ValidationError):
+        ReconnectPolicy(**kwargs)
