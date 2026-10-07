@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import math
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
-from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
-from phoenix_channels_python_client.phx_messages import Message
-from phoenix_channels_python_client.protocol_handler import (
-    PhoenixChannelsProtocolVersion,
-)
+from websockets.frames import CloseCode
 
-from tests.test_v2_protocol.conftest import FakePhoenixServer
+from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
+
+from tests.fake_server import FakePhoenixServer
+from tests.support import TOPIC, each_protocol, make_client
+
+# Clients sharing one API key, so the server lets only one stay connected.
+SHARED_API_KEY = "shared-agent"
 
 
 @dataclass(frozen=True)
@@ -61,12 +65,7 @@ async def _run_contention_trial(
     duration_s: float,
 ) -> ContentionMetrics:
     phoenix_server.enforce_single_connection_per_api_key = True
-    phoenix_server.duplicate_close_code = 1013
-    phoenix_server.duplicate_close_reason = "duplicate session"
     phoenix_server.connection_attempts_by_path.clear()
-
-    async def callback(message: Message) -> None:
-        _ = message
 
     policy = _stress_policy()
     clients: list[PHXChannelsClient] = []
@@ -74,16 +73,16 @@ async def _run_contention_trial(
 
     try:
         for idx in range(clients_n):
-            client = PHXChannelsClient(
-                f"ws://{phoenix_server.host}:{phoenix_server.port}/socket/stress-{idx}",
-                api_key="shared-agent",
-                protocol_version=PhoenixChannelsProtocolVersion.V2,
+            client = make_client(
+                phoenix_server,
+                f"/socket/stress-{idx}",
+                api_key=SHARED_API_KEY,
                 reconnect_policy=policy,
                 join_timeout_s=1.0,
                 leave_timeout_s=1.0,
             )
             await client.__aenter__()
-            await client.subscribe_to_topic("test-topic", callback)
+            await client.subscribe_to_topic(TOPIC)
             clients.append(client)
 
         run_tasks = [asyncio.create_task(client.run_forever()) for client in clients]
@@ -134,3 +133,71 @@ async def test_duplicate_session_four_clients_stress_scales_without_cascade(
     assert max(metric.max_rate_per_s for metric in trials) <= 4.0
     assert max(metric.total_rate_per_s for metric in trials) <= 12.0
     assert min(metric.fairness for metric in trials) >= 0.6
+
+
+# How long the two contending clients run before their attempts are counted.
+CONTENTION_WINDOW_S = 1.2
+
+
+@each_protocol
+async def test_two_clients_contending_for_one_session_reconnect_at_a_bounded_fair_rate(
+    phoenix_server: FakePhoenixServer,
+):
+    phoenix_server.enforce_single_connection_per_api_key = True
+    phoenix_server.duplicate_close_code = CloseCode.TRY_AGAIN_LATER
+    phoenix_server.duplicate_close_reason = "try again later"
+    paths = ["/socket/websocket-a", "/socket/websocket-b"]
+    policy = ReconnectPolicy(
+        base_delay_s=0.01,
+        factor=2.0,
+        max_delay_s=0.1,
+        stable_reset_s=1.0,
+        service_restart_min_delay_s=0.01,
+        service_restart_max_delay_s=0.03,
+        try_again_later_min_delay_s=0.04,
+        try_again_later_max_delay_s=0.08,
+        rapid_disconnect_uptime_s=0.2,
+        rapid_window_s=2.0,
+        rapid_first_min_delay_s=0.02,
+        rapid_second_min_delay_s=0.04,
+        rapid_cooldown_base_s=0.06,
+        rapid_cooldown_step_s=0.02,
+        rapid_cooldown_max_s=0.1,
+        rapid_suppress_disconnect_count=20,
+        rapid_hold_down_jitter_low_ratio=0.2,
+        rapid_hold_down_jitter_high_ratio=1.0,
+    )
+    clients = [
+        make_client(
+            phoenix_server,
+            path,
+            api_key=SHARED_API_KEY,
+            reconnect_policy=policy,
+            join_timeout_s=1.0,
+            leave_timeout_s=1.0,
+        )
+        for path in paths
+    ]
+
+    async with AsyncExitStack() as stack:
+        # Each joins before the next connects and evicts it.
+        for client in clients:
+            await stack.enter_async_context(client)
+            await client.subscribe_to_topic(TOPIC)
+        runs = [asyncio.create_task(client.run_forever()) for client in clients]
+        # Counting attempts needs real elapsed time, not a condition.
+        await asyncio.sleep(CONTENTION_WINDOW_S)
+
+        await asyncio.gather(
+            *(client.shutdown("test contention done") for client in clients),
+            return_exceptions=True,
+        )
+        await asyncio.gather(*runs, return_exceptions=True)
+
+    rates = [
+        phoenix_server.get_connection_attempts(path) / CONTENTION_WINDOW_S
+        for path in paths
+    ]
+    assert all(math.isfinite(rate) for rate in rates)
+    assert max(rates) <= 30.0
+    assert _jain_index(rates) >= 0.6

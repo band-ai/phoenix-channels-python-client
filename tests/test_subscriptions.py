@@ -1,0 +1,256 @@
+from __future__ import annotations
+
+import asyncio
+import asyncio.log
+import gc
+
+import pytest
+
+from phoenix_channels_python_client.client import PHXChannelsClient
+from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
+from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
+
+from tests.fake_server import FakePhoenixServer
+from tests.support import (
+    ASYNC_TIMEOUT_S,
+    OTHER_TOPIC,
+    REJECTED_TOPIC,
+    TOPIC,
+    deliver,
+    each_protocol,
+    expect_message,
+    make_client,
+    wait_for_condition,
+)
+
+
+@each_protocol
+async def test_subscribing_registers_the_topic_with_its_callback(
+    client: PHXChannelsClient, received: asyncio.Queue[ChannelMessage]
+):
+    await client.subscribe_to_topic(TOPIC, received.put)
+
+    subscription = client.get_current_subscriptions()[TOPIC]
+    assert subscription.name == TOPIC
+    assert subscription.async_callback == received.put
+
+
+@each_protocol
+async def test_subscribing_before_connecting_raises(phoenix_server: FakePhoenixServer):
+    with pytest.raises(PHXConnectionError):
+        await make_client(phoenix_server).subscribe_to_topic(TOPIC)
+
+
+@each_protocol
+async def test_subscribing_to_a_topic_the_server_rejects_raises(
+    client: PHXChannelsClient,
+):
+    with pytest.raises(PHXTopicError, match="unmatched topic"):
+        await client.subscribe_to_topic(REJECTED_TOPIC)
+
+
+async def test_rejected_join_leaves_no_unretrieved_future_error(
+    phoenix_server: FakePhoenixServer, caplog: pytest.LogCaptureFixture
+):
+    # Run in its own frame: a live client or bound exception keeps the
+    # subscription, and its futures, from being collected.
+    async def subscribe_to_rejected_topic() -> None:
+        async with make_client(phoenix_server) as client:
+            with pytest.raises(PHXTopicError):
+                await client.subscribe_to_topic(REJECTED_TOPIC)
+
+    await subscribe_to_rejected_topic()
+    gc.collect()
+
+    assert not [
+        record for record in caplog.records if record.name == asyncio.log.logger.name
+    ]
+
+
+@each_protocol
+async def test_subscribing_twice_to_a_topic_raises(client: PHXChannelsClient):
+    await client.subscribe_to_topic(TOPIC)
+
+    with pytest.raises(PHXTopicError, match=f"^Topic {TOPIC} already subscribed$"):
+        await client.subscribe_to_topic(TOPIC)
+
+
+@each_protocol
+async def test_unsubscribing_removes_the_topic(client: PHXChannelsClient):
+    await client.subscribe_to_topic(TOPIC)
+
+    await client.unsubscribe_from_topic(TOPIC)
+
+    assert TOPIC not in client.get_current_subscriptions()
+
+
+@each_protocol
+async def test_unsubscribing_while_disconnected_fails_fast_and_keeps_the_topic(
+    phoenix_server: FakePhoenixServer,
+):
+    async with make_client(phoenix_server, auto_reconnect=False) as client:
+        await client.subscribe_to_topic(TOPIC)
+        await phoenix_server.close_all_clients()
+        assert await wait_for_condition(lambda: client.connection is None)
+
+        with pytest.raises(PHXConnectionError):
+            await client.unsubscribe_from_topic(TOPIC)
+
+        assert TOPIC in client.get_current_subscriptions()
+
+
+@each_protocol
+async def test_a_subscribed_topic_receives_server_events(
+    phoenix_server: FakePhoenixServer,
+    client: PHXChannelsClient,
+    received: asyncio.Queue[ChannelMessage],
+):
+    payload = {"user_id": 123, "message": "Hello from server!"}
+    await client.subscribe_to_topic(TOPIC, received.put)
+
+    await deliver(phoenix_server, client, payload=payload, event="new_message")
+
+    message = await expect_message(received)
+    assert message.topic == TOPIC
+    assert message.event == "new_message"
+    assert message.payload == payload
+
+
+@each_protocol
+async def test_unsubscribing_lets_the_running_callback_finish_and_drops_queued_events(
+    phoenix_server: FakePhoenixServer, client: PHXChannelsClient
+):
+    queued_events = 10
+    handled: list[object] = []
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+
+    async def blocking_callback(message: ChannelMessage) -> None:
+        handled.append(message.payload["event_id"])
+        callback_started.set()
+        await release_callback.wait()
+
+    await client.subscribe_to_topic(TOPIC, blocking_callback)
+    for event_id in range(queued_events):
+        await deliver(phoenix_server, client, payload={"event_id": event_id})
+    await asyncio.wait_for(callback_started.wait(), ASYNC_TIMEOUT_S)
+    subscription = client.get_current_subscriptions()[TOPIC]
+    assert await wait_for_condition(
+        lambda: subscription.queue.qsize() == queued_events - 1
+    )
+
+    unsubscribe = asyncio.create_task(client.unsubscribe_from_topic(TOPIC))
+    assert await wait_for_condition(subscription.leave_requested.is_set)
+    assert not unsubscribe.done()
+    assert TOPIC in client.get_current_subscriptions()
+
+    release_callback.set()
+    await unsubscribe
+
+    assert TOPIC not in client.get_current_subscriptions()
+    assert handled == [0]
+
+
+@each_protocol
+async def test_each_topic_delivers_to_its_own_callback(
+    phoenix_server: FakePhoenixServer, client: PHXChannelsClient
+):
+    received_a: asyncio.Queue[ChannelMessage] = asyncio.Queue()
+    received_b: asyncio.Queue[ChannelMessage] = asyncio.Queue()
+    await client.subscribe_to_topic(TOPIC, received_a.put)
+    await client.subscribe_to_topic(OTHER_TOPIC, received_b.put)
+
+    await deliver(phoenix_server, client, TOPIC, payload={"topic_id": "a"})
+    await deliver(phoenix_server, client, OTHER_TOPIC, payload={"topic_id": "b"})
+
+    assert (await expect_message(received_a)).payload == {"topic_id": "a"}
+    assert (await expect_message(received_b)).payload == {"topic_id": "b"}
+    assert received_a.empty()
+    assert received_b.empty()
+
+
+@each_protocol
+async def test_messages_are_delivered_in_order(
+    phoenix_server: FakePhoenixServer,
+    client: PHXChannelsClient,
+    received: asyncio.Queue[ChannelMessage],
+):
+    sequence = list(range(5))
+    await client.subscribe_to_topic(TOPIC, received.put)
+
+    for sequence_id in sequence:
+        await deliver(phoenix_server, client, payload={"sequence_id": sequence_id})
+
+    assert [
+        (await expect_message(received)).payload["sequence_id"] for _ in sequence
+    ] == sequence
+
+
+@each_protocol
+async def test_shutdown_unsubscribes_every_topic_and_closes_the_connection(
+    client: PHXChannelsClient,
+):
+    await client.subscribe_to_topic(TOPIC)
+    await client.subscribe_to_topic(OTHER_TOPIC)
+
+    await client.shutdown("test shutdown")
+
+    assert client.get_current_subscriptions() == {}
+    assert client.connection is None
+
+
+@each_protocol
+async def test_an_event_handler_runs_alongside_the_topic_callback_until_removed(
+    phoenix_server: FakePhoenixServer,
+    client: PHXChannelsClient,
+    received: asyncio.Queue[ChannelMessage],
+):
+    event = Event("count_me")
+    handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    await client.subscribe_to_topic(TOPIC, received.put)
+
+    await deliver(phoenix_server, client, event=event)
+    await expect_message(received)
+    assert handled_payloads.empty()
+
+    client.add_event_handler(TOPIC, event, handled_payloads.put)
+    await deliver(phoenix_server, client, event=event)
+    await expect_message(received)
+    await asyncio.wait_for(handled_payloads.get(), ASYNC_TIMEOUT_S)
+
+    client.remove_event_handler(TOPIC, event)
+    await deliver(phoenix_server, client, event=event)
+    await expect_message(received)
+    assert handled_payloads.empty()
+
+
+async def test_added_event_handlers_are_listed(client: PHXChannelsClient):
+    event = Event("custom_event")
+
+    async def handle(payload: dict[str, object]) -> None:
+        pass
+
+    await client.subscribe_to_topic(TOPIC)
+    client.add_event_handler(TOPIC, event, handle)
+
+    assert event in client.list_event_handlers(TOPIC)
+
+
+@each_protocol
+async def test_a_full_topic_queue_drops_its_oldest_message(
+    phoenix_server: FakePhoenixServer,
+):
+    async with make_client(phoenix_server, max_topic_queue_size=1) as client:
+        await client.subscribe_to_topic(TOPIC)
+        subscription = client.get_current_subscriptions()[TOPIC]
+        # Stop the consumer so messages pile up in the queue.
+        assert subscription.process_topic_messages_task is not None
+        subscription.process_topic_messages_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await subscription.process_topic_messages_task
+
+        for message_id in (1, 2, 3):
+            await deliver(phoenix_server, client, payload={"id": message_id})
+
+        assert await wait_for_condition(lambda: subscription.dropped_message_count == 2)
+        assert subscription.queue.get_nowait().payload["id"] == 3

@@ -1,0 +1,130 @@
+"""Constants and helpers shared by the tests. Fixtures live in conftest.py."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable, Mapping
+from typing import Any
+
+import pytest
+from websockets.frames import CloseCode
+
+from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
+from phoenix_channels_python_client.phx_messages import ChannelMessage
+from phoenix_channels_python_client.protocol_handler import (
+    PhoenixChannelsProtocolVersion,
+)
+
+from tests.fake_server import FakePhoenixServer
+
+API_KEY = "test_key"
+
+TOPIC = FakePhoenixServer.TOPIC
+OTHER_TOPIC = FakePhoenixServer.OTHER_TOPIC
+REJECTED_TOPIC = FakePhoenixServer.REJECTED_TOPIC
+
+# A custom (non-phx_) event for tests that only need some server push.
+EVENT = "test_event"
+
+# Tests that stop the client don't care why; this is only logged.
+STOP_REASON = "test stop"
+
+# Upper bound for awaiting a task or event that should finish promptly; without
+# pytest-timeout, this turns a hang into a failure.
+ASYNC_TIMEOUT_S = 2.0
+
+# A busy topic callback holds back its leave reply, so don't wait long for it.
+LEAVE_TIMEOUT_S = 0.05
+
+# Every reconnect delay and cooldown is near zero, so no test waits on backoff.
+FAST_RECONNECT = ReconnectPolicy(
+    base_delay_s=0.01,
+    max_delay_s=0.05,
+    stable_reset_s=0.1,
+    service_restart_min_delay_s=0.01,
+    service_restart_max_delay_s=0.02,
+    try_again_later_min_delay_s=0.03,
+    try_again_later_max_delay_s=0.05,
+    rapid_disconnect_uptime_s=0.05,
+    rapid_window_s=1.0,
+    rapid_first_min_delay_s=0.01,
+    rapid_second_min_delay_s=0.02,
+    rapid_cooldown_base_s=0.03,
+    rapid_cooldown_step_s=0.01,
+    rapid_cooldown_max_s=0.05,
+    rapid_hold_down_jitter_low_ratio=0.5,
+)
+
+# Runs the test once per protocol version, through the `protocol` fixture.
+each_protocol = pytest.mark.parametrize(
+    "protocol",
+    list(PhoenixChannelsProtocolVersion),
+    ids=lambda version: f"v{version.value}",
+)
+
+
+def make_client(
+    server: FakePhoenixServer,
+    path: str = FakePhoenixServer.SOCKET_PATH,
+    **options: Any,
+) -> PHXChannelsClient:
+    options.setdefault("api_key", API_KEY)
+    return PHXChannelsClient(
+        server.url_for(path), protocol_version=server.protocol, **options
+    )
+
+
+async def wait_for_condition(
+    condition: Callable[[], bool],
+    timeout: float = ASYNC_TIMEOUT_S,
+    interval: float = 0.05,
+) -> bool:
+    """Poll ``condition`` until it is true; False if ``timeout`` passes first."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if condition():
+            return True
+        await asyncio.sleep(interval)
+    return False
+
+
+async def deliver(
+    server: FakePhoenixServer,
+    client: PHXChannelsClient,
+    topic: str = TOPIC,
+    payload: Mapping[str, object] | None = None,
+    event: str = EVENT,
+) -> None:
+    """Push one server event on the client's current join of ``topic``."""
+    join_ref = client.get_current_subscriptions()[topic].join_ref
+    await server.simulate_server_event(topic, event, payload or {}, join_ref=join_ref)
+
+
+async def expect_message(received: asyncio.Queue[ChannelMessage]) -> ChannelMessage:
+    return await asyncio.wait_for(received.get(), ASYNC_TIMEOUT_S)
+
+
+async def reconnect(
+    server: FakePhoenixServer,
+    client: PHXChannelsClient,
+    code: int = CloseCode.SERVICE_RESTART,
+) -> None:
+    """Drop every connection and wait until the client holds a new one."""
+    generation = client._conn_generation
+    await server.close_all_clients(code=code)
+    assert await wait_for_condition(lambda: client._conn_generation > generation)
+
+
+def rejoin_settled(client: PHXChannelsClient, topic: str = TOPIC) -> Callable[[], bool]:
+    """True once the topic's join on the current connection has an outcome, or
+    the topic is gone."""
+
+    def settled() -> bool:
+        subscription = client.get_current_subscriptions().get(topic)
+        return subscription is None or (
+            subscription.conn_generation == client._conn_generation
+            and subscription.current_join_ready.done()
+        )
+
+    return settled
