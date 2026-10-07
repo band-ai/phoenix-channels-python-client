@@ -123,6 +123,49 @@ async def test_a_connect_failure_during_shutdown_closes_cleanly(
         assert client._state is ClientState.CLOSED
 
 
+async def test_shutdown_during_recovery_leaves_no_tasks(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    before = asyncio.all_tasks()
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        await client.subscribe_to_topic(TOPIC)
+        joined = phoenix_server.join_topics.count(TOPIC)
+        phoenix_server.unanswered_join_ids.update(phoenix_server.current_client_ids())
+        await phoenix_server.crash_channel(TOPIC)
+        assert await wait_for_condition(
+            lambda: phoenix_server.join_topics.count(TOPIC) > joined
+        )
+
+    # The server's handler for the closed connection finishes on its own.
+    assert await wait_for_condition(lambda: not asyncio.all_tasks() - before)
+
+
+async def test_a_slow_on_topic_lost_does_not_outlive_shutdown(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    running = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def slow_on_topic_lost(topic: str, error: Exception) -> None:
+        del topic, error
+        running.set()
+        try:
+            await wait_forever()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    client = make_client(phoenix_server, on_topic_lost=slow_on_topic_lost)
+    async with client:
+        await client.subscribe_to_topic(TOPIC)
+        await phoenix_server.close_channel(TOPIC)
+        await asyncio.wait_for(running.wait(), ASYNC_TIMEOUT_S)
+
+        await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
+
+        assert cancelled.is_set()
+
+
 async def test_shutdown_during_initial_connect_fails_the_entry(
     phoenix_server: FakePhoenixServer,
 ) -> None:
