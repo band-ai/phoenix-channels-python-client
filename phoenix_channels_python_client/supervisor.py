@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-import signal
 from collections import deque
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from contextlib import nullcontext
 from typing import Protocol, cast
 
 from websockets import ClientConnection, connect
@@ -24,8 +23,9 @@ from phoenix_channels_python_client.phx_messages import (
     Event,
 )
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
+from phoenix_channels_python_client.shutdown_signals import handle_shutdown_signals
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
-from phoenix_channels_python_client.utils import make_message
+from phoenix_channels_python_client.utils import cancel_and_wait, make_message
 
 # RFC 6455 §7.4.2 private-use range (4000-4999, unregistrable); outside
 # _classify_disconnect's specially-handled codes, so a forced close
@@ -235,6 +235,10 @@ class SupervisorMixin:
                     continue
 
                 self.connection = connection
+                if self._shutdown_event.is_set():
+                    # shutdown() began during the handshake; its own cleanup
+                    # closes this socket.
+                    break
                 self._conn_generation += 1
                 generation = self._conn_generation
                 self._connected_event.set()
@@ -288,7 +292,6 @@ class SupervisorMixin:
                     routing_error=routing_error,
                 )
                 forced_close = self._forced_close_pending
-                self._forced_close_pending = False
 
                 await self._cleanup_connection()
 
@@ -351,6 +354,7 @@ class SupervisorMixin:
                 delay = runtime_deps._apply_disconnect_delay_override(delay, decision)
                 await self._wait_for_shutdown_or_timeout(delay)
 
+        finally:
             if (
                 self._initial_connection_future
                 and not self._initial_connection_future.done()
@@ -360,8 +364,6 @@ class SupervisorMixin:
                         "Connection supervisor stopped before connecting"
                     )
                 )
-
-        finally:
             self._connected_event.clear()
             if self._state != ClientState.SHUTTING_DOWN:
                 runtime_deps._transition_state(ClientState.CLOSED)
@@ -374,75 +376,71 @@ class SupervisorMixin:
 
     async def _cleanup_connection(self) -> None:
         connection = self.connection
+        running = [
+            task
+            for task in (self._heartbeat_task, self._message_routing_task)
+            if task is not None and not task.done()
+        ]
         self.connection = None
-        self._connected_event.clear()
-
-        if self._heartbeat_task and not self._heartbeat_task.done():
-            self._heartbeat_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._heartbeat_task
         self._heartbeat_task = None
-        self._pending_heartbeat_ref = None
-
-        if self._message_routing_task and not self._message_routing_task.done():
-            self._message_routing_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._message_routing_task
-
         self._message_routing_task = None
+        self._pending_heartbeat_ref = None
+        self._connected_event.clear()
+        self._forced_close_pending = False
 
-        if connection is not None:
-            try:
-                await connection.close()
-            except Exception:
-                self.logger.exception("Failed while closing websocket connection")
+        try:
+            await cancel_and_wait(*running)
+        finally:
+            # Close the socket even if the caller is cancelled meanwhile.
+            if connection is not None:
+                await self._close_websocket(connection)
 
-    async def run_forever(self) -> None:
+    async def _close_websocket(self, connection: ClientConnection) -> None:
+        try:
+            await connection.close()
+        except Exception:
+            self.logger.exception("Failed while closing websocket connection")
+
+    async def run_forever(self, *, install_signal_handlers: bool = True) -> None:
+        """Wait until the client stops, then raise why if it failed.
+
+        With ``install_signal_handlers`` (the default), SIGTERM and SIGINT shut
+        the client down. The handlers in place before the call are restored once
+        the last waiting ``run_forever()`` stops waiting, so a second signal
+        during the shutdown reaches them. A host handler registered with
+        ``loop.add_signal_handler`` before the call also fires; one registered
+        during it replaces ours. Hosts that own their process signals pass
+        ``False`` and schedule ``shutdown()`` on the client's loop from their
+        own handler.
+        """
         runtime_deps = cast(_SupervisorRuntimeDeps, self)
-        if self._supervisor_task is None:
+        supervisor = self._supervisor_task
+        if supervisor is None:
             raise PHXConnectionError(
                 "Client is not connected. Use 'async with' context manager."
             )
 
-        shutdown_signal = asyncio.Event()
+        signaled = asyncio.Event()
+        signals = (
+            handle_shutdown_signals(signaled)
+            if install_signal_handlers
+            else nullcontext()
+        )
+        with signals:
+            signal_wait = asyncio.create_task(signaled.wait())
+            try:
+                await asyncio.wait(
+                    {supervisor, signal_wait}, return_when=asyncio.FIRST_COMPLETED
+                )
+            finally:
+                signal_wait.cancel()
 
-        def signal_handler(*_: object) -> None:
-            shutdown_signal.set()
-
-        loop = asyncio.get_running_loop()
-        signal_handlers_registered = False
-        try:
-            for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(sig, signal_handler)
-            signal_handlers_registered = True
-        except (RuntimeError, NotImplementedError):
-            self.logger.debug(
-                "Signal handlers not available (not running on main thread)"
-            )
-
-        shutdown_task = asyncio.create_task(shutdown_signal.wait())
-
-        try:
-            done, pending = await asyncio.wait(
-                [shutdown_task, self._supervisor_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
-            for task in pending:
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
-
-            if shutdown_task in done:
-                await runtime_deps.shutdown("Signal received")
-                return
-
-            # Supervisor task ended unexpectedly: propagate if it failed.
-            if self._terminal_error is not None:
-                raise self._terminal_error
-            self._supervisor_task.result()
-
-        finally:
-            if signal_handlers_registered:
-                for sig in (signal.SIGTERM, signal.SIGINT):
-                    loop.remove_signal_handler(sig)
+        # No await since leaving the `with`, so this sees `signaled` exactly as
+        # handle_shutdown_signals judged it consumed.
+        if signaled.is_set():
+            await runtime_deps.shutdown("Signal received")
+        if self._terminal_error is not None:
+            raise self._terminal_error
+        if supervisor.cancelled() and self._shutdown_event.is_set():
+            return  # a requested stop
+        supervisor.result()

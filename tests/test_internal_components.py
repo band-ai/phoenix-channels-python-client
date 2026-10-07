@@ -18,7 +18,12 @@ from phoenix_channels_python_client.client_types import (
     reconnect_policy_is_invalid,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from phoenix_channels_python_client.phx_messages import PHXEvent, UserEvent
+from phoenix_channels_python_client.phx_messages import (
+    PHOENIX_TOPIC,
+    ChannelMessage,
+    PHXEvent,
+    UserEvent,
+)
 from phoenix_channels_python_client.protocol_handler import (
     PHXProtocolHandler,
     PhoenixChannelsProtocolVersion,
@@ -26,7 +31,11 @@ from phoenix_channels_python_client.protocol_handler import (
 from phoenix_channels_python_client.supervisor import SupervisorMixin
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
-from phoenix_channels_python_client.utils import make_message
+from phoenix_channels_python_client.utils import cancel_and_wait, make_message
+
+from tests.conftest import ASYNC_TIMEOUT_S
+
+HEARTBEAT_REF = "5"
 
 
 @dataclass
@@ -126,7 +135,14 @@ class _TopicRuntimeHarness(TopicRuntimeMixin):
 
 
 class _SupervisorHarness(SupervisorMixin):
-    def __init__(self) -> None:
+    # Starting state is passed in rather than assigned by the test, which would
+    # narrow its type for the rest of the test.
+    def __init__(
+        self,
+        *,
+        pending_heartbeat_ref: str | None = None,
+        forced_close_pending: bool = False,
+    ) -> None:
         self.logger = logging.getLogger(__name__)
         self.channel_socket_url = "ws://unit-test/socket"
         self.channel_socket_url_redacted = "ws://unit-test/socket?api_key=***"
@@ -148,12 +164,12 @@ class _SupervisorHarness(SupervisorMixin):
         self._terminal_error: Exception | None = None
         self._heartbeat_interval_s: float | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
-        self._pending_heartbeat_ref: str | None = None
+        self._pending_heartbeat_ref = pending_heartbeat_ref
         self._ref_counter = 0
         self._on_reconnect = None
         self._on_disconnect = None
         self._on_heartbeat_ack = None
-        self._forced_close_pending = False
+        self._forced_close_pending = forced_close_pending
 
         self.transition_history: list[ClientState] = []
         self.disconnect_uptimes: list[float] = []
@@ -355,7 +371,6 @@ def test_protocol_handler_serialize_raises_type_error_on_bad_payload() -> None:
         handler.serialize_message(message)
 
 
-@pytest.mark.asyncio
 async def test_process_websocket_messages_filters_join_ref() -> None:
     handler = PHXProtocolHandler(PhoenixChannelsProtocolVersion.V2)
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=10)
@@ -380,7 +395,6 @@ async def test_process_websocket_messages_filters_join_ref() -> None:
     assert only.payload == {"a": 3}
 
 
-@pytest.mark.asyncio
 async def test_process_websocket_messages_filters_stale_generation() -> None:
     handler = PHXProtocolHandler(PhoenixChannelsProtocolVersion.V2)
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=10)
@@ -400,7 +414,6 @@ async def test_process_websocket_messages_filters_stale_generation() -> None:
     assert queue.qsize() == 0
 
 
-@pytest.mark.asyncio
 async def test_process_websocket_messages_drop_path_handles_queueempty() -> None:
     handler = PHXProtocolHandler(PhoenixChannelsProtocolVersion.V2)
     queue = _QueueRaisesOnDrop()
@@ -422,7 +435,6 @@ async def test_process_websocket_messages_drop_path_handles_queueempty() -> None
     assert sub.dropped_message_count == 99
 
 
-@pytest.mark.asyncio
 async def test_topic_subscription_has_event_handler_false_when_missing() -> None:
     subscription = TopicSubscription(
         name="room:lobby",
@@ -434,7 +446,6 @@ async def test_topic_subscription_has_event_handler_false_when_missing() -> None
     assert subscription.has_event_handler(PHXEvent.reply) is False
 
 
-@pytest.mark.asyncio
 async def test_topic_runtime_processing_state_and_join_leave_error_paths() -> None:
     runtime = _TopicRuntimeHarness()
     state_topic = TopicSubscription(
@@ -491,7 +502,6 @@ async def test_topic_runtime_processing_state_and_join_leave_error_paths() -> No
     assert isinstance(leave_topic.unsubscribe_completed.exception(), PHXTopicError)
 
 
-@pytest.mark.asyncio
 async def test_topic_runtime_normal_message_mode_and_unregister_helpers() -> None:
     runtime = _TopicRuntimeHarness()
     topic = TopicSubscription(
@@ -530,7 +540,6 @@ async def test_topic_runtime_normal_message_mode_and_unregister_helpers() -> Non
         runtime._ensure_can_send("subscribe")
 
 
-@pytest.mark.asyncio
 async def test_topic_runtime_subscribe_unsubscribe_and_rejoin_edge_cases() -> None:
     runtime = _TopicRuntimeHarness()
 
@@ -593,7 +602,6 @@ async def test_topic_runtime_subscribe_unsubscribe_and_rejoin_edge_cases() -> No
     assert shutting_down.name in runtime._topic_subscriptions
 
 
-@pytest.mark.asyncio
 async def test_topic_runtime_process_topic_messages_special_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -653,7 +661,6 @@ async def test_topic_runtime_process_topic_messages_special_paths(
     assert isinstance(called["error"], RuntimeError)
 
 
-@pytest.mark.asyncio
 async def test_topic_runtime_missing_topic_handler_guards() -> None:
     runtime = _TopicRuntimeHarness()
     handler = cast(Any, lambda payload: payload)
@@ -676,7 +683,6 @@ async def test_topic_runtime_missing_topic_handler_guards() -> None:
     assert runtime.has_message_handler("missing") is False
 
 
-@pytest.mark.asyncio
 async def test_topic_runtime_existing_topic_handlers_and_rejoin_skip_leave_requested() -> (
     None
 ):
@@ -716,7 +722,6 @@ async def test_topic_runtime_existing_topic_handlers_and_rejoin_skip_leave_reque
     assert topic.join_ref == original_join_ref
 
 
-@pytest.mark.asyncio
 async def test_supervisor_connect_failures_and_terminal_suppression(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -744,7 +749,6 @@ async def test_supervisor_connect_failures_and_terminal_suppression(
     assert isinstance(suppressed._terminal_error, PHXConnectionError)
 
 
-@pytest.mark.asyncio
 async def test_supervisor_initial_connect_retries_before_failing_enter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -780,7 +784,6 @@ async def test_supervisor_initial_connect_retries_before_failing_enter(
     assert harness._initial_connection_future.result() is None
 
 
-@pytest.mark.asyncio
 async def test_supervisor_routing_failure_disconnect_decisions_and_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -817,7 +820,6 @@ async def test_supervisor_routing_failure_disconnect_decisions_and_cleanup(
     assert ClientState.CLOSED in no_reconnect.transition_history
 
 
-@pytest.mark.asyncio
 async def test_supervisor_initial_future_stop_and_cleanup_exceptions() -> None:
     harness = _SupervisorHarness()
     harness._shutdown_event.set()
@@ -835,65 +837,24 @@ async def test_supervisor_initial_future_stop_and_cleanup_exceptions() -> None:
     assert cleanup._message_routing_task is None
 
 
-@pytest.mark.asyncio
-async def test_supervisor_run_forever_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("install_signal_handlers", [True, False])
+async def test_supervisor_run_forever_paths(install_signal_handlers: bool) -> None:
     harness = _SupervisorHarness()
-    harness._supervisor_task = None
     with pytest.raises(PHXConnectionError):
-        await harness.run_forever()
+        await harness.run_forever(install_signal_handlers=install_signal_handlers)
 
-    signaled = _SupervisorHarness()
-    signaled._supervisor_task = asyncio.create_task(asyncio.sleep(10))
+    failure = RuntimeError()
 
-    loop = asyncio.get_running_loop()
-    monkeypatch.setattr(loop, "add_signal_handler", lambda *_args: None)
-    monkeypatch.setattr(loop, "remove_signal_handler", lambda *_args: None)
+    async def fail() -> None:
+        raise failure
 
-    async def wait_signal_first(
-        tasks: Any, return_when: Any
-    ) -> tuple[set[Any], set[Any]]:
-        del return_when
-        return {tasks[0]}, {tasks[1]}
-
-    monkeypatch.setattr(
-        "phoenix_channels_python_client.supervisor.asyncio.wait", wait_signal_first
-    )
-    await signaled.run_forever()
-    assert signaled.shutdown_reasons == ["Signal received"]
-
-    fallback = _SupervisorHarness()
-    fallback._supervisor_task = asyncio.create_task(asyncio.sleep(10))
-
-    monkeypatch.setattr(
-        loop,
-        "add_signal_handler",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("not-main-thread")),
-    )
-    monkeypatch.setattr(loop, "remove_signal_handler", lambda *_args: None)
-    monkeypatch.setattr(
-        "phoenix_channels_python_client.supervisor.asyncio.wait", wait_signal_first
-    )
-    await fallback.run_forever()
-    assert fallback.shutdown_reasons == ["Signal received"]
-
-    errored = _SupervisorHarness()
-    errored._supervisor_task = asyncio.create_task(asyncio.sleep(0))
-    errored._terminal_error = PHXConnectionError("terminal")
-
-    async def wait_supervisor_first(
-        tasks: Any, return_when: Any
-    ) -> tuple[set[Any], set[Any]]:
-        del return_when
-        return {tasks[1]}, {tasks[0]}
-
-    monkeypatch.setattr(
-        "phoenix_channels_python_client.supervisor.asyncio.wait", wait_supervisor_first
-    )
-    with pytest.raises(PHXConnectionError):
-        await errored.run_forever()
+    failed = _SupervisorHarness()
+    failed._supervisor_task = asyncio.create_task(fail())
+    with pytest.raises(RuntimeError) as raised:
+        await failed.run_forever(install_signal_handlers=install_signal_handlers)
+    assert raised.value is failure
 
 
-@pytest.mark.asyncio
 async def test_supervisor_on_disconnect_callback_fires(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -922,30 +883,23 @@ async def test_supervisor_on_disconnect_callback_fires(
     assert disconnect_errors[0] is routing_error
 
 
-@pytest.mark.asyncio
 async def test_supervisor_on_reconnect_callback_fires_on_generation_gt_1(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = _SupervisorHarness()
 
     reconnect_count = 0
-    connect_count = 0
 
     async def on_reconnect() -> None:
         nonlocal reconnect_count
         reconnect_count += 1
+        harness._shutdown_event.set()
 
     harness._on_reconnect = on_reconnect
 
-    async def connect_and_shutdown(_: str) -> ClientConnection:
-        nonlocal connect_count
-        connect_count += 1
-        if connect_count >= 2:
-            harness._shutdown_event.set()
-        return cast(ClientConnection, _FakeSocket())
-
     monkeypatch.setattr(
-        "phoenix_channels_python_client.supervisor.connect", connect_and_shutdown
+        "phoenix_channels_python_client.supervisor.connect",
+        lambda _: asyncio.sleep(0, result=cast(ClientConnection, _FakeSocket())),
     )
     harness._wait_for_shutdown_or_timeout = lambda _: asyncio.sleep(0)  # type: ignore[method-assign,assignment]
 
@@ -954,7 +908,6 @@ async def test_supervisor_on_reconnect_callback_fires_on_generation_gt_1(
     assert reconnect_count == 1
 
 
-@pytest.mark.asyncio
 async def test_supervisor_callback_exception_does_not_crash_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -983,10 +936,12 @@ async def test_supervisor_callback_exception_does_not_crash_loop(
     assert harness.connection is None
 
 
-@pytest.mark.asyncio
+def _heartbeat_reply(ref: str) -> ChannelMessage:
+    return make_message(topic=PHOENIX_TOPIC, event=PHXEvent.reply, payload={}, ref=ref)
+
+
 async def test_handle_heartbeat_response_fires_on_heartbeat_ack_callback() -> None:
-    harness = _SupervisorHarness()
-    harness._pending_heartbeat_ref = "5"
+    harness = _SupervisorHarness(pending_heartbeat_ref=HEARTBEAT_REF)
 
     ack_count = 0
 
@@ -996,18 +951,14 @@ async def test_handle_heartbeat_response_fires_on_heartbeat_ack_callback() -> No
 
     harness._on_heartbeat_ack = on_heartbeat_ack
 
-    harness._handle_heartbeat_response(
-        make_message(topic="phoenix", event=PHXEvent.reply, payload={}, ref="5")
-    )
+    harness._handle_heartbeat_response(_heartbeat_reply(HEARTBEAT_REF))
 
     assert ack_count == 1
     assert harness._pending_heartbeat_ref is None
 
 
-@pytest.mark.asyncio
 async def test_handle_heartbeat_response_ignores_mismatched_ref() -> None:
-    harness = _SupervisorHarness()
-    harness._pending_heartbeat_ref = "5"
+    harness = _SupervisorHarness(pending_heartbeat_ref=HEARTBEAT_REF)
 
     ack_count = 0
 
@@ -1017,37 +968,29 @@ async def test_handle_heartbeat_response_ignores_mismatched_ref() -> None:
 
     harness._on_heartbeat_ack = on_heartbeat_ack
 
-    harness._handle_heartbeat_response(
-        make_message(topic="phoenix", event=PHXEvent.reply, payload={}, ref="not-5")
-    )
+    harness._handle_heartbeat_response(_heartbeat_reply(f"not-{HEARTBEAT_REF}"))
 
     assert ack_count == 0
-    assert harness._pending_heartbeat_ref == "5"
+    assert harness._pending_heartbeat_ref == HEARTBEAT_REF
 
 
-@pytest.mark.asyncio
 async def test_handle_heartbeat_response_callback_exception_does_not_propagate() -> (
     None
 ):
-    harness = _SupervisorHarness()
-    harness._pending_heartbeat_ref = "5"
+    harness = _SupervisorHarness(pending_heartbeat_ref=HEARTBEAT_REF)
 
     def bad_heartbeat_ack() -> None:
         raise ValueError("callback boom")
 
     harness._on_heartbeat_ack = bad_heartbeat_ack
 
-    harness._handle_heartbeat_response(
-        make_message(topic="phoenix", event=PHXEvent.reply, payload={}, ref="5")
-    )
+    harness._handle_heartbeat_response(_heartbeat_reply(HEARTBEAT_REF))
 
     assert harness._pending_heartbeat_ref is None
 
 
-@pytest.mark.asyncio
 async def test_handle_heartbeat_response_rejects_async_callback() -> None:
-    harness = _SupervisorHarness()
-    harness._pending_heartbeat_ref = "5"
+    harness = _SupervisorHarness(pending_heartbeat_ref=HEARTBEAT_REF)
 
     ran: list[bool] = []
 
@@ -1056,15 +999,12 @@ async def test_handle_heartbeat_response_rejects_async_callback() -> None:
 
     harness._on_heartbeat_ack = async_on_heartbeat_ack  # type: ignore[assignment]
 
-    harness._handle_heartbeat_response(
-        make_message(topic="phoenix", event=PHXEvent.reply, payload={}, ref="5")
-    )
+    harness._handle_heartbeat_response(_heartbeat_reply(HEARTBEAT_REF))
 
     assert harness._pending_heartbeat_ref is None
     assert ran == []
 
 
-@pytest.mark.asyncio
 async def test_close_connection_closes_current_connection_for_reconnect() -> None:
     harness = _SupervisorHarness()
     socket = _FakeSocket()
@@ -1076,7 +1016,6 @@ async def test_close_connection_closes_current_connection_for_reconnect() -> Non
     assert socket.close_calls == [(4000, "dead threshold exceeded")]
 
 
-@pytest.mark.asyncio
 async def test_close_connection_is_noop_when_not_connected() -> None:
     harness = _SupervisorHarness()
     harness.connection = None
@@ -1086,7 +1025,6 @@ async def test_close_connection_is_noop_when_not_connected() -> None:
     assert harness.connection is None
 
 
-@pytest.mark.asyncio
 async def test_close_connection_truncates_oversized_reason() -> None:
     harness = _SupervisorHarness()
     socket = _FakeSocket()
@@ -1100,7 +1038,6 @@ async def test_close_connection_truncates_oversized_reason() -> None:
     assert sent_reason == "x" * 123
 
 
-@pytest.mark.asyncio
 async def test_disconnect_classification_applies_when_not_forced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1117,12 +1054,10 @@ async def test_disconnect_classification_applies_when_not_forced(
     assert harness.wait_delays == []
 
 
-@pytest.mark.asyncio
 async def test_forced_close_bypasses_disconnect_classification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    harness = _SupervisorHarness()
-    harness._forced_close_pending = True
+    harness = _SupervisorHarness(forced_close_pending=True)
     # What the real _classify_disconnect would decide for whatever code the
     # remote happened to echo back; the forced-close path must not consult it.
     harness.disconnect_decision = ReconnectDecision(should_reconnect=False)
@@ -1136,3 +1071,47 @@ async def test_forced_close_bypasses_disconnect_classification(
 
     assert harness.wait_delays == [0.001]
     assert harness._forced_close_pending is False
+
+
+async def test_cancel_and_wait_propagates_callers_cancellation() -> None:
+    release = asyncio.Event()
+
+    async def slow_to_unwind() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await release.wait()
+
+    target = asyncio.create_task(slow_to_unwind())
+    await asyncio.sleep(0)
+    caller = asyncio.create_task(cancel_and_wait(target))
+    await asyncio.sleep(0)
+
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(caller, ASYNC_TIMEOUT_S)
+
+    release.set()
+    await asyncio.wait({target}, timeout=ASYNC_TIMEOUT_S)
+    assert target.cancelled()
+
+
+async def test_cancel_and_wait_logs_a_failure_raised_while_unwinding(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    failure = RuntimeError()
+
+    async def fails_when_cancelled() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise failure from None
+
+    target = asyncio.create_task(fails_when_cancelled())
+    await asyncio.sleep(0)
+    with caplog.at_level(logging.ERROR):
+        await asyncio.wait_for(cancel_and_wait(target), ASYNC_TIMEOUT_S)
+
+    (record,) = caplog.records
+    assert record.exc_info is not None
+    assert record.exc_info[1] is failure

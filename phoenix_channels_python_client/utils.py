@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -8,6 +9,8 @@ from phoenix_channels_python_client.phx_messages import (
     PHXEventMessage,
     PHXMessage,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def parse_event(event: ChannelEvent) -> ChannelEvent:
@@ -44,6 +47,22 @@ def make_message(
             payload=payload,
             join_ref=join_ref,
         )
+
+
+async def cancel_and_wait(*futures: asyncio.Future[Any]) -> None:
+    """Cancel ``futures`` and wait until they have all finished.
+
+    Unlike ``suppress(CancelledError)``, the caller's own cancellation still
+    propagates. A failure raised while a future unwinds is logged, not raised.
+    """
+    if not futures:
+        return
+    for future in futures:
+        future.cancel()
+    await asyncio.wait(futures)
+    for future in futures:
+        if not future.cancelled() and (error := future.exception()):
+            logger.error("Failed while being cancelled", exc_info=error)
 
 
 def setup_logging(level: int = logging.INFO) -> None:

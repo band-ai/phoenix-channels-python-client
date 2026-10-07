@@ -7,9 +7,11 @@ from urllib.parse import parse_qs, urlparse
 import pytest_asyncio
 from websockets.asyncio.server import Server, ServerConnection, serve
 
+from tests.test_v2_protocol.conftest import ANY_FREE_PORT, LOOPBACK_HOST
+
 
 class FakePhoenixServerV1:
-    def __init__(self, host: str = "localhost", port: int = 8765):
+    def __init__(self, host: str = LOOPBACK_HOST, port: int = ANY_FREE_PORT):
         self.host = host
         self.port = port
         self.valid_topics = {
@@ -217,6 +219,7 @@ class FakePhoenixServerV1:
 
     async def start(self) -> None:
         self.server = await serve(self.handler, self.host, self.port)
+        self.port = self.server.sockets[0].getsockname()[1]
 
     async def stop(self) -> None:
         if self.server:

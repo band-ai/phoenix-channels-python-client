@@ -25,6 +25,7 @@ from phoenix_channels_python_client.reconnect_controller import ReconnectControl
 from phoenix_channels_python_client.supervisor import SupervisorMixin
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
+from phoenix_channels_python_client.utils import cancel_and_wait
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._connected_event = asyncio.Event()
         self._conn_generation = 0
         self._supervisor_task: asyncio.Task[None] | None = None
+        self._shutdown_task: asyncio.Task[None] | None = None
         self._message_routing_task: asyncio.Task[None] | None = None
         self._initial_connection_future: asyncio.Future[None] | None = None
         self._rapid_disconnects: deque[float] = deque()
@@ -157,13 +159,26 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._on_heartbeat_ack = on_heartbeat_ack
         self._forced_close_pending = False
 
+    @property
+    def _active_shutdown(self) -> asyncio.Task[None] | None:
+        task = self._shutdown_task
+        return task if task is not None and not task.done() else None
+
+    @property
+    def _is_fully_closed(self) -> bool:
+        return (
+            self._state == ClientState.CLOSED
+            and not self._topic_subscriptions
+            and self.connection is None
+        )
+
     @staticmethod
     def reconnect_policy_is_invalid(policy: ReconnectPolicy) -> bool:
         return reconnect_policy_is_invalid(policy)
 
     async def __aenter__(self) -> PHXChannelsClient:
         self.logger.debug("Entering PHXChannelsClient context")
-        if self._state != ClientState.CLOSED:
+        if self._state != ClientState.CLOSED or self._active_shutdown is not None:
             raise PHXConnectionError("Client is already running")
 
         self._shutdown_event.clear()
@@ -192,50 +207,51 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self.logger.debug("Leaving PHXChannelsClient context")
         await self.shutdown("Leaving PHXChannelsClient context")
 
-    async def shutdown(
-        self,
-        reason: str,
-    ) -> None:
-        if (
-            self._state == ClientState.CLOSED
-            and not self._topic_subscriptions
-            and self.connection is None
-        ):
-            return
+    async def shutdown(self, reason: str) -> None:
+        task = self._active_shutdown
+        if task is None:
+            if self._is_fully_closed:
+                return
+            task = self._shutdown_task = asyncio.create_task(self._shutdown(reason))
+        # Every caller waits for the same shutdown, and one caller's
+        # cancellation never aborts it.
+        await asyncio.shield(task)
 
+    async def _shutdown(self, reason: str) -> None:
         self.logger.info("Event loop shutting down! reason=%s", reason)
 
         if self._state not in (ClientState.SHUTTING_DOWN, ClientState.CLOSED):
             self._transition_state(ClientState.SHUTTING_DOWN)
-
         self._shutdown_event.set()
 
-        topics_to_unsubscribe = list(self._topic_subscriptions.keys())
-        if topics_to_unsubscribe:
-            unsubscribe_tasks = [
-                self.unsubscribe_from_topic(topic, _allow_disconnected=True)
-                for topic in topics_to_unsubscribe
-            ]
-            results = await asyncio.gather(*unsubscribe_tasks, return_exceptions=True)
-
-            for topic, result in zip(topics_to_unsubscribe, results, strict=False):
-                if isinstance(result, Exception):
-                    self.logger.warning(
-                        "Failed to unsubscribe from topic %s during shutdown: %s",
-                        topic,
-                        result,
-                    )
-
-        if self._supervisor_task and not self._supervisor_task.done():
-            self._supervisor_task.cancel()
-            try:
-                await self._supervisor_task
-            except asyncio.CancelledError:
-                self.logger.debug("Supervisor task cancelled during shutdown")
-
+        await self._unsubscribe_all()
+        await self._stop_supervisor()
         await self._cleanup_connection()
         self._connected_event.clear()
         self._transition_state(ClientState.CLOSED)
+
+    async def _unsubscribe_all(self) -> None:
+        topics = list(self._topic_subscriptions)
+        results = await asyncio.gather(
+            *(
+                self.unsubscribe_from_topic(topic, _allow_disconnected=True)
+                for topic in topics
+            ),
+            return_exceptions=True,
+        )
+        for topic, result in zip(topics, results, strict=True):
+            if isinstance(result, Exception):
+                self.logger.warning(
+                    "Failed to unsubscribe from topic %s during shutdown: %s",
+                    topic,
+                    result,
+                )
+
+    async def _stop_supervisor(self) -> None:
+        # Cleared, so run_forever() after the stop reports the client isn't running.
+        supervisor, self._supervisor_task = self._supervisor_task, None
+        if supervisor is not None and not supervisor.done():
+            await cancel_and_wait(supervisor)
 
     def _transition_state(self, new_state: ClientState) -> None:
         if self._state == new_state:

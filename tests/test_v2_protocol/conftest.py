@@ -1,19 +1,29 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator, Mapping
 from urllib.parse import parse_qs, urlparse
 
 import pytest_asyncio
 from websockets.asyncio.server import Server, ServerConnection, serve
+from websockets.http11 import Request
+
+
+# One IPv4 socket on a port the OS picks, so test runs never collide on a port.
+LOOPBACK_HOST = "127.0.0.1"
+ANY_FREE_PORT = 0
 
 
 class FakePhoenixServer:
-    def __init__(self, host: str = "localhost", port: int = 8765):
+    SOCKET_PATH = "/socket/websocket"
+    TOPIC = "test-topic"
+
+    def __init__(self, host: str = LOOPBACK_HOST, port: int = ANY_FREE_PORT):
         self.host = host
         self.port = port
         self.valid_topics = {
-            "test-topic",
+            self.TOPIC,
             "test-topic-b",
         }
 
@@ -29,10 +39,16 @@ class FakePhoenixServer:
         self.close_on_join_reason = "forced close on join"
         self.fail_join_ids: set[int] = set()
         self.fail_join_targets: set[tuple[int, str]] = set()
+        # Joins from these clients get no reply, so the client's join times out.
+        self.unanswered_join_ids: set[int] = set()
         self.enforce_single_connection_per_api_key = False
         self.duplicate_close_code = 1013
         self.duplicate_close_reason = "duplicate session"
         self.connection_attempts_by_path: dict[str, int] = {}
+        # Clear the gate to hold new opening handshakes until it is set again.
+        self.handshake_gate = asyncio.Event()
+        self.handshake_gate.set()
+        self.handshake_pending = asyncio.Event()
 
     def is_valid_topic(self, topic: str) -> bool:
         """Check if a topic is valid for subscription."""
@@ -53,6 +69,14 @@ class FakePhoenixServer:
         if not values:
             return ""
         return values[0]
+
+    async def _hold_handshake(
+        self, connection: ServerConnection, request: Request
+    ) -> None:
+        if not self.handshake_gate.is_set():
+            self.handshake_pending.set()
+            await self.handshake_gate.wait()
+            self.handshake_pending.clear()
 
     async def handler(self, websocket: ServerConnection) -> None:
         """Handle WebSocket connections and messages."""
@@ -120,6 +144,9 @@ class FakePhoenixServer:
             return
 
         if event == "phx_join":
+            if client_id in self.unanswered_join_ids:
+                return
+
             if client_id in self.fail_join_ids or (
                 client_id is not None and (client_id, topic) in self.fail_join_targets
             ):
@@ -220,25 +247,33 @@ class FakePhoenixServer:
 
     async def start(self) -> None:
         """Start the fake Phoenix server."""
-        self.server = await serve(self.handler, self.host, self.port)
+        self.server = await serve(
+            self.handler, self.host, self.port, process_request=self._hold_handshake
+        )
+        self.port = self.server.sockets[0].getsockname()[1]
+
+    async def __aenter__(self) -> FakePhoenixServer:
+        await self.start()
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.stop()
 
     async def stop(self) -> None:
         """Stop the fake Phoenix server."""
+        # Closing waits for every handshake, including ones held at the gate.
+        self.handshake_gate.set()
         if self.server:
             self.server.close()
             await self.server.wait_closed()
 
     @property
     def url(self) -> str:
-        return f"ws://{self.host}:{self.port}/socket/websocket"
+        return f"ws://{self.host}:{self.port}{self.SOCKET_PATH}"
 
 
 @pytest_asyncio.fixture
 async def phoenix_server() -> AsyncGenerator[FakePhoenixServer, None]:
     """Fixture that provides a fake Phoenix WebSocket server."""
-    server = FakePhoenixServer()
-    await server.start()
-    try:
+    async with FakePhoenixServer() as server:
         yield server
-    finally:
-        await server.stop()

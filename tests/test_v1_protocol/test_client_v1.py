@@ -14,7 +14,7 @@ from phoenix_channels_python_client.protocol_handler import (
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
 from phoenix_channels_python_client.phx_messages import Message, PHXEvent, UserEvent
 
-from .conftest import FakePhoenixServerV1 as FakePhoenixServer
+from tests.test_v1_protocol.conftest import FakePhoenixServerV1 as FakePhoenixServer
 
 
 V1Client = partial(
