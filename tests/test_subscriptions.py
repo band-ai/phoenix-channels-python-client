@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import asyncio.log
 import gc
+from collections.abc import Callable
 
 import pytest
 
@@ -13,6 +14,7 @@ from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     ASYNC_TIMEOUT_S,
+    JOIN_TIMEOUT_S,
     OTHER_TOPIC,
     REJECTED_TOPIC,
     TOPIC,
@@ -224,16 +226,109 @@ async def test_an_event_handler_runs_alongside_the_topic_callback_until_removed(
     assert handled_payloads.empty()
 
 
-async def test_added_event_handlers_are_listed(client: PHXChannelsClient):
+async def handle_payload(payload: dict[str, object]) -> None:
+    pass
+
+
+async def handle_message(message: ChannelMessage) -> None:
+    pass
+
+
+async def test_an_event_handler_can_be_set_read_listed_and_removed(
+    client: PHXChannelsClient,
+):
     event = Event("custom_event")
-
-    async def handle(payload: dict[str, object]) -> None:
-        pass
-
     await client.subscribe_to_topic(TOPIC)
-    client.add_event_handler(TOPIC, event, handle)
 
+    client.add_event_handler(TOPIC, event, handle_payload)
+    assert client.get_event_handler(TOPIC, event) is handle_payload
     assert event in client.list_event_handlers(TOPIC)
+
+    client.remove_event_handler(TOPIC, event)
+    assert not client.has_event_handler(TOPIC, event)
+
+
+async def test_a_message_handler_can_be_set_read_and_removed(
+    client: PHXChannelsClient,
+):
+    await client.subscribe_to_topic(TOPIC)
+
+    client.set_message_handler(TOPIC, handle_message)
+    assert client.get_message_handler(TOPIC) is handle_message
+
+    client.remove_message_handler(TOPIC)
+    assert not client.has_message_handler(TOPIC)
+
+
+@pytest.mark.parametrize(
+    "use_handler_api",
+    [
+        lambda c: c.add_event_handler(TOPIC, Event("x"), handle_payload),
+        lambda c: c.remove_event_handler(TOPIC, Event("x")),
+        lambda c: c.get_event_handler(TOPIC, Event("x")),
+        lambda c: c.list_event_handlers(TOPIC),
+        lambda c: c.set_message_handler(TOPIC, handle_message),
+        lambda c: c.remove_message_handler(TOPIC),
+        lambda c: c.get_message_handler(TOPIC),
+    ],
+    ids=[
+        "add_event_handler",
+        "remove_event_handler",
+        "get_event_handler",
+        "list_event_handlers",
+        "set_message_handler",
+        "remove_message_handler",
+        "get_message_handler",
+    ],
+)
+async def test_handler_apis_reject_an_unknown_topic(
+    client: PHXChannelsClient, use_handler_api: Callable[[PHXChannelsClient], object]
+):
+    with pytest.raises(PHXTopicError, match=f"Topic {TOPIC} not subscribed"):
+        use_handler_api(client)
+
+
+async def test_handler_queries_report_nothing_for_an_unknown_topic(
+    client: PHXChannelsClient,
+):
+    assert not client.has_event_handler(TOPIC, Event("x"))
+    assert not client.has_message_handler(TOPIC)
+
+
+async def test_unsubscribing_from_an_unknown_topic_raises(client: PHXChannelsClient):
+    with pytest.raises(PHXTopicError, match=f"Topic {TOPIC} not subscribed"):
+        await client.unsubscribe_from_topic(TOPIC)
+
+
+async def test_a_join_the_server_never_answers_times_out(
+    phoenix_server: FakePhoenixServer,
+):
+    phoenix_server.unanswered_join_ids.add(phoenix_server.next_client_id)
+
+    async with make_client(phoenix_server, join_timeout_s=JOIN_TIMEOUT_S) as client:
+        with pytest.raises(PHXTopicError, match="Timed out"):
+            await client.subscribe_to_topic(TOPIC)
+
+        assert TOPIC not in client.get_current_subscriptions()
+
+
+@each_protocol
+async def test_a_failing_callback_does_not_stop_later_messages(
+    phoenix_server: FakePhoenixServer,
+    client: PHXChannelsClient,
+    received: asyncio.Queue[ChannelMessage],
+):
+    async def fail_on_the_first_message(message: ChannelMessage) -> None:
+        if message.payload["n"] == 0:
+            raise RuntimeError("callback boom")
+        await received.put(message)
+
+    await client.subscribe_to_topic(TOPIC, fail_on_the_first_message)
+
+    await deliver(phoenix_server, client, payload={"n": 0})
+    await deliver(phoenix_server, client, payload={"n": 1})
+
+    assert (await expect_message(received)).payload == {"n": 1}
 
 
 @each_protocol

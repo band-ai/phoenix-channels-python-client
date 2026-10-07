@@ -36,6 +36,9 @@ ASYNC_TIMEOUT_S = 2.0
 # A busy topic callback holds back its leave reply, so don't wait long for it.
 LEAVE_TIMEOUT_S = 0.05
 
+# Long enough for a local join reply, short enough to time out an unanswered one.
+JOIN_TIMEOUT_S = 0.2
+
 # Every reconnect delay and cooldown is near zero, so no test waits on backoff.
 FAST_RECONNECT = ReconnectPolicy(
     base_delay_s=0.01,
