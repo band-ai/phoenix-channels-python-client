@@ -114,6 +114,18 @@ async def test_unsubscribing_while_disconnected_fails_fast_and_keeps_the_topic(
         assert TOPIC in client.get_current_subscriptions()
 
 
+async def test_unsubscribing_while_the_server_closes_raises_a_connection_error(
+    phoenix_server: FakePhoenixServer,
+):
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        await client.subscribe_to_topic(TOPIC)
+        server_close = await start_server_close(phoenix_server, client)
+
+        with pytest.raises(PHXConnectionError):
+            await client.unsubscribe_from_topic(TOPIC)
+        await server_close
+
+
 @each_protocol
 async def test_a_subscribed_topic_receives_server_events(
     phoenix_server: FakePhoenixServer,
