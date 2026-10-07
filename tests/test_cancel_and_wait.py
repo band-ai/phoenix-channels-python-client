@@ -7,7 +7,7 @@ import pytest
 
 from phoenix_channels_python_client.utils import cancel_and_wait
 
-from tests.support import ASYNC_TIMEOUT_S
+from tests.support import ASYNC_TIMEOUT_S, wait_forever
 
 
 async def test_cancel_and_wait_propagates_callers_cancellation() -> None:
@@ -15,7 +15,7 @@ async def test_cancel_and_wait_propagates_callers_cancellation() -> None:
 
     async def slow_to_unwind() -> None:
         try:
-            await asyncio.Event().wait()
+            await wait_forever()
         finally:
             await release.wait()
 
@@ -40,7 +40,7 @@ async def test_cancel_and_wait_logs_a_failure_raised_while_unwinding(
 
     async def fails_when_cancelled() -> None:
         try:
-            await asyncio.Event().wait()
+            await wait_forever()
         except asyncio.CancelledError:
             raise failure from None
 

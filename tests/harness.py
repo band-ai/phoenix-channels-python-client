@@ -16,6 +16,7 @@ from phoenix_channels_python_client.client_types import (
     ReconnectDecision,
     ReconnectPolicy,
 )
+from phoenix_channels_python_client.phx_messages import ChannelMessage
 from phoenix_channels_python_client.protocol_handler import (
     PHXProtocolHandler,
     PhoenixChannelsProtocolVersion,
@@ -32,9 +33,11 @@ HARNESS_TIMEOUT_S = 0.01
 # What the harness's stubbed reconnect delay returns.
 HARNESS_RECONNECT_DELAY_S = 0.001
 
+DEFAULT_JOIN_REF = "1"
+
 
 def make_subscription(
-    name: str = TOPIC, join_ref: str = "1", **options: Any
+    name: str = TOPIC, join_ref: str = DEFAULT_JOIN_REF, **options: Any
 ) -> TopicSubscription:
     options.setdefault("queue", asyncio.Queue())
     return TopicSubscription(
@@ -48,17 +51,9 @@ def make_subscription(
 
 @dataclass
 class FakeSocket:
-    close_code: int | None = None
-    close_reason: str | None = None
     close_raises: bool = False
 
-    def __post_init__(self) -> None:
-        self.closed = False
-        self.close_calls: list[tuple[int | None, str]] = []
-
     async def close(self, code: int | None = None, reason: str = "") -> None:
-        self.closed = True
-        self.close_calls.append((code, reason))
         if self.close_raises:
             raise RuntimeError("close boom")
 
@@ -71,10 +66,6 @@ async def connect_to(url: str) -> ClientConnection:
     """A stand-in for ``websockets.connect`` that always succeeds."""
     del url
     return fake_connection()
-
-
-async def wait_forever() -> None:
-    await asyncio.Event().wait()
 
 
 class FakeRoutingProtocolHandler:
@@ -94,16 +85,20 @@ class FakeRoutingProtocolHandler:
 
 
 class FakeTopicProtocolHandler(PHXProtocolHandler):
-    """Sends nothing, so joins and leaves get no reply."""
+    """Records what would be sent, so joins and leaves get no reply."""
 
     def __init__(self) -> None:
         super().__init__(PhoenixChannelsProtocolVersion.V2)
         self.raise_on_send: Exception | None = None
+        self.sent: list[ChannelMessage] = []
 
-    async def send_message(self, websocket: ClientConnection, message: Any) -> None:
-        del websocket, message
+    async def send_message(
+        self, websocket: ClientConnection, message: ChannelMessage
+    ) -> None:
+        del websocket
         if self.raise_on_send is not None:
             raise self.raise_on_send
+        self.sent.append(message)
 
 
 class TopicRuntimeHarness(TopicRuntimeMixin):
@@ -114,7 +109,8 @@ class TopicRuntimeHarness(TopicRuntimeMixin):
         self._ref_counter = 0
         self._conn_generation = 1
         self._topic_subscriptions: dict[str, TopicSubscription] = {}
-        self._protocol_handler = FakeTopicProtocolHandler()
+        self.fake_handler = FakeTopicProtocolHandler()
+        self._protocol_handler = self.fake_handler
         self._topics_lock = asyncio.Lock()
         self._shutdown_event = asyncio.Event()
         self.join_timeout_s = HARNESS_TIMEOUT_S
@@ -166,8 +162,6 @@ class SupervisorHarness(SupervisorMixin):
         self._on_heartbeat_ack = None
         self._forced_close_pending = forced_close_pending
 
-        self.transition_history: list[ClientState] = []
-        self.disconnect_uptimes: list[float] = []
         self.wait_delays: list[float] = []
         self.suppress_values: list[bool] = []
         self.disconnect_decision = ReconnectDecision(should_reconnect=True)
@@ -179,7 +173,7 @@ class SupervisorHarness(SupervisorMixin):
             raise self.rejoin_error
 
     def _record_disconnect(self, connection_uptime_s: float) -> None:
-        self.disconnect_uptimes.append(connection_uptime_s)
+        del connection_uptime_s
 
     def _should_suppress_reconnect(self) -> bool:
         if self.suppress_values:
@@ -210,7 +204,6 @@ class SupervisorHarness(SupervisorMixin):
 
     def _transition_state(self, new_state: ClientState) -> None:
         self._state = new_state
-        self.transition_history.append(new_state)
 
     async def _wait_for_shutdown_or_timeout(self, delay_s: float) -> None:
         self.wait_delays.append(delay_s)

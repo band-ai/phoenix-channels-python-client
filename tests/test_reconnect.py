@@ -12,6 +12,8 @@ from phoenix_channels_python_client.phx_messages import ChannelMessage
 
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
+    reconnect_after,
+    wait_forever,
     ASYNC_TIMEOUT_S,
     FAST_RECONNECT,
     JOIN_TIMEOUT_S,
@@ -130,7 +132,7 @@ async def test_messages_queued_before_a_reconnect_are_dropped(
         handled.append(message.payload["id"])
         if not first_started.is_set():
             first_started.set()
-            await asyncio.Event().wait()
+            await wait_forever()
 
     client = make_client(
         phoenix_server,
@@ -164,8 +166,10 @@ async def test_a_rejected_rejoin_unregisters_only_that_topic(
 
         await reconnect(phoenix_server, client)
 
-        assert await wait_for_condition(rejoin_settled(client, OTHER_TOPIC))
-        assert OTHER_TOPIC not in client.get_current_subscriptions()
+        # The failed join settles before the rejoin unregisters the topic.
+        assert await wait_for_condition(
+            lambda: OTHER_TOPIC not in client.get_current_subscriptions()
+        )
         await assert_delivers_after_rejoin(phoenix_server, client, TOPIC, received)
 
 
@@ -251,8 +255,9 @@ async def test_a_callback_outlasting_the_drain_is_cancelled_and_the_topic_rejoin
         await reconnect_while_draining(phoenix_server, client, busy)
 
         assert await wait_for_condition(rejoin_settled(client))
-        rejoined = client.get_current_subscriptions()[TOPIC]
-        assert rejoined.current_join_ready.exception() is None
+        busy.running.clear()
+        await deliver(phoenix_server, client)
+        await asyncio.wait_for(busy.running.wait(), ASYNC_TIMEOUT_S)
         await assert_delivers_after_rejoin(
             phoenix_server, client, OTHER_TOPIC, received
         )
@@ -367,9 +372,7 @@ async def test_a_frame_the_client_cannot_parse_triggers_a_reconnect(
 ):
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         await client.subscribe_to_topic(TOPIC, received.put)
-        generation = client._conn_generation
 
-        await phoenix_server.send_raw(UNPARSEABLE_FRAME)
+        await reconnect_after(client, phoenix_server.send_raw(UNPARSEABLE_FRAME))
 
-        assert await wait_for_condition(lambda: client._conn_generation > generation)
         await assert_delivers_after_rejoin(phoenix_server, client, TOPIC, received)

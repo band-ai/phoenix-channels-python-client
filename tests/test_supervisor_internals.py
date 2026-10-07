@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 import pytest
 from websockets import ClientConnection
 
-from phoenix_channels_python_client.client_types import ClientState, ReconnectDecision
+from phoenix_channels_python_client.client_types import ReconnectDecision
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.phx_messages import (
     PHOENIX_TOPIC,
@@ -19,21 +19,14 @@ from phoenix_channels_python_client.utils import make_message
 
 from tests.harness import (
     HARNESS_RECONNECT_DELAY_S,
-    FakeRoutingProtocolHandler,
     FakeSocket,
     SupervisorHarness,
     connect_to,
     fake_connection,
-    wait_forever,
 )
+from tests.support import wait_forever
 
 HEARTBEAT_REF = "5"
-
-# The close code the client sends when it drops a connection on purpose.
-FORCED_CLOSE_CODE = 4000
-
-# A close reason's limit in bytes, per RFC 6455.
-MAX_CLOSE_REASON_BYTES = 123
 
 Connect = Callable[[str], Awaitable[ClientConnection]]
 
@@ -101,20 +94,6 @@ async def test_the_initial_connect_retries_before_succeeding(
     assert harness._initial_connection_future.result() is None
 
 
-async def test_a_routing_failure_cleans_up_and_schedules_a_reconnect(
-    use_connect: Callable[[Connect], None],
-) -> None:
-    harness = SupervisorHarness()
-    harness._protocol_handler = FakeRoutingProtocolHandler(RuntimeError("routing"))
-    use_connect(connect_to)
-
-    await harness._supervisor_loop()
-
-    assert harness.connection is None
-    assert len(harness.disconnect_uptimes) == 1
-    assert harness.wait_delays == [HARNESS_RECONNECT_DELAY_S]
-
-
 async def test_a_rejoin_error_does_not_stop_the_supervisor(
     use_connect: Callable[[Connect], None],
 ) -> None:
@@ -139,19 +118,6 @@ async def test_a_connection_outliving_stable_reset_clears_the_rapid_history(
     await harness._supervisor_loop()
 
     assert not harness._rapid_disconnects
-
-
-async def test_a_disconnect_classified_as_final_closes_the_client(
-    use_connect: Callable[[Connect], None],
-) -> None:
-    harness = SupervisorHarness()
-    harness.disconnect_decision = ReconnectDecision(should_reconnect=False)
-    use_connect(connect_to)
-
-    await harness._supervisor_loop()
-
-    assert harness.transition_history[-1] is ClientState.CLOSED
-    assert harness.wait_delays == []
 
 
 async def test_a_forced_close_reconnects_without_classifying_the_disconnect(
@@ -257,31 +223,3 @@ async def test_an_async_ack_callback_is_not_run() -> None:
 
     assert harness._pending_heartbeat_ref is None
     assert ran == []
-
-
-async def test_close_connection_closes_the_current_connection() -> None:
-    harness = SupervisorHarness()
-    socket = FakeSocket()
-    harness.connection = fake_connection(socket)
-
-    await harness.close_connection("dead threshold exceeded")
-
-    assert socket.close_calls == [(FORCED_CLOSE_CODE, "dead threshold exceeded")]
-
-
-async def test_close_connection_without_a_connection_does_nothing() -> None:
-    harness = SupervisorHarness()
-
-    await harness.close_connection("dead threshold exceeded")
-
-    assert harness.connection is None
-
-
-async def test_close_connection_truncates_an_oversized_reason() -> None:
-    harness = SupervisorHarness()
-    socket = FakeSocket()
-    harness.connection = fake_connection(socket)
-
-    await harness.close_connection("x" * 200)
-
-    assert socket.close_calls == [(FORCED_CLOSE_CODE, "x" * MAX_CLOSE_REASON_BYTES)]

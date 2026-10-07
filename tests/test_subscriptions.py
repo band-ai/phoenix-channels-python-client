@@ -14,6 +14,7 @@ from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     ASYNC_TIMEOUT_S,
+    EVENT,
     JOIN_TIMEOUT_S,
     OTHER_TOPIC,
     REJECTED_TOPIC,
@@ -37,7 +38,6 @@ async def test_subscribing_registers_the_topic_with_its_callback(
     assert subscription.async_callback == received.put
 
 
-@each_protocol
 async def test_subscribing_before_connecting_raises(phoenix_server: FakePhoenixServer):
     with pytest.raises(PHXConnectionError):
         await make_client(phoenix_server).subscribe_to_topic(TOPIC)
@@ -110,11 +110,11 @@ async def test_a_subscribed_topic_receives_server_events(
     payload = {"user_id": 123, "message": "Hello from server!"}
     await client.subscribe_to_topic(TOPIC, received.put)
 
-    await deliver(phoenix_server, client, payload=payload, event="new_message")
+    await deliver(phoenix_server, client, payload=payload)
 
     message = await expect_message(received)
     assert message.topic == TOPIC
-    assert message.event == "new_message"
+    assert message.event == EVENT
     assert message.payload == payload
 
 
@@ -207,7 +207,7 @@ async def test_an_event_handler_runs_alongside_the_topic_callback_until_removed(
     client: PHXChannelsClient,
     received: asyncio.Queue[ChannelMessage],
 ):
-    event = Event("count_me")
+    event = Event(EVENT)
     handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
     await client.subscribe_to_topic(TOPIC, received.put)
 
@@ -218,7 +218,7 @@ async def test_an_event_handler_runs_alongside_the_topic_callback_until_removed(
     client.add_event_handler(TOPIC, event, handled_payloads.put)
     await deliver(phoenix_server, client, event=event)
     await expect_message(received)
-    await asyncio.wait_for(handled_payloads.get(), ASYNC_TIMEOUT_S)
+    await expect_message(handled_payloads)
 
     client.remove_event_handler(TOPIC, event)
     await deliver(phoenix_server, client, event=event)
@@ -263,22 +263,27 @@ async def test_a_message_handler_can_be_set_read_and_removed(
 @pytest.mark.parametrize(
     "use_handler_api",
     [
-        lambda c: c.add_event_handler(TOPIC, Event("x"), handle_payload),
-        lambda c: c.remove_event_handler(TOPIC, Event("x")),
-        lambda c: c.get_event_handler(TOPIC, Event("x")),
-        lambda c: c.list_event_handlers(TOPIC),
-        lambda c: c.set_message_handler(TOPIC, handle_message),
-        lambda c: c.remove_message_handler(TOPIC),
-        lambda c: c.get_message_handler(TOPIC),
-    ],
-    ids=[
-        "add_event_handler",
-        "remove_event_handler",
-        "get_event_handler",
-        "list_event_handlers",
-        "set_message_handler",
-        "remove_message_handler",
-        "get_message_handler",
+        pytest.param(
+            lambda c: c.add_event_handler(TOPIC, Event(EVENT), handle_payload),
+            id="add_event_handler",
+        ),
+        pytest.param(
+            lambda c: c.remove_event_handler(TOPIC, Event(EVENT)),
+            id="remove_event_handler",
+        ),
+        pytest.param(
+            lambda c: c.get_event_handler(TOPIC, Event(EVENT)),
+            id="get_event_handler",
+        ),
+        pytest.param(lambda c: c.list_event_handlers(TOPIC), id="list_event_handlers"),
+        pytest.param(
+            lambda c: c.set_message_handler(TOPIC, handle_message),
+            id="set_message_handler",
+        ),
+        pytest.param(
+            lambda c: c.remove_message_handler(TOPIC), id="remove_message_handler"
+        ),
+        pytest.param(lambda c: c.get_message_handler(TOPIC), id="get_message_handler"),
     ],
 )
 async def test_handler_apis_reject_an_unknown_topic(
@@ -335,17 +340,58 @@ async def test_a_failing_callback_does_not_stop_later_messages(
 async def test_a_full_topic_queue_drops_its_oldest_message(
     phoenix_server: FakePhoenixServer,
 ):
+    handled: list[object] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def held_on_the_first_message(message: ChannelMessage) -> None:
+        handled.append(message.payload["id"])
+        if not first_started.is_set():
+            first_started.set()
+            await release_first.wait()
+
     async with make_client(phoenix_server, max_topic_queue_size=1) as client:
-        await client.subscribe_to_topic(TOPIC)
-        subscription = client.get_current_subscriptions()[TOPIC]
-        # Stop the consumer so messages pile up in the queue.
-        assert subscription.process_topic_messages_task is not None
-        subscription.process_topic_messages_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await subscription.process_topic_messages_task
+        await client.subscribe_to_topic(TOPIC, held_on_the_first_message)
+        await deliver(phoenix_server, client, payload={"id": 1})
+        await asyncio.wait_for(first_started.wait(), ASYNC_TIMEOUT_S)
 
-        for message_id in (1, 2, 3):
+        # With one queue slot, each later message pushes out the one before it.
+        for message_id in (2, 3, 4):
             await deliver(phoenix_server, client, payload={"id": message_id})
-
+        subscription = client.get_current_subscriptions()[TOPIC]
         assert await wait_for_condition(lambda: subscription.dropped_message_count == 2)
-        assert subscription.queue.get_nowait().payload["id"] == 3
+        release_first.set()
+
+        assert await wait_for_condition(lambda: handled == [1, 4])
+
+
+async def test_a_message_from_an_older_join_is_not_delivered(
+    phoenix_server: FakePhoenixServer,
+    client: PHXChannelsClient,
+    received: asyncio.Queue[ChannelMessage],
+):
+    await client.subscribe_to_topic(TOPIC, received.put)
+
+    await phoenix_server.simulate_server_event(
+        TOPIC, EVENT, {"join": "older"}, join_ref="older-join"
+    )
+    await deliver(phoenix_server, client, payload={"join": "current"})
+
+    assert (await expect_message(received)).payload == {"join": "current"}
+
+
+async def test_a_message_without_handlers_is_skipped_and_later_ones_still_arrive(
+    phoenix_server: FakePhoenixServer,
+    client: PHXChannelsClient,
+    received: asyncio.Queue[ChannelMessage],
+    caplog: pytest.LogCaptureFixture,
+):
+    await client.subscribe_to_topic(TOPIC)
+    await deliver(phoenix_server, client, payload={"n": 0})
+    # The skip is only visible as this warning; wait for it before adding a handler.
+    assert await wait_for_condition(lambda: "No handler found" in caplog.text)
+
+    client.set_message_handler(TOPIC, received.put)
+    await deliver(phoenix_server, client, payload={"n": 1})
+
+    assert (await expect_message(received)).payload == {"n": 1}
