@@ -5,13 +5,11 @@ import pytest
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     FAST_RECONNECT,
+    HEARTBEAT_INTERVAL_S,
     make_client,
     reconnect,
     wait_for_condition,
 )
-
-# Short enough that a test sees several heartbeats.
-HEARTBEAT_INTERVAL_S = 0.05
 
 # More than one ack shows the heartbeat repeats.
 REPEATED_ACKS = 2

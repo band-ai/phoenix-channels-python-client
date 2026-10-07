@@ -147,3 +147,31 @@ def test_the_hold_down_jitter_spans_the_configured_ratios_of_the_cooldown(
 
     assert lowest == pytest.approx(floor * JITTER_LOW_RATIO)
     assert highest == pytest.approx(floor * JITTER_HIGH_RATIO)
+
+
+def test_the_exponential_delay_doubles_up_to_its_cap() -> None:
+    client = _make_client(COOLDOWN_POLICY)
+    # COOLDOWN_POLICY's base, doubled by the default factor, then held at its cap.
+    expected = [0.01, 0.02, 0.04, 0.08, 0.1, 0.1]
+
+    delays = [client._exponential_delay(attempt) for attempt in range(len(expected))]
+
+    assert delays == pytest.approx(expected)
+
+
+def test_a_channel_rejoin_waits_half_to_all_of_its_backoff_without_rapid_floors(
+    random_draw: Callable[[float], None],
+) -> None:
+    client = _make_client(COOLDOWN_POLICY)
+    # A socket reconnect here would wait at least the cooldown cap.
+    client._rapid_disconnects = deque([0.0] * RAPID_COUNTS[-1])
+    attempt = 1
+    backoff = client._exponential_delay(attempt)
+
+    random_draw(0.0)
+    lowest = client._channel_rejoin_delay(attempt)
+    random_draw(1.0)
+    highest = client._channel_rejoin_delay(attempt)
+
+    assert lowest == pytest.approx(backoff / 2)
+    assert highest == pytest.approx(backoff)

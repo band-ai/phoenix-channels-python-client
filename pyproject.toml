@@ -55,8 +55,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # pytest asserts; tests reach into internals on purpose.
 "tests/**" = ["S101", "SLF001"]
-# The supervisor calls its sibling mixins' private methods through a cast of self.
+# These mixins call their siblings' private methods through a cast of self.
 "phoenix_channels_python_client/supervisor.py" = ["SLF001"]
+"phoenix_channels_python_client/topic_runtime.py" = ["SLF001"]
 
 [tool.ruff.lint.flake8-annotations]
 # ``**options: Any`` forwards keywords; the callee types them.

@@ -7,7 +7,11 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from phoenix_channels_python_client.phx_messages import ChannelEvent, ChannelMessage
+from phoenix_channels_python_client.phx_messages import (
+    CLIENT_LIFECYCLE_EVENTS,
+    ChannelEvent,
+    ChannelMessage,
+)
 
 
 class TopicProcessingState(StrEnum):
@@ -34,10 +38,17 @@ class TopicSubscription:
     conn_generation: int = 0
     dropped_message_count: int = 0
     current_callback_task: Future[None] | None = None
+    # Rejoins the channel after a crash, while the socket stays up.
+    recovery_task: Task[None] | None = None
 
     def add_event_handler(
         self, event: ChannelEvent, handler: Callable[[dict[str, Any]], Awaitable[None]]
     ) -> None:
+        if event in CLIENT_LIFECYCLE_EVENTS:
+            raise ValueError(
+                f"{event} is handled by the client; use on_topic_lost and "
+                "is_topic_joined instead"
+            )
         self.event_handlers[event] = handler
 
     def remove_event_handler(self, event: ChannelEvent) -> None:

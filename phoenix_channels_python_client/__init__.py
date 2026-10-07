@@ -11,6 +11,7 @@ from phoenix_channels_python_client.client import (
     PHXChannelsClient,
     ReconnectCallback,
     ReconnectPolicy,
+    TopicLostCallback,
 )
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
@@ -29,5 +30,6 @@ __all__ = [
     "PhoenixChannelsProtocolVersion",
     "ReconnectCallback",
     "ReconnectPolicy",
+    "TopicLostCallback",
     "setup_logging",
 ]

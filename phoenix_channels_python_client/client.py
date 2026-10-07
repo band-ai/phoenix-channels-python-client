@@ -32,6 +32,7 @@ DisconnectCallback = Callable[[Exception | None], Awaitable[None]]
 # on the message-routing hot path, so blocking work here stalls heartbeat
 # sends and message routing for every connection.
 HeartbeatAckCallback = Callable[[], None]
+TopicLostCallback = Callable[[str, Exception], Awaitable[None]]
 
 
 def _build_channel_socket_urls(
@@ -87,6 +88,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         on_reconnect: ReconnectCallback | None = None,
         on_disconnect: DisconnectCallback | None = None,
         on_heartbeat_ack: HeartbeatAckCallback | None = None,
+        on_topic_lost: TopicLostCallback | None = None,
         additional_headers: dict[str, str] | None = None,
     ) -> None:
         self.logger = logger
@@ -145,6 +147,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._on_reconnect = on_reconnect
         self._on_disconnect = on_disconnect
         self._on_heartbeat_ack = on_heartbeat_ack
+        self._on_topic_lost = on_topic_lost
+        self._lifecycle_tasks: set[asyncio.Task[None]] = set()
         self._forced_close_pending = False
 
     @property
@@ -210,6 +214,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._shutdown_event.set()
 
         await self._unsubscribe_all()
+        # Includes on_topic_lost callbacks still running for topics already gone.
+        await cancel_and_wait(*self._lifecycle_tasks)
         await self._stop_supervisor()
         await self._cleanup_connection()
         self._connected_event.clear()
