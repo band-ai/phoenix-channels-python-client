@@ -55,7 +55,9 @@ class PHXProtocolHandler:
             self.logger.exception("Unexpected error parsing message")
             raise ValueError(f"Invalid message format: {exc}") from exc
 
-    def _decode_message(self, raw_message: str | bytes) -> ChannelMessage:
+    def _decode_message(  # noqa: C901  # INT-1707: split per protocol version
+        self, raw_message: str | bytes
+    ) -> ChannelMessage:
         parsed_data = json.loads(raw_message)
         self.logger.debug("Decoded data: %s", parsed_data)
         if self.protocol_version == PhoenixChannelsProtocolVersion.V2:
@@ -64,7 +66,7 @@ class PHXProtocolHandler:
                     "Protocol v2 expects array format, "
                     f"got {type(parsed_data).__name__}"
                 )
-            if len(parsed_data) != 5:
+            if len(parsed_data) != 5:  # noqa: PLR2004  # INT-1707: name the length
                 raise ValueError(
                     "Protocol v2 expects 5-element array "
                     "[join_ref, ref, topic, event, payload]"

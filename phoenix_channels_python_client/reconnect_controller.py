@@ -72,9 +72,9 @@ class ReconnectControllerMixin:
         min_delay = 0.0
         if rapid_count == 1:
             min_delay = self.reconnect_policy.rapid_first_min_delay_s
-        elif rapid_count == 2:
+        elif rapid_count == 2:  # noqa: PLR2004  # INT-1707: name the threshold
             min_delay = self.reconnect_policy.rapid_second_min_delay_s
-        elif rapid_count >= 3:
+        elif rapid_count >= 3:  # noqa: PLR2004  # INT-1707: name the threshold
             cooldown_delay = min(
                 self.reconnect_policy.rapid_cooldown_base_s
                 + (self.reconnect_policy.rapid_cooldown_step_s * (rapid_count - 3)),
@@ -86,7 +86,7 @@ class ReconnectControllerMixin:
         if delay <= 0:
             return 0.0
 
-        if rapid_count >= 3:
+        if rapid_count >= 3:  # noqa: PLR2004  # INT-1707: name the threshold
             low_ratio = self.reconnect_policy.rapid_hold_down_jitter_low_ratio
             high_ratio = self.reconnect_policy.rapid_hold_down_jitter_high_ratio
             min_jittered = delay * low_ratio
