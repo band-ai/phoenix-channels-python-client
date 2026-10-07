@@ -185,6 +185,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._connected_event.clear()
         self._rapid_disconnects.clear()
         self._terminal_error = None
+        self._conn_generation = 0
         self._initial_connection_future = asyncio.get_running_loop().create_future()
         self._transition_state(ClientState.CONNECTING)
 

@@ -20,6 +20,7 @@ from tests.support import (
     STOP_REASON,
     TOPIC,
     UNPARSEABLE_FRAME,
+    ReconnectCounter,
     deliver,
     make_client,
     wait_for_condition,
@@ -213,6 +214,24 @@ async def test_forced_close_racing_shutdown_does_not_leak_into_the_next_session(
             phoenix_server.get_connection_attempts(FakePhoenixServer.SOCKET_PATH)
             == attempts
         )
+
+
+async def test_reentering_does_not_report_a_reconnect(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    reconnects = ReconnectCounter()
+    client = make_client(
+        phoenix_server, reconnect_policy=FAST_RECONNECT, on_reconnect=reconnects
+    )
+    async with client:
+        pass
+
+    async with client:
+        assert reconnects.count == 0
+
+        await phoenix_server.close_all_clients(code=CloseCode.SERVICE_RESTART)
+
+        assert await wait_for_condition(lambda: reconnects.count == 1)
 
 
 async def test_shutdown_during_a_close_still_closes_the_socket(
