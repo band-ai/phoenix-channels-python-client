@@ -276,6 +276,11 @@ class FakePhoenixServer:
         for websocket in targets:
             await self._send(websocket, frame)
 
+    async def send_raw(self, text: str) -> None:
+        """Send ``text`` as-is to every client, valid frame or not."""
+        for websocket in list(self._clients):
+            await websocket.send(text)
+
     async def close_all_clients(
         self,
         *,

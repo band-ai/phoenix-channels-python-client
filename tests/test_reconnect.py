@@ -14,6 +14,7 @@ from tests.fake_server import FakePhoenixServer
 from tests.support import (
     ASYNC_TIMEOUT_S,
     FAST_RECONNECT,
+    JOIN_TIMEOUT_S,
     LEAVE_TIMEOUT_S,
     OTHER_TOPIC,
     TOPIC,
@@ -25,9 +26,6 @@ from tests.support import (
     rejoin_settled,
     wait_for_condition,
 )
-
-# Long enough for a local join reply, short enough to time out an unanswered one.
-REJOIN_TIMEOUT_S = 0.2
 
 # Short, so a callback that is never released gets cancelled promptly.
 CALLBACK_DRAIN_TIMEOUT_S = 0.05
@@ -172,7 +170,7 @@ async def test_a_rejoin_that_times_out_keeps_the_topic_for_the_next_reconnect(
     phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
 ):
     client = make_client(
-        phoenix_server, reconnect_policy=FAST_RECONNECT, join_timeout_s=REJOIN_TIMEOUT_S
+        phoenix_server, reconnect_policy=FAST_RECONNECT, join_timeout_s=JOIN_TIMEOUT_S
     )
     async with client:
         await client.subscribe_to_topic(TOPIC, received.put)
@@ -261,13 +259,17 @@ async def test_a_topic_unregistered_during_a_rejoin_is_not_joined_again(
 ):
     busy = BusyCallback()
     reconnected = asyncio.Event()
+
+    async def on_reconnect() -> None:
+        reconnected.set()
+
     client = make_client(
         phoenix_server,
         reconnect_policy=FAST_RECONNECT,
-        join_timeout_s=REJOIN_TIMEOUT_S,
+        join_timeout_s=JOIN_TIMEOUT_S,
         # Outlasts the pending join, so it times out while TOPIC drains.
         callback_drain_timeout_s=ASYNC_TIMEOUT_S,
-        on_reconnect=reconnected.set,
+        on_reconnect=on_reconnect,
     )
 
     async with client:
