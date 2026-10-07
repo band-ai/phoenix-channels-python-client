@@ -346,22 +346,39 @@ async def test_a_join_the_server_never_answers_times_out(
 
 
 @each_protocol
-async def test_a_failing_callback_does_not_stop_later_messages(
+async def test_a_failing_callback_skips_its_event_handler_and_later_messages_arrive(
     phoenix_server: FakePhoenixServer,
     client: PHXChannelsClient,
     received: asyncio.Queue[ChannelMessage],
 ) -> None:
+    handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
     async def fail_on_the_first_message(message: ChannelMessage) -> None:
         if message.payload["n"] == 0:
             raise RuntimeError("callback boom")
         await received.put(message)
 
     await client.subscribe_to_topic(TOPIC, fail_on_the_first_message)
+    client.add_event_handler(TOPIC, Event(EVENT), handled_payloads.put)
 
     await deliver(phoenix_server, client, payload={"n": 0})
     await deliver(phoenix_server, client, payload={"n": 1})
 
     assert (await expect_message(received)).payload == {"n": 1}
+    assert await expect_message(handled_payloads) == {"n": 1}
+
+
+@each_protocol
+async def test_an_event_handler_runs_without_a_topic_callback(
+    phoenix_server: FakePhoenixServer, client: PHXChannelsClient
+) -> None:
+    handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    await client.subscribe_to_topic(TOPIC)
+    client.add_event_handler(TOPIC, Event(EVENT), handled_payloads.put)
+
+    await deliver(phoenix_server, client, payload={"n": 0})
+
+    assert await expect_message(handled_payloads) == {"n": 0}
 
 
 @each_protocol
