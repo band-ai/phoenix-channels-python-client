@@ -43,6 +43,9 @@ SUPPRESS_AFTER_DISCONNECTS = 3
 # A private-use close code (4000-4999) the client has no rule for.
 UNRECOGNISED_CLOSE_CODE = 4001
 
+# More than one, so a retry follows a failed retry.
+REFUSED_HANDSHAKES = 2
+
 
 class CallbackError(Exception):
     pass
@@ -103,6 +106,24 @@ async def test_with_auto_reconnect_disabled_a_service_restart_disconnects(
         await phoenix_server.close_all_clients(code=CloseCode.SERVICE_RESTART)
 
         assert await wait_for_condition(lambda: client.connection is None)
+
+
+async def test_consecutive_failed_connects_keep_retrying_until_the_server_accepts(
+    phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
+) -> None:
+    reconnects = ReconnectCounter()
+    client = make_client(
+        phoenix_server, reconnect_policy=FAST_RECONNECT, on_reconnect=reconnects
+    )
+    async with client:
+        await client.subscribe_to_topic(TOPIC, received.put)
+
+        with phoenix_server.refusing(REFUSED_HANDSHAKES):
+            await reconnect(phoenix_server, client)
+
+        assert phoenix_server.refused_handshakes == REFUSED_HANDSHAKES
+        await assert_delivers_after_rejoin(phoenix_server, client, TOPIC, received)
+        assert reconnects.count == 1
 
 
 async def test_try_again_later_holds_the_reconnect_for_its_cooldown(
