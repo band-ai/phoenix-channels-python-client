@@ -7,7 +7,7 @@ Thank you for your interest in contributing to Phoenix Channels Python Client! T
 ### Prerequisites
 
 - Python 3.11+
-- [uv](https://docs.astral.sh/uv/) package manager (recommended) or pip
+- [uv](https://docs.astral.sh/uv/) package manager
 
 ### Initial Setup
 
@@ -23,18 +23,12 @@ Thank you for your interest in contributing to Phoenix Channels Python Client! T
    ```
 4. Install dependencies:
    ```bash
-   # Using uv (recommended)
-   uv sync --all-extras
-
-   # Or using pip
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   pip install -e ".[dev]"
+   uv sync --extra dev
    ```
 5. Set up pre-commit hooks:
    ```bash
-   pre-commit install
-   pre-commit install --hook-type commit-msg
+   uv run pre-commit install
+   uv run pre-commit install --hook-type commit-msg
    ```
 
 ## Development Workflow
@@ -43,20 +37,19 @@ Thank you for your interest in contributing to Phoenix Channels Python Client! T
    ```bash
    git checkout main
    git pull upstream main
-   git checkout -b feat/your-feature-name
-   # or fix/your-bug-fix for bug fixes
+   git checkout -b <type>/<slug>-<LINEAR-ID>  # e.g. feat/add-user-auth-ENG-123
    ```
 
 2. Make your changes following the code standards below
 
 3. Run tests:
    ```bash
-   pytest
+   uv run pytest
    ```
 
 4. Run pre-commit checks:
    ```bash
-   pre-commit run --all-files
+   uv run pre-commit run --all-files
    ```
 
 5. Commit your changes using [Conventional Commits](https://www.conventionalcommits.org/):
@@ -111,16 +104,13 @@ async def handle_message(message):
 
 ```bash
 # All tests
-pytest
+uv run pytest
 
 # With verbose output
-pytest -v
-
-# Specific test file
-pytest tests/test_client.py
+uv run pytest -v
 
 # Specific test
-pytest -k "test_name"
+uv run pytest -k "test_name"
 ```
 
 ### Writing Tests
@@ -170,7 +160,7 @@ Follow Conventional Commits format:
 type(scope): description
 ```
 
-**Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
+**Types:** the `type` values in `release-please-config.json`'s `changelog-sections`.
 
 **Examples:**
 - `feat(client): add heartbeat configuration`
@@ -181,21 +171,14 @@ PR titles are validated by CI - PRs with invalid titles will fail the check.
 
 ## Branch Naming
 
-- `feat/description` - New features
-- `fix/description` - Bug fixes
-- `docs/description` - Documentation changes
+Name branches `<type>/<slug>-<LINEAR-ID>`, with a PR title type and the Linear
+issue the branch addresses, e.g. `feat/add-user-auth-ENG-123` or
+`fix/v2-join-parsing-ENG-456`. CI checks the name.
 
 ## Commit Messages
 
-This project uses [Conventional Commits](https://www.conventionalcommits.org/) enforced by Commitizen:
-
-- `feat:` - New feature
-- `fix:` - Bug fix
-- `docs:` - Documentation changes
-- `style:` - Code style changes (formatting, etc.)
-- `refactor:` - Code refactoring
-- `test:` - Adding or updating tests
-- `chore:` - Maintenance tasks
+This project uses [Conventional Commits](https://www.conventionalcommits.org/) enforced by Commitizen,
+with the `type` values in `release-please-config.json`'s `changelog-sections`.
 
 ## Release Process
 

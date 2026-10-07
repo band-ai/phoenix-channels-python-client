@@ -31,21 +31,19 @@ Set up development environment:
 ```bash
 git clone https://github.com/band-ai/phoenix-channels-python-client.git
 cd phoenix-channels-python-client
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-python3 -m pip install -U pip
-pip install -e ".[dev]"
+uv sync --extra dev
 ```
 
 Run tests:
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ### Dependencies
 
 - Python 3.11+
+- `pydantic>=2.8`
 - `websockets>=14.2`
 
 ## Quick Start
@@ -297,6 +295,13 @@ Exceptions raised in callbacks are logged, not raised.
 | Anything else, or no close frame | Reconnect with jittered backoff: 0.5 s × 2ⁿ, capped at 30 s, reset after 60 s of uptime |
 
 Disconnects within 5 s of connecting count as rapid and get longer minimum delays; ten within 60 s stop the client with `PHXConnectionError`. Tune all of this with `ReconnectPolicy`.
+
+A `ReconnectPolicy` is validated when it is built: an out-of-range or unknown field raises `pydantic.ValidationError`, which is a `ValueError`. To derive one policy from another, validate the merged fields:
+
+```python
+base = ReconnectPolicy()
+policy = ReconnectPolicy.model_validate(base.model_dump() | {"max_delay_s": 10.0})
+```
 
 ### Heartbeats
 
