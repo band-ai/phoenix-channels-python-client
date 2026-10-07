@@ -399,9 +399,13 @@ class SupervisorMixin:
     async def _cleanup_connection(self) -> None:
         self._fail_pending_joins_for_lost_connection()
         connection = self.connection
+        # The socket rejoin after the reconnect takes over channel recoveries.
+        recoveries = [
+            topic.recovery_task for topic in self._topic_subscriptions.values()
+        ]
         running = [
             task
-            for task in (self._heartbeat_task, self._message_routing_task)
+            for task in (self._heartbeat_task, self._message_routing_task, *recoveries)
             if task is not None and not task.done()
         ]
         self.connection = None
