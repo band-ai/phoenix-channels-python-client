@@ -177,6 +177,13 @@ class TopicRuntimeMixin:
             case PHXEvent.error:
                 self._mark_channel_errored(topic)
                 self._start_channel_recovery(topic)
+            case PHXEvent.close:
+                self._start_topic_loss(
+                    topic,
+                    PHXTopicError(
+                        f"Channel for topic {topic.name} closed by the server"
+                    ),
+                )
             case _:
                 await self._handle_normal_message_mode(topic, message)
 
