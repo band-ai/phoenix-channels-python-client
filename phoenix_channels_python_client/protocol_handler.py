@@ -92,7 +92,7 @@ def _to_message(label: str, frame: _RawFrame) -> ChannelMessage:
 
 
 class _ProtocolSpec(NamedTuple):
-    """What differs between protocol versions, in one place."""
+    """A protocol version's ``vsn`` and how its frames decode."""
 
     vsn: str
     label: str
