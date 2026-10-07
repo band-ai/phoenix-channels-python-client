@@ -24,6 +24,9 @@ class PhoenixChannelsProtocolVersion(Enum):
     V2 = "2.0"
 
 
+DEFAULT_PROTOCOL_VERSION = PhoenixChannelsProtocolVersion.V2
+
+
 def _as_ref(value: object) -> str | None:
     """A frame's ref or join_ref as a string; servers may send numbers."""
     return None if value is None else str(value)
@@ -32,7 +35,7 @@ def _as_ref(value: object) -> str | None:
 class PHXProtocolHandler:
     def __init__(
         self,
-        protocol_version: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V2,
+        protocol_version: PhoenixChannelsProtocolVersion = DEFAULT_PROTOCOL_VERSION,
     ) -> None:
         self.protocol_version = protocol_version
         self.logger = logger.getChild("ProtocolHandler")
@@ -44,69 +47,67 @@ class PHXProtocolHandler:
     def parse_message(self, raw_message: str | bytes) -> ChannelMessage:
         self.logger.debug("Parsing raw message: %s", raw_message)
         try:
-            parsed_data = json.loads(raw_message)
-            self.logger.debug("Decoded data: %s", parsed_data)
-            if self.protocol_version == PhoenixChannelsProtocolVersion.V2:
-                if not isinstance(parsed_data, list):
-                    raise TypeError(
-                        "Protocol v2 expects array format, "
-                        f"got {type(parsed_data).__name__}"
-                    )
-                if len(parsed_data) != 5:
-                    raise ValueError(
-                        "Protocol v2 expects 5-element array "
-                        "[join_ref, ref, topic, event, payload]"
-                    )
-
-                join_ref, ref, topic, event, payload = parsed_data
-                if not isinstance(topic, str) or not topic:
-                    raise TypeError(
-                        "Protocol v2 message topic must be a non-empty string"
-                    )
-                if not isinstance(event, str) or not event:
-                    raise TypeError(
-                        "Protocol v2 message event must be a non-empty string"
-                    )
-                if payload is None or not isinstance(payload, dict):
-                    payload = {}
-
-                return make_message(
-                    topic=topic,
-                    event=Event(event),
-                    payload=payload,
-                    ref=_as_ref(ref),
-                    join_ref=_as_ref(join_ref),
-                )
-
-            if not isinstance(parsed_data, dict):
-                raise TypeError(
-                    "Protocol v1 expects object format, "
-                    f"got {type(parsed_data).__name__}"
-                )
-
-            topic = parsed_data.get("topic")
-            event = parsed_data.get("event")
-            payload = parsed_data.get("payload", {})
-            if not isinstance(topic, str) or not topic:
-                raise TypeError("Protocol v1 message topic must be a non-empty string")
-            if not isinstance(event, str) or not event:
-                raise TypeError("Protocol v1 message event must be a non-empty string")
-            if not isinstance(payload, dict):
-                payload = {}
-
-            return make_message(
-                topic=topic,
-                event=Event(event),
-                payload=payload,
-                ref=_as_ref(parsed_data.get("ref")),
-                join_ref=_as_ref(parsed_data.get("join_ref")),
-            )
+            return self._decode_message(raw_message)
         except (TypeError, ValueError):
             self.logger.exception("Failed to parse message")
             raise
         except Exception as exc:
             self.logger.exception("Unexpected error parsing message")
             raise ValueError(f"Invalid message format: {exc}") from exc
+
+    def _decode_message(self, raw_message: str | bytes) -> ChannelMessage:
+        parsed_data = json.loads(raw_message)
+        self.logger.debug("Decoded data: %s", parsed_data)
+        if self.protocol_version == PhoenixChannelsProtocolVersion.V2:
+            if not isinstance(parsed_data, list):
+                raise TypeError(
+                    "Protocol v2 expects array format, "
+                    f"got {type(parsed_data).__name__}"
+                )
+            if len(parsed_data) != 5:
+                raise ValueError(
+                    "Protocol v2 expects 5-element array "
+                    "[join_ref, ref, topic, event, payload]"
+                )
+
+            join_ref, ref, topic, event, payload = parsed_data
+            if not isinstance(topic, str) or not topic:
+                raise TypeError("Protocol v2 message topic must be a non-empty string")
+            if not isinstance(event, str) or not event:
+                raise TypeError("Protocol v2 message event must be a non-empty string")
+            if payload is None or not isinstance(payload, dict):
+                payload = {}
+
+            return make_message(
+                topic=topic,
+                event=Event(event),
+                payload=payload,
+                ref=_as_ref(ref),
+                join_ref=_as_ref(join_ref),
+            )
+
+        if not isinstance(parsed_data, dict):
+            raise TypeError(
+                f"Protocol v1 expects object format, got {type(parsed_data).__name__}"
+            )
+
+        topic = parsed_data.get("topic")
+        event = parsed_data.get("event")
+        payload = parsed_data.get("payload", {})
+        if not isinstance(topic, str) or not topic:
+            raise TypeError("Protocol v1 message topic must be a non-empty string")
+        if not isinstance(event, str) or not event:
+            raise TypeError("Protocol v1 message event must be a non-empty string")
+        if not isinstance(payload, dict):
+            payload = {}
+
+        return make_message(
+            topic=topic,
+            event=Event(event),
+            payload=payload,
+            ref=_as_ref(parsed_data.get("ref")),
+            join_ref=_as_ref(parsed_data.get("join_ref")),
+        )
 
     def serialize_message(self, message: ChannelMessage) -> str:
         self.logger.debug("Serializing message: %s", message)
@@ -130,11 +131,11 @@ class PHXProtocolHandler:
                         "payload": message.payload,
                     }
                 )
-            self.logger.debug("Serialized to: %s", serialized)
-            return serialized
         except Exception as exc:
             self.logger.exception("Failed to serialize message")
             raise TypeError(f"Cannot serialize message: {exc}") from exc
+        self.logger.debug("Serialized to: %s", serialized)
+        return serialized
 
     async def send_message(
         self, websocket: ClientConnection, message: ChannelMessage
@@ -175,7 +176,8 @@ class PHXProtocolHandler:
             topic_subscription = topic_subscriptions[topic]
             if topic_subscription.conn_generation != conn_generation:
                 self.logger.debug(
-                    "Dropping message for stale generation on topic %s. routing_gen=%s subscription_gen=%s",
+                    "Dropping message for stale generation on topic %s. routing_gen=%s "
+                    "subscription_gen=%s",
                     topic,
                     conn_generation,
                     topic_subscription.conn_generation,
@@ -187,7 +189,8 @@ class PHXProtocolHandler:
                 and topic_subscription.join_ref != phx_message.join_ref
             ):
                 self.logger.debug(
-                    "Dropping message with stale join_ref on topic %s. got=%s expected=%s",
+                    "Dropping message with stale join_ref on topic %s. got=%s "
+                    "expected=%s",
                     topic,
                     phx_message.join_ref,
                     topic_subscription.join_ref,

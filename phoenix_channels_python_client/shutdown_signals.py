@@ -49,6 +49,7 @@ def _owned(sig: int) -> bool:
 
 
 def _on_shutdown_signal(signum: int, frame: FrameType | None) -> None:
+    del frame
     live = [waiter for waiter in tuple(_waiters) if waiter.live]
     for waiter in live:
         _waiters[waiter] = signum

@@ -108,14 +108,15 @@ class SupervisorMixin:
             if self._on_heartbeat_ack is not None:
                 try:
                     result = self._on_heartbeat_ack()
-                    if inspect.iscoroutine(result):
-                        result.close()
-                        raise TypeError(
-                            "on_heartbeat_ack must be synchronous; an async "
-                            "function was passed and its body never ran"
-                        )
                 except Exception:
                     self.logger.exception("Error in on_heartbeat_ack callback")
+                    return
+                if inspect.iscoroutine(result):
+                    result.close()
+                    self.logger.error(
+                        "on_heartbeat_ack must be synchronous; an async "
+                        "function was passed and its body never ran"
+                    )
 
     async def _invoke_callback_safely(
         self, label: str, callback: Callable[..., Awaitable[None]], *args: object
@@ -126,9 +127,9 @@ class SupervisorMixin:
             self.logger.exception("Error in %s callback", label)
 
     async def close_connection(self, reason: str) -> None:
-        """Force-close the current connection so the supervisor's own
-        disconnect handling decides whether to reconnect. No-op if not
-        currently connected or the connection is already closing.
+        """Force-close the connection; disconnect handling decides on a reconnect.
+
+        No-op if not currently connected or the connection is already closing.
         """
         connection = self.connection
         if connection is None:
@@ -159,7 +160,8 @@ class SupervisorMixin:
 
                 if self._pending_heartbeat_ref is not None:
                     self.logger.warning(
-                        "Heartbeat response not received for ref=%s; server may be unresponsive",
+                        "Heartbeat response not received for ref=%s; server may be "
+                        "unresponsive",
                         self._pending_heartbeat_ref,
                     )
 
@@ -178,7 +180,7 @@ class SupervisorMixin:
                         connection, heartbeat_message
                     )
                     self.logger.debug("Sent heartbeat (ref=%s)", ref)
-                except Exception:
+                except Exception:  # noqa: BLE001  # any send failure ends the loop
                     self.logger.debug(
                         "Failed to send heartbeat; connection likely closing"
                     )
@@ -208,7 +210,7 @@ class SupervisorMixin:
                     )
                 except asyncio.CancelledError:
                     raise
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001  # each failure is retried
                     if not self.auto_reconnect:
                         if (
                             self._initial_connection_future
@@ -220,7 +222,7 @@ class SupervisorMixin:
                                     f"{safe_channel_socket_url}: {exc}"
                                 )
                             )
-                        self.logger.error(
+                        self.logger.error(  # noqa: TRY400  # expected; no traceback
                             "Connection failed and auto_reconnect=False: %s", exc
                         )
                         break
@@ -231,7 +233,9 @@ class SupervisorMixin:
                             "Reconnect suppressed after repeated rapid disconnects. "
                             "Likely duplicate connection or unstable endpoint."
                         )
-                        self.logger.error("%s", self._terminal_error)
+                        self.logger.error(  # noqa: TRY400  # not about this error
+                            "%s", self._terminal_error
+                        )
                         break
 
                     if self._state == ClientState.CONNECTING:
@@ -289,7 +293,8 @@ class SupervisorMixin:
                 except Exception as exc:
                     if isinstance(exc, ConnectionClosed):
                         self.logger.info(
-                            "Message routing stopped due to websocket close code=%s reason=%s",
+                            "Message routing stopped due to websocket close code=%s "
+                            "reason=%s",
                             exc.rcvd.code if exc.rcvd is not None else None,
                             exc.rcvd.reason if exc.rcvd is not None else "",
                         )
