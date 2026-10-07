@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import Callable
 from enum import StrEnum
+from typing import Any, NamedTuple
 
 from websockets import ClientConnection
 
@@ -23,8 +24,85 @@ class PhoenixChannelsProtocolVersion(StrEnum):
     V1 = "1.0"
     V2 = "2.0"
 
+    @property
+    def vsn(self) -> str:
+        """The ``vsn`` query parameter that selects this version on the server."""
+        return _PROTOCOL_SPECS[self].vsn
+
 
 DEFAULT_PROTOCOL_VERSION = PhoenixChannelsProtocolVersion.V2
+
+
+class _RawFrame(NamedTuple):
+    """A decoded frame whose fields are not validated yet."""
+
+    # The message model validates the refs.
+    join_ref: Any
+    ref: Any
+    topic: object
+    event: object
+    payload: object
+
+
+def _decode_v1(parsed: object) -> _RawFrame:
+    match parsed:
+        case dict():
+            return _RawFrame(
+                join_ref=parsed.get("join_ref"),
+                ref=parsed.get("ref"),
+                topic=parsed.get("topic"),
+                event=parsed.get("event"),
+                payload=parsed.get("payload"),
+            )
+        case _:
+            raise TypeError(
+                f"Protocol v1 expects object format, got {type(parsed).__name__}"
+            )
+
+
+def _decode_v2(parsed: object) -> _RawFrame:
+    match parsed:
+        case [join_ref, ref, topic, event, payload]:
+            return _RawFrame(join_ref, ref, topic, event, payload)
+        case list():
+            raise ValueError(
+                "Protocol v2 expects 5-element array "
+                "[join_ref, ref, topic, event, payload]"
+            )
+        case _:
+            raise TypeError(
+                f"Protocol v2 expects array format, got {type(parsed).__name__}"
+            )
+
+
+def _require_text(value: object, label: str, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise TypeError(f"Protocol {label} message {field} must be a non-empty string")
+    return value
+
+
+def _to_message(label: str, frame: _RawFrame) -> ChannelMessage:
+    return make_message(
+        topic=_require_text(frame.topic, label, "topic"),
+        event=Event(_require_text(frame.event, label, "event")),
+        payload=frame.payload if isinstance(frame.payload, dict) else {},
+        ref=frame.ref,
+        join_ref=frame.join_ref,
+    )
+
+
+class _ProtocolSpec(NamedTuple):
+    """What differs between protocol versions, in one place."""
+
+    vsn: str
+    label: str
+    decode: Callable[[object], _RawFrame]
+
+
+_PROTOCOL_SPECS = {
+    PhoenixChannelsProtocolVersion.V1: _ProtocolSpec("1.0.0", "v1", _decode_v1),
+    PhoenixChannelsProtocolVersion.V2: _ProtocolSpec("2.0.0", "v2", _decode_v2),
+}
 
 
 class PHXProtocolHandler:
@@ -50,61 +128,11 @@ class PHXProtocolHandler:
             self.logger.exception("Unexpected error parsing message")
             raise ValueError(f"Invalid message format: {exc}") from exc
 
-    def _decode_message(  # noqa: C901  # INT-1707: split per protocol version
-        self, raw_message: str | bytes
-    ) -> ChannelMessage:
+    def _decode_message(self, raw_message: str | bytes) -> ChannelMessage:
         parsed_data = json.loads(raw_message)
         self.logger.debug("Decoded data: %s", parsed_data)
-        if self.protocol_version == PhoenixChannelsProtocolVersion.V2:
-            if not isinstance(parsed_data, list):
-                raise TypeError(
-                    "Protocol v2 expects array format, "
-                    f"got {type(parsed_data).__name__}"
-                )
-            if len(parsed_data) != 5:  # noqa: PLR2004  # INT-1707: name the length
-                raise ValueError(
-                    "Protocol v2 expects 5-element array "
-                    "[join_ref, ref, topic, event, payload]"
-                )
-
-            join_ref, ref, topic, event, payload = parsed_data
-            if not isinstance(topic, str) or not topic:
-                raise TypeError("Protocol v2 message topic must be a non-empty string")
-            if not isinstance(event, str) or not event:
-                raise TypeError("Protocol v2 message event must be a non-empty string")
-            if payload is None or not isinstance(payload, dict):
-                payload = {}
-
-            return make_message(
-                topic=topic,
-                event=Event(event),
-                payload=payload,
-                ref=ref,
-                join_ref=join_ref,
-            )
-
-        if not isinstance(parsed_data, dict):
-            raise TypeError(
-                f"Protocol v1 expects object format, got {type(parsed_data).__name__}"
-            )
-
-        topic = parsed_data.get("topic")
-        event = parsed_data.get("event")
-        payload = parsed_data.get("payload", {})
-        if not isinstance(topic, str) or not topic:
-            raise TypeError("Protocol v1 message topic must be a non-empty string")
-        if not isinstance(event, str) or not event:
-            raise TypeError("Protocol v1 message event must be a non-empty string")
-        if not isinstance(payload, dict):
-            payload = {}
-
-        return make_message(
-            topic=topic,
-            event=Event(event),
-            payload=payload,
-            ref=parsed_data.get("ref"),
-            join_ref=parsed_data.get("join_ref"),
-        )
+        spec = _PROTOCOL_SPECS[self.protocol_version]
+        return _to_message(spec.label, spec.decode(parsed_data))
 
     def serialize_message(self, message: ChannelMessage) -> str:
         self.logger.debug("Serializing message: %s", message)

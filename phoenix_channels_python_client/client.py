@@ -103,15 +103,10 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         if callback_drain_timeout_s <= 0:
             raise ValueError("callback_drain_timeout_s must be > 0")
 
-        vsn = (
-            "2.0.0"
-            if protocol_version == PhoenixChannelsProtocolVersion.V2
-            else "1.0.0"
-        )
         connect_url, redacted_url = _build_channel_socket_urls(
             websocket_url=websocket_url,
             api_key=api_key,
-            vsn=vsn,
+            vsn=protocol_version.vsn,
         )
         self.channel_socket_url = connect_url
         self.channel_socket_url_redacted = redacted_url
