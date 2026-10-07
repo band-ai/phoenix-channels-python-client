@@ -9,13 +9,8 @@ from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
 from phoenix_channels_python_client.exceptions import PHXConnectionError
-from tests.support import API_KEY
-
-# Never connected to; these tests only call the client's reconnect logic.
-SOCKET_URL = "ws://example.invalid/socket/websocket"
-
-# Classification ignores the reason; it is only logged.
-CLOSE_REASON = "test close"
+from tests.fake_server import FakePhoenixServer
+from tests.support import API_KEY, STOP_REASON, derive_policy, make_client
 
 # No jitter, and every pre-cooldown delay stays below the cooldown base.
 COOLDOWN_POLICY = ReconnectPolicy(
@@ -51,9 +46,8 @@ def random_draw(monkeypatch: pytest.MonkeyPatch) -> Callable[[float], None]:
 
 
 def _make_client(policy: ReconnectPolicy | None = None) -> PHXChannelsClient:
-    return PHXChannelsClient(
-        SOCKET_URL, api_key=API_KEY, reconnect_policy=policy or ReconnectPolicy()
-    )
+    """A client that is never connected; these tests call its reconnect logic."""
+    return make_client(FakePhoenixServer(), reconnect_policy=policy)
 
 
 def _delay_after_rapid_disconnects(client: PHXChannelsClient, count: int) -> float:
@@ -72,20 +66,20 @@ def test_close_codes_are_classified_by_the_policy() -> None:
     policy = ReconnectPolicy()
     client = _make_client(policy)
 
-    normal = client._classify_disconnect(CloseCode.NORMAL_CLOSURE, CLOSE_REASON)
+    normal = client._classify_disconnect(CloseCode.NORMAL_CLOSURE, STOP_REASON)
     assert normal.should_reconnect is False
     assert normal.terminal_error is None
 
-    violation = client._classify_disconnect(CloseCode.POLICY_VIOLATION, CLOSE_REASON)
+    violation = client._classify_disconnect(CloseCode.POLICY_VIOLATION, STOP_REASON)
     assert violation.should_reconnect is False
     assert isinstance(violation.terminal_error, PHXConnectionError)
 
-    restart = client._classify_disconnect(CloseCode.SERVICE_RESTART, CLOSE_REASON)
+    restart = client._classify_disconnect(CloseCode.SERVICE_RESTART, STOP_REASON)
     assert restart.should_reconnect is True
     assert restart.min_delay_s == policy.service_restart_min_delay_s
     assert restart.max_delay_s == policy.service_restart_max_delay_s
 
-    busy = client._classify_disconnect(CloseCode.TRY_AGAIN_LATER, CLOSE_REASON)
+    busy = client._classify_disconnect(CloseCode.TRY_AGAIN_LATER, STOP_REASON)
     assert busy.should_reconnect is True
     assert busy.min_delay_s == policy.try_again_later_min_delay_s
     assert busy.max_delay_s == policy.try_again_later_max_delay_s
@@ -109,12 +103,10 @@ def test_the_rapid_cooldown_steps_from_its_base_up_to_its_cap() -> None:
 def test_the_hold_down_jitter_spans_the_configured_ratios_of_the_cooldown(
     random_draw: Callable[[float], None],
 ) -> None:
-    policy = ReconnectPolicy.model_validate(
-        COOLDOWN_POLICY.model_dump()
-        | {
-            "rapid_hold_down_jitter_low_ratio": JITTER_LOW_RATIO,
-            "rapid_hold_down_jitter_high_ratio": JITTER_HIGH_RATIO,
-        }
+    policy = derive_policy(
+        COOLDOWN_POLICY,
+        rapid_hold_down_jitter_low_ratio=JITTER_LOW_RATIO,
+        rapid_hold_down_jitter_high_ratio=JITTER_HIGH_RATIO,
     )
     client = _make_client(policy)
     # Past the cap, so the cooldown floor is the cap.

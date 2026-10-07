@@ -14,6 +14,7 @@ from websockets.frames import CloseCode
 from websockets.http11 import Request
 
 from phoenix_channels_python_client.protocol_handler import (
+    DEFAULT_PROTOCOL_VERSION,
     PhoenixChannelsProtocolVersion,
 )
 
@@ -57,7 +58,7 @@ class FakePhoenixServer:
 
     def __init__(
         self,
-        protocol: PhoenixChannelsProtocolVersion = PhoenixChannelsProtocolVersion.V2,
+        protocol: PhoenixChannelsProtocolVersion = DEFAULT_PROTOCOL_VERSION,
     ) -> None:
         self.protocol = protocol
         self.host = LOOPBACK_HOST
