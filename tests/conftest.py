@@ -10,8 +10,10 @@ from tests.test_v2_protocol.conftest import FakePhoenixServer, phoenix_server
 __all__ = [
     "API_KEY",
     "ASYNC_TIMEOUT_S",
+    "EVENT",
     "FAST_RECONNECT",
     "FakePhoenixServer",
+    "LEAVE_TIMEOUT_S",
     "make_client",
     "phoenix_server",
     "STOP_REASON",
@@ -20,12 +22,18 @@ __all__ = [
 
 API_KEY = "test_key"
 
+# A custom (non-phx_) event for tests that only need some server push.
+EVENT = "test_event"
+
 # Tests that stop the client don't care why; this is only logged.
 STOP_REASON = "test stop"
 
 # Upper bound for awaiting a task or event that should finish promptly; without
 # pytest-timeout, this turns a hang into a failure.
 ASYNC_TIMEOUT_S = 2.0
+
+# A busy topic callback holds back its leave reply, so don't wait long for it.
+LEAVE_TIMEOUT_S = 0.05
 
 # Reconnect after a disconnect without waiting on backoff.
 FAST_RECONNECT = ReconnectPolicy(
