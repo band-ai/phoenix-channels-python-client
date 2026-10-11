@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from enum import StrEnum
 
 import pytest
+from websockets import ClientConnection
+from websockets.exceptions import ConnectionClosed
 from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from phoenix_channels_python_client.phx_messages import ChannelMessage
+from phoenix_channels_python_client.phx_messages import ChannelMessage, PHXEvent
 
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
@@ -47,6 +50,12 @@ class CallbackFailure(Exception):
     pass
 
 
+class RejoinOutcome(StrEnum):
+    REJOINED = "rejoined"
+    UNREGISTERED = "unregistered"
+    JOIN_FAILED = "join failed"
+
+
 class BusyCallback:
     """A topic callback that stays busy until released, then fails."""
 
@@ -78,6 +87,24 @@ async def assert_delivers_after_rejoin(
     assert await wait_for_condition(rejoin_settled(client, topic))
     await deliver(server, client, topic)
     await expect_message(received)
+
+
+def rejoin_outcome(client: PHXChannelsClient) -> RejoinOutcome | None:
+    """None while the rejoin is still in flight.
+
+    ``rejoin_settled`` is also true when the topic has been dropped, so it
+    cannot tell a recovered join from an unregistered one.
+    """
+    subscription = client.get_current_subscriptions().get(TOPIC)
+    if subscription is None:
+        return RejoinOutcome.UNREGISTERED
+
+    join_ready = subscription.current_join_ready
+    if subscription.conn_generation != client._conn_generation or not join_ready.done():
+        return None
+    if join_ready.exception() is not None:
+        return RejoinOutcome.JOIN_FAILED
+    return RejoinOutcome.REJOINED
 
 
 @each_protocol
@@ -190,6 +217,44 @@ async def test_a_rejoin_that_times_out_keeps_the_topic_for_the_next_reconnect(
 
         await reconnect(phoenix_server, client)
         await assert_delivers_after_rejoin(phoenix_server, client, TOPIC, received)
+
+
+@each_protocol
+async def test_a_send_failure_during_rejoin_keeps_the_topic_and_recovers(
+    phoenix_server: FakePhoenixServer,
+    received: asyncio.Queue[ChannelMessage],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The socket dies as the rejoin's join is sent. That failure is transient."""
+    joins_failed = 0
+
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        await client.subscribe_to_topic(TOPIC, received.put)
+        handler = client.get_protocol_handler()
+        original_send = handler.send_message
+
+        async def fail_one_join(
+            websocket: ClientConnection, message: ChannelMessage
+        ) -> None:
+            nonlocal joins_failed
+            if joins_failed or message.event != PHXEvent.join:
+                await original_send(websocket, message)
+                return
+
+            joins_failed += 1
+            await websocket.close(
+                code=CloseCode.SERVICE_RESTART, reason="restart during rejoin"
+            )
+            raise ConnectionClosed(None, None)
+
+        monkeypatch.setattr(handler, "send_message", fail_one_join)
+        await reconnect(phoenix_server, client)
+
+        assert await wait_for_condition(lambda: rejoin_outcome(client) is not None)
+        assert rejoin_outcome(client) is RejoinOutcome.REJOINED
+        assert joins_failed == 1
+        await deliver(phoenix_server, client)
+        await expect_message(received)
 
 
 async def test_unsubscribing_during_a_rejoin_drain_keeps_the_client_running(
