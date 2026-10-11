@@ -351,6 +351,41 @@ async def test_a_subscribe_interrupted_by_a_disconnect_fails_fast(
         assert phoenix_server.join_topics.count(TOPIC) == 2
 
 
+async def test_a_subscribe_during_a_rejoin_fails_fast_when_the_socket_drops(
+    phoenix_server: FakePhoenixServer,
+):
+    # The rejoin is blocked on its join reply, so a drop here never reaches
+    # cleanup. The default join timeout outlasts ASYNC_TIMEOUT_S.
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        await client.subscribe_to_topic(TOPIC)
+        subscription = client.get_current_subscriptions()[TOPIC]
+        joined_on = subscription.conn_generation
+        joins_before = phoenix_server.join_topics.count(TOPIC)
+        phoenix_server.unanswered_join_ids.add(phoenix_server.next_client_id)
+
+        await phoenix_server.close_all_clients()
+        assert await wait_for_condition(
+            lambda: subscription.conn_generation > joined_on
+            and phoenix_server.join_topics.count(TOPIC) > joins_before
+        )
+
+        subscribe = asyncio.create_task(client.subscribe_to_topic(OTHER_TOPIC))
+        assert await wait_for_condition(
+            lambda: OTHER_TOPIC in phoenix_server.join_topics
+        )
+        assert not subscribe.done()
+
+        dropped_on = client._conn_generation
+        await phoenix_server.close_all_clients()
+
+        with pytest.raises(
+            PHXConnectionError, match="Connection lost before the join completed"
+        ):
+            await asyncio.wait_for(subscribe, ASYNC_TIMEOUT_S)
+        assert OTHER_TOPIC not in client.get_current_subscriptions()
+        assert await wait_for_condition(lambda: client._conn_generation > dropped_on)
+
+
 async def test_shutdown_during_a_rejoin_does_not_report_a_reconnect(
     phoenix_server: FakePhoenixServer,
 ):

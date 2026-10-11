@@ -256,6 +256,11 @@ class SupervisorMixin:
                 self._message_routing_task = asyncio.create_task(
                     self._start_processing(connection, generation)
                 )
+                # Join replies arrive only through this task. It can stop while
+                # a rejoin is still waiting on one, before cleanup runs.
+                self._message_routing_task.add_done_callback(
+                    self._fail_joins_when_routing_stops
+                )
                 if self._heartbeat_interval_s is not None:
                     self._heartbeat_task = asyncio.create_task(
                         self._heartbeat_loop(connection)
@@ -385,10 +390,18 @@ class SupervisorMixin:
         except asyncio.TimeoutError:
             return
 
-    async def _cleanup_connection(self) -> None:
+    def _fail_joins_when_routing_stops(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        self._fail_pending_joins_for_lost_connection()
+
+    def _fail_pending_joins_for_lost_connection(self) -> None:
         cast(_SupervisorRuntimeDeps, self)._fail_pending_joins(
             PHXConnectionError("Connection lost before the join completed")
         )
+
+    async def _cleanup_connection(self) -> None:
+        self._fail_pending_joins_for_lost_connection()
         connection = self.connection
         running = [
             task
