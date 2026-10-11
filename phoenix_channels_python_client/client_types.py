@@ -43,19 +43,19 @@ class ReconnectPolicy(BaseModel):
     reconnect_on_normal_close: bool = False
     policy_violation_is_terminal: bool = True
     service_restart_min_delay_s: NonNegativeFloat = 1.0
-    service_restart_max_delay_s: float = 5.0
+    service_restart_max_delay_s: NonNegativeFloat = 5.0
     try_again_later_min_delay_s: NonNegativeFloat = 30.0
-    try_again_later_max_delay_s: float = 60.0
+    try_again_later_max_delay_s: NonNegativeFloat = 60.0
     rapid_disconnect_uptime_s: NonNegativeFloat = 5.0
     rapid_window_s: PositiveFloat = 60.0
     rapid_first_min_delay_s: NonNegativeFloat = 2.0
     rapid_second_min_delay_s: NonNegativeFloat = 10.0
     rapid_cooldown_base_s: NonNegativeFloat = 60.0
     rapid_cooldown_step_s: NonNegativeFloat = 30.0
-    rapid_cooldown_max_s: float = 300.0
+    rapid_cooldown_max_s: NonNegativeFloat = 300.0
     rapid_suppress_disconnect_count: NonNegativeInt = 10
     rapid_hold_down_jitter_low_ratio: NonNegativeFloat = 0.25
-    rapid_hold_down_jitter_high_ratio: float = 1.0
+    rapid_hold_down_jitter_high_ratio: NonNegativeFloat = 1.0
 
     @model_validator(mode="after")
     def _check_ordering(self) -> Self:
