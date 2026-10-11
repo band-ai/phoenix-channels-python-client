@@ -137,7 +137,9 @@ class TopicRuntimeMixin:
             raise
         except Exception as exc:
             self.logger.exception("Error in topic message processor for %s", topic.name)
-            await self._unregister_topic(topic.name, error=exc)
+            # Same loss as a server close. Awaiting it here would run
+            # on_topic_lost on this processor, which shutdown does not cancel.
+            self._start_topic_loss(topic, exc)
 
     async def _handle_join_response_mode(
         self, topic: TopicSubscription, message: ChannelMessage

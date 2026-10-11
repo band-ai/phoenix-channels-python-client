@@ -14,6 +14,7 @@ from phoenix_channels_python_client.phx_messages import (
     PHXEvent,
     UserEvent,
 )
+from phoenix_channels_python_client.topic_subscription import TopicSubscription
 from phoenix_channels_python_client.utils import make_message
 from tests.fake_server import ReplyStatus
 from tests.harness import (
@@ -185,16 +186,30 @@ async def test_the_processor_skips_an_older_join_and_stops_on_the_leave_reply() 
     assert topic.unsubscribe_completed.result() is None
 
 
-async def test_a_processor_error_unregisters_the_topic_with_that_error(
+async def test_a_processor_error_drops_the_topic_and_reports_it_lost(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime = TopicRuntimeHarness()
+    lost = LostTopics()
+    runtime = TopicRuntimeHarness(on_topic_lost=lost)
     topic = runtime.register(make_subscription())
     failure = RuntimeError("state boom")
+    unregisters = 0
+    unregister = runtime._unregister_topic
+
+    async def count_unregisters(
+        topic_name: str,
+        error: Exception | None = None,
+        *,
+        only: TopicSubscription | None = None,
+    ) -> TopicSubscription | None:
+        nonlocal unregisters
+        unregisters += 1
+        return await unregister(topic_name, error=error, only=only)
 
     def fail(_: object) -> NoReturn:
         raise failure
 
+    monkeypatch.setattr(runtime, "_unregister_topic", count_unregisters)
     monkeypatch.setattr(runtime, "_determine_processing_state", fail)
     topic.queue.put_nowait(
         make_message(
@@ -204,11 +219,17 @@ async def test_a_processor_error_unregisters_the_topic_with_that_error(
             join_ref=DEFAULT_JOIN_REF,
         )
     )
+    # The real processor task, so the loss path's cancel has the task it stops.
+    processor = asyncio.create_task(runtime._process_topic_messages(TOPIC))
+    topic.process_topic_messages_task = processor
 
-    await asyncio.wait_for(runtime._process_topic_messages(TOPIC), ASYNC_TIMEOUT_S)
+    assert await wait_for_condition(lambda: len(lost.lost) == 1)
+    await asyncio.wait({processor})
 
+    assert unregisters == 1
     assert TOPIC not in runtime._topic_subscriptions
     assert topic.current_join_ready.exception() is failure
+    assert lost.lost == [(TOPIC, failure)]
 
 
 async def test_each_channel_rejoin_attempt_backs_off_further() -> None:
