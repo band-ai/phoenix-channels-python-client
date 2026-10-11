@@ -9,7 +9,11 @@ import pytest
 
 from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from phoenix_channels_python_client.phx_messages import PHXEvent, UserEvent
+from phoenix_channels_python_client.phx_messages import (
+    ChannelMessage,
+    PHXEvent,
+    UserEvent,
+)
 from phoenix_channels_python_client.utils import make_message
 from tests.fake_server import ReplyStatus
 from tests.harness import (
@@ -17,7 +21,13 @@ from tests.harness import (
     TopicRuntimeHarness,
     make_subscription,
 )
-from tests.support import ASYNC_TIMEOUT_S, TOPIC, LostTopics, wait_forever
+from tests.support import (
+    ASYNC_TIMEOUT_S,
+    TOPIC,
+    LostTopics,
+    wait_for_condition,
+    wait_forever,
+)
 
 USER_EVENT = UserEvent("user:event")
 
@@ -219,6 +229,30 @@ async def test_each_channel_rejoin_attempt_backs_off_further() -> None:
     # The shutdown during the last backoff stops the rejoin it would have sent.
     sent = [message.event for message in runtime.fake_handler.sent]
     assert sent == [PHXEvent.join] * timed_out_rejoins
+
+
+async def test_a_message_queued_behind_a_close_is_not_delivered() -> None:
+    received: list[str] = []
+
+    async def on_message(message: ChannelMessage) -> None:
+        received.append(str(message.event))
+
+    lost = LostTopics()
+    runtime = TopicRuntimeHarness(on_topic_lost=lost)
+    topic = runtime.register(make_subscription())
+    topic.async_callback = on_message
+    runtime._set_subscription_ready(topic)
+    topic.queue.put_nowait(make_message(PHXEvent.close, TOPIC, join_ref=topic.join_ref))
+    topic.queue.put_nowait(make_message(USER_EVENT, TOPIC, join_ref=topic.join_ref))
+    processor = asyncio.create_task(runtime._process_topic_messages(TOPIC))
+
+    assert await wait_for_condition(lambda: bool(lost.lost))
+    assert received == []
+    assert not runtime.is_topic_joined(TOPIC)
+    lost.only_error()
+
+    processor.cancel()
+    await asyncio.gather(processor, return_exceptions=True)
 
 
 async def test_losing_a_replaced_topic_reports_nothing_and_keeps_the_replacement() -> (

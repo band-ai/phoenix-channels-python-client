@@ -225,6 +225,31 @@ async def test_a_rejected_rejoin_after_reconnect_reports_the_lost_topic(
 
 
 @each_protocol
+async def test_a_rejected_rejoin_is_gone_before_on_reconnect(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    joined_again = asyncio.Event()
+
+    async def resubscribe() -> None:
+        # The forced failure is only for the reconnect's rejoin.
+        phoenix_server.fail_join_targets.clear()
+        await client.subscribe_to_topic(TOPIC)
+        joined_again.set()
+
+    client = make_client(
+        phoenix_server, reconnect_policy=FAST_RECONNECT, on_reconnect=resubscribe
+    )
+    async with client:
+        await client.subscribe_to_topic(TOPIC)
+        phoenix_server.fail_join_targets.add((phoenix_server.next_client_id, TOPIC))
+
+        await reconnect(phoenix_server, client)
+
+        assert await wait_for_condition(lambda: joined_again.is_set())
+        assert client.is_topic_joined(TOPIC)
+
+
+@each_protocol
 async def test_a_rejoin_that_times_out_keeps_retrying_on_the_live_socket(
     phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
 ) -> None:

@@ -12,6 +12,7 @@ from phoenix_channels_python_client.phx_messages import (
     ChannelEvent,
     ChannelMessage,
 )
+from phoenix_channels_python_client.utils import parse_event
 
 
 class TopicProcessingState(StrEnum):
@@ -44,7 +45,9 @@ class TopicSubscription:
     def add_event_handler(
         self, event: ChannelEvent, handler: Callable[[dict[str, Any]], Awaitable[None]]
     ) -> None:
-        if event in CLIENT_LIFECYCLE_EVENTS:
+        # PHXEvent is not a StrEnum, so the wire strings "phx_error" and
+        # "phx_close" are not members of CLIENT_LIFECYCLE_EVENTS.
+        if parse_event(event) in CLIENT_LIFECYCLE_EVENTS:
             raise ValueError(
                 f"{event} is handled by the client; use on_topic_lost and "
                 "is_topic_joined instead"

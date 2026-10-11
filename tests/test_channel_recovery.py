@@ -6,7 +6,11 @@ import logging
 import pytest
 
 from phoenix_channels_python_client.client import PHXChannelsClient
-from phoenix_channels_python_client.phx_messages import ChannelMessage, PHXEvent
+from phoenix_channels_python_client.phx_messages import (
+    ChannelMessage,
+    PHXEvent,
+    UserEvent,
+)
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
@@ -325,9 +329,17 @@ async def test_resubscribing_from_on_topic_lost_works(
         assert (await expect_message(received)).event == EVENT
 
 
-@pytest.mark.parametrize("event", [PHXEvent.error, PHXEvent.close])
+@pytest.mark.parametrize(
+    "event",
+    [
+        PHXEvent.error,
+        PHXEvent.close,
+        UserEvent("phx_error"),
+        UserEvent("phx_close"),
+    ],
+)
 async def test_lifecycle_event_handlers_are_rejected(
-    client: PHXChannelsClient, event: PHXEvent
+    client: PHXChannelsClient, event: PHXEvent | UserEvent
 ) -> None:
     async def handler(payload: dict[str, object]) -> None:
         del payload
