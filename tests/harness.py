@@ -172,6 +172,9 @@ class SupervisorHarness(SupervisorMixin):
         if self.rejoin_error is not None:
             raise self.rejoin_error
 
+    def _fail_pending_joins(self, error: Exception) -> None:
+        del error
+
     def _record_disconnect(self, connection_uptime_s: float) -> None:
         del connection_uptime_s
 

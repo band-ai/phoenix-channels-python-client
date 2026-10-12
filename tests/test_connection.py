@@ -14,12 +14,14 @@ from tests.support import (
     API_KEY,
     ASYNC_TIMEOUT_S,
     FAST_RECONNECT,
+    STOP_REASON,
     TOPIC,
     UNPARSEABLE_FRAME,
     expect_message,
     make_client,
     reconnect,
     reconnect_after,
+    start_server_close,
     wait_for_condition,
 )
 
@@ -77,6 +79,22 @@ async def test_close_connection_truncates_an_oversized_reason(
         FORCED_CLOSE_CODE,
         "x" * MAX_CLOSE_REASON_BYTES,
     )
+
+
+async def test_forced_close_during_a_terminal_server_close_does_not_reconnect(
+    phoenix_server: FakePhoenixServer,
+):
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        run = asyncio.create_task(client.run_forever(install_signal_handlers=False))
+        server_close = await start_server_close(
+            phoenix_server, client, code=CloseCode.POLICY_VIOLATION
+        )
+
+        await client.close_connection(STOP_REASON)
+
+        with pytest.raises(PHXConnectionError):
+            await asyncio.wait_for(run, ASYNC_TIMEOUT_S)
+        await server_close
 
 
 async def test_close_connection_before_entering_does_nothing(
