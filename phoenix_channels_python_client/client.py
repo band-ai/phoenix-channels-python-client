@@ -76,7 +76,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         websocket_url: str,
         api_key: str,
         *,
-        protocol_version: PhoenixChannelsProtocolVersion = DEFAULT_PROTOCOL_VERSION,
+        protocol_version: PhoenixChannelsProtocolVersion
+        | str = DEFAULT_PROTOCOL_VERSION,
         auto_reconnect: bool = True,
         reconnect_policy: ReconnectPolicy | None = None,
         join_timeout_s: float = 10.0,
@@ -103,15 +104,11 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         if callback_drain_timeout_s <= 0:
             raise ValueError("callback_drain_timeout_s must be > 0")
 
-        vsn = (
-            "2.0.0"
-            if protocol_version == PhoenixChannelsProtocolVersion.V2
-            else "1.0.0"
-        )
+        self._protocol_handler = PHXProtocolHandler(protocol_version)
         connect_url, redacted_url = _build_channel_socket_urls(
             websocket_url=websocket_url,
             api_key=api_key,
-            vsn=vsn,
+            vsn=self._protocol_handler.protocol_version.vsn,
         )
         self.channel_socket_url = connect_url
         self.channel_socket_url_redacted = redacted_url
@@ -131,7 +128,6 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
 
         self.connection: ClientConnection | None = None
         self._topic_subscriptions: dict[str, TopicSubscription] = {}
-        self._protocol_handler = PHXProtocolHandler(protocol_version)
         self._ref_counter = 0
         self._state = ClientState.CLOSED
         self._topics_lock = asyncio.Lock()

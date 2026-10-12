@@ -61,6 +61,28 @@ class ReconnectControllerMixin:
             )
         return should_suppress
 
+    def _rapid_floors(self) -> tuple[float, ...]:
+        """The floor for each rapid-disconnect count before the cooldown starts."""
+        return (
+            0.0,
+            self.reconnect_policy.rapid_first_min_delay_s,
+            self.reconnect_policy.rapid_second_min_delay_s,
+        )
+
+    def _rapid_cooldown_steps(self, rapid_count: int) -> int:
+        """Steps into the cooldown; negative while a floor still applies."""
+        return rapid_count - len(self._rapid_floors())
+
+    def _rapid_min_delay(self, rapid_count: int) -> float:
+        steps = self._rapid_cooldown_steps(rapid_count)
+        if steps < 0:
+            return self._rapid_floors()[rapid_count]
+        return min(
+            self.reconnect_policy.rapid_cooldown_base_s
+            + (self.reconnect_policy.rapid_cooldown_step_s * steps),
+            self.reconnect_policy.rapid_cooldown_max_s,
+        )
+
     def _compute_reconnect_delay(self, attempt: int) -> float:
         base_delay = min(
             self.reconnect_policy.max_delay_s,
@@ -69,24 +91,13 @@ class ReconnectControllerMixin:
         )
 
         rapid_count = len(self._rapid_disconnects)
-        min_delay = 0.0
-        if rapid_count == 1:
-            min_delay = self.reconnect_policy.rapid_first_min_delay_s
-        elif rapid_count == 2:  # noqa: PLR2004  # INT-1707: name the threshold
-            min_delay = self.reconnect_policy.rapid_second_min_delay_s
-        elif rapid_count >= 3:  # noqa: PLR2004  # INT-1707: name the threshold
-            cooldown_delay = min(
-                self.reconnect_policy.rapid_cooldown_base_s
-                + (self.reconnect_policy.rapid_cooldown_step_s * (rapid_count - 3)),
-                self.reconnect_policy.rapid_cooldown_max_s,
-            )
-            min_delay = cooldown_delay
+        min_delay = self._rapid_min_delay(rapid_count)
 
         delay = max(base_delay, min_delay)
         if delay <= 0:
             return 0.0
 
-        if rapid_count >= 3:  # noqa: PLR2004  # INT-1707: name the threshold
+        if self._rapid_cooldown_steps(rapid_count) >= 0:
             low_ratio = self.reconnect_policy.rapid_hold_down_jitter_low_ratio
             high_ratio = self.reconnect_policy.rapid_hold_down_jitter_high_ratio
             min_jittered = delay * low_ratio

@@ -68,23 +68,29 @@ async def run_held_callback(
     await asyncio.wait_for(callback.running.wait(), ASYNC_TIMEOUT_S)
 
 
+async def shut_down_during_a_held_reconnect(
+    server: FakePhoenixServer, client: PHXChannelsClient, callback: HeldCallback
+) -> tuple[asyncio.Task[None], asyncio.Task[None]]:
+    """Hold a reconnect's handshake, then start shutdown; return (run, stop)."""
+    await run_held_callback(server, client, callback)
+    server.handshake_gate.clear()
+    await server.close_all_clients(code=CloseCode.SERVICE_RESTART)
+    await asyncio.wait_for(server.handshake_pending.wait(), ASYNC_TIMEOUT_S)
+
+    run = asyncio.create_task(client.run_forever(install_signal_handlers=False))
+    stop = asyncio.create_task(client.shutdown(STOP_REASON))
+    assert await wait_for_condition(lambda: client._state is ClientState.SHUTTING_DOWN)
+    return run, stop
+
+
 async def test_reconnect_landing_during_shutdown_is_closed(
     phoenix_server: FakePhoenixServer,
 ) -> None:
     client = make_client(phoenix_server, reconnect_policy=FAST_RECONNECT)
     async with client:
         with HeldCallback() as held:
-            await run_held_callback(phoenix_server, client, held)
-            phoenix_server.handshake_gate.clear()
-            await phoenix_server.close_all_clients(code=CloseCode.SERVICE_RESTART)
-            await asyncio.wait_for(
-                phoenix_server.handshake_pending.wait(), ASYNC_TIMEOUT_S
-            )
-
-            run = asyncio.create_task(client.run_forever(install_signal_handlers=False))
-            stop = asyncio.create_task(client.shutdown(STOP_REASON))
-            assert await wait_for_condition(
-                lambda: client._state is ClientState.SHUTTING_DOWN
+            run, stop = await shut_down_during_a_held_reconnect(
+                phoenix_server, client, held
             )
             phoenix_server.handshake_gate.set()
             # The held reconnect lands only now, after the shutdown began.
@@ -96,6 +102,25 @@ async def test_reconnect_landing_during_shutdown_is_closed(
         assert await wait_for_condition(
             lambda: not phoenix_server.list_client_connections()
         )
+
+
+async def test_a_connect_failure_during_shutdown_closes_cleanly(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    client = make_client(phoenix_server, reconnect_policy=FAST_RECONNECT)
+    async with client:
+        with HeldCallback() as held:
+            run, stop = await shut_down_during_a_held_reconnect(
+                phoenix_server, client, held
+            )
+            with phoenix_server.refusing(1):
+                phoenix_server.handshake_gate.set()
+                # Inside the block: the shutdown would otherwise cancel the
+                # supervisor before the held reconnect fails.
+                assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
+
+        await asyncio.wait_for(stop, ASYNC_TIMEOUT_S)
+        assert client._state is ClientState.CLOSED
 
 
 async def test_shutdown_during_initial_connect_fails_the_entry(

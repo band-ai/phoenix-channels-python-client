@@ -67,12 +67,6 @@ def fake_connection(socket: FakeSocket | None = None) -> ClientConnection:
     return cast(ClientConnection, socket or FakeSocket())
 
 
-async def connect_to(url: str) -> ClientConnection:
-    """A stand-in for ``websockets.connect`` that always succeeds."""
-    del url
-    return fake_connection()
-
-
 class FakeRoutingProtocolHandler:
     """Keeps each connection up for ``uptime_s``, then ends it with ``error``."""
 
@@ -143,6 +137,8 @@ class SupervisorHarness(SupervisorMixin):
         pending_heartbeat_ref: str | None = None,
         forced_close_pending: bool = False,
         connection_uptime_s: float = 0.0,
+        connect_failures: int = 0,
+        waits_before_stop: int = 1,
     ) -> None:
         self.logger = logging.getLogger(__name__)
         self.channel_socket_url = "ws://unit-test/socket"
@@ -174,10 +170,20 @@ class SupervisorHarness(SupervisorMixin):
         self._on_heartbeat_ack = None
         self._forced_close_pending = forced_close_pending
 
+        self.connect_attempts = 0
         self.wait_delays: list[float] = []
+        self._connect_failures = connect_failures
+        self._waits_before_stop = waits_before_stop
         self.suppress_values: list[bool] = []
         self.disconnect_decision = ReconnectDecision(should_reconnect=True)
         self.rejoin_error: Exception | None = None
+
+    async def _connect(self) -> ClientConnection:
+        self.connect_attempts += 1
+        if self.connect_attempts <= self._connect_failures:
+            # A fresh error each time; a shared one would keep the old traceback.
+            raise ConnectionRefusedError
+        return fake_connection()
 
     async def _rejoin_topics(self, generation: int) -> None:
         del generation
@@ -222,7 +228,8 @@ class SupervisorHarness(SupervisorMixin):
 
     async def _wait_for_shutdown_or_timeout(self, delay_s: float) -> None:
         self.wait_delays.append(delay_s)
-        self._shutdown_event.set()
+        if len(self.wait_delays) >= self._waits_before_stop:
+            self._shutdown_event.set()
 
     async def shutdown(self, reason: str) -> None:
         del reason
