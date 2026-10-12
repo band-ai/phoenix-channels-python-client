@@ -56,6 +56,8 @@ class RejoinOutcome(StrEnum):
     REJOINED = "rejoined"
     UNREGISTERED = "unregistered"
     JOIN_FAILED = "join failed"
+
+
 async def reconnect_while_draining(
     server: FakePhoenixServer, client: PHXChannelsClient, busy: BusyCallback
 ) -> None:
