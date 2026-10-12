@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -105,7 +106,18 @@ class FakeTopicProtocolHandler(PHXProtocolHandler):
 
 
 class TopicRuntimeHarness(TopicRuntimeMixin):
-    def __init__(self) -> None:
+    """Runs the real topic runtime; joins and leaves get no reply.
+
+    A channel recovery waits no backoff, and the client shuts down on the
+    ``waits_before_stop``-th backoff it would have waited.
+    """
+
+    def __init__(
+        self,
+        *,
+        on_topic_lost: Callable[[str, Exception], Awaitable[None]] | None = None,
+        waits_before_stop: int = 1,
+    ) -> None:
         self.logger = logging.getLogger(__name__)
         self.connection: ClientConnection | None = fake_connection()
         self._state = ClientState.CONNECTED
@@ -120,6 +132,26 @@ class TopicRuntimeHarness(TopicRuntimeMixin):
         self.leave_timeout_s = HARNESS_TIMEOUT_S
         self.max_topic_queue_size = 10
         self.callback_drain_timeout_s = HARNESS_TIMEOUT_S
+        self._on_topic_lost = on_topic_lost
+        self._lifecycle_tasks: set[asyncio.Task[None]] = set()
+        # The attempt each requested channel-rejoin backoff was for, in order.
+        self.rejoin_backoff_attempts: list[int] = []
+        self._waits_before_stop = waits_before_stop
+
+    def _channel_rejoin_delay(self, attempt: int) -> float:
+        self.rejoin_backoff_attempts.append(attempt)
+        return 0.0
+
+    async def _wait_for_shutdown_or_timeout(self, delay_s: float) -> None:
+        del delay_s
+        if len(self.rejoin_backoff_attempts) >= self._waits_before_stop:
+            self._shutdown_event.set()
+
+    async def _invoke_callback_safely(
+        self, label: str, callback: Callable[..., Awaitable[None]], *args: object
+    ) -> None:
+        del label
+        await callback(*args)
 
     def register(self, subscription: TopicSubscription) -> TopicSubscription:
         self._topic_subscriptions[subscription.name] = subscription
@@ -192,6 +224,9 @@ class SupervisorHarness(SupervisorMixin):
 
     def _fail_pending_joins(self, error: Exception) -> None:
         del error
+
+    def _channel_recoveries(self) -> list[asyncio.Task[None]]:
+        return []
 
     def _record_disconnect(self, connection_uptime_s: float) -> None:
         del connection_uptime_s

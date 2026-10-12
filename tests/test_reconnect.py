@@ -21,6 +21,8 @@ from tests.support import (
     STOP_REASON,
     TOPIC,
     UNPARSEABLE_FRAME,
+    BusyCallback,
+    LostTopics,
     ReconnectCounter,
     deliver,
     derive_policy,
@@ -50,28 +52,10 @@ UNRECOGNISED_CLOSE_CODE = 4001
 REFUSED_HANDSHAKES = 2
 
 
-class CallbackError(Exception):
-    pass
-
-
 class RejoinOutcome(StrEnum):
     REJOINED = "rejoined"
     UNREGISTERED = "unregistered"
     JOIN_FAILED = "join failed"
-
-
-class BusyCallback:
-    """A topic callback that stays busy until released, then fails."""
-
-    def __init__(self) -> None:
-        self.running = asyncio.Event()
-        self.release = asyncio.Event()
-
-    async def __call__(self, message: ChannelMessage) -> None:
-        del message
-        self.running.set()
-        await self.release.wait()
-        raise CallbackError
 
 
 async def reconnect_while_draining(
@@ -225,7 +209,50 @@ async def test_a_rejected_rejoin_unregisters_only_that_topic(
 
 
 @each_protocol
-async def test_a_rejoin_that_times_out_keeps_the_topic_for_the_next_reconnect(
+async def test_a_rejected_rejoin_after_reconnect_reports_the_lost_topic(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    lost = LostTopics()
+    client = make_client(
+        phoenix_server, reconnect_policy=FAST_RECONNECT, on_topic_lost=lost
+    )
+    async with client:
+        await client.subscribe_to_topic(TOPIC)
+        phoenix_server.fail_join_targets.add((phoenix_server.next_client_id, TOPIC))
+
+        await reconnect(phoenix_server, client)
+
+        assert await wait_for_condition(lambda: bool(lost.lost))
+        assert f"Failed to rejoin topic {TOPIC}" in str(lost.only_error())
+
+
+@each_protocol
+async def test_a_rejected_rejoin_is_gone_before_on_reconnect(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    joined_again = asyncio.Event()
+
+    async def resubscribe() -> None:
+        # The forced failure is only for the reconnect's rejoin.
+        phoenix_server.fail_join_targets.clear()
+        await client.subscribe_to_topic(TOPIC)
+        joined_again.set()
+
+    client = make_client(
+        phoenix_server, reconnect_policy=FAST_RECONNECT, on_reconnect=resubscribe
+    )
+    async with client:
+        await client.subscribe_to_topic(TOPIC)
+        phoenix_server.fail_join_targets.add((phoenix_server.next_client_id, TOPIC))
+
+        await reconnect(phoenix_server, client)
+
+        assert await wait_for_condition(lambda: joined_again.is_set())
+        assert client.is_topic_joined(TOPIC)
+
+
+@each_protocol
+async def test_a_rejoin_that_times_out_keeps_retrying_on_the_live_socket(
     phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
 ) -> None:
     client = make_client(
@@ -233,13 +260,16 @@ async def test_a_rejoin_that_times_out_keeps_the_topic_for_the_next_reconnect(
     )
     async with client:
         await client.subscribe_to_topic(TOPIC, received.put)
-        phoenix_server.unanswered_join_ids.add(phoenix_server.next_client_id)
+        client_id = phoenix_server.next_client_id
+        phoenix_server.unanswered_join_ids.add(client_id)
 
         await reconnect(phoenix_server, client)
+        socket = client.connection
         assert await wait_for_condition(rejoin_settled(client))
-        assert TOPIC in client.get_current_subscriptions()
+        phoenix_server.unanswered_join_ids.discard(client_id)
 
-        await reconnect(phoenix_server, client)
+        assert await wait_for_condition(lambda: client.is_topic_joined(TOPIC))
+        assert client.connection is socket
         await assert_delivers_after_rejoin(phoenix_server, client, TOPIC, received)
 
 
