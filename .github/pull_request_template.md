@@ -3,7 +3,7 @@
 > **Required:** PR titles must follow Conventional Commits format:
 > `type(scope): description`
 >
-> **Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
+> **Types:** the `type` values in `release-please-config.json`'s `changelog-sections`
 >
 > **Examples:**
 > - `feat(client): add automatic reconnection`
@@ -28,8 +28,8 @@
 ## Testing
 
 <!-- Describe how you tested these changes -->
-- [ ] Unit tests pass (`pytest`)
-- [ ] Pre-commit checks pass (`pre-commit run --all-files`)
+- [ ] Unit tests pass (`uv run pytest`)
+- [ ] Pre-commit checks pass (`uv run pre-commit run --all-files`)
 
 ## Checklist
 

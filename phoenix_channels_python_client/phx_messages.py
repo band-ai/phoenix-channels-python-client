@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import Enum, unique
 from functools import cached_property
-from typing import Any, NewType
+from typing import Annotated, Any, NewType
+
+from pydantic import BaseModel, ConfigDict, Field
+
+PHOENIX_TOPIC = "phoenix"
 
 
 @unique
@@ -18,16 +21,25 @@ class PHXEvent(Enum):
         return self.value
 
 
+# The client handles these itself: a crash rejoins, a close loses the topic.
+CLIENT_LIFECYCLE_EVENTS = frozenset({PHXEvent.error, PHXEvent.close})
+
 UserEvent = NewType("UserEvent", str)
 # Compatibility alias for existing imports and call sites.
 Event = UserEvent
+# Not a PHXEvent member: that would reroute make_message and change a public enum.
+HEARTBEAT_EVENT = Event("heartbeat")
 ChannelEvent = PHXEvent | UserEvent
 
+# Servers may send a ref as a JSON number; the client matches refs as strings.
+Ref = Annotated[str | None, Field(coerce_numbers_to_str=True)]
 
-@dataclass(frozen=True)
-class BasePHXMessage:
+
+class BasePHXMessage(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     topic: str
-    ref: str | None
+    ref: Ref
     payload: dict[str, Any]
 
     @cached_property
@@ -38,16 +50,14 @@ class BasePHXMessage:
         return subtopic
 
 
-@dataclass(frozen=True)
 class PHXMessage(BasePHXMessage):
     event: Event
-    join_ref: str | None = None
+    join_ref: Ref = None
 
 
-@dataclass(frozen=True)
 class PHXEventMessage(BasePHXMessage):
     event: PHXEvent
-    join_ref: str | None = None
+    join_ref: Ref = None
 
 
 ChannelMessage = PHXMessage | PHXEventMessage

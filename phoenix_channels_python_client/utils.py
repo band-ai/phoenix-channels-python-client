@@ -1,5 +1,6 @@
+import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from phoenix_channels_python_client.phx_messages import (
     ChannelEvent,
@@ -8,6 +9,8 @@ from phoenix_channels_python_client.phx_messages import (
     PHXEventMessage,
     PHXMessage,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def parse_event(event: ChannelEvent) -> ChannelEvent:
@@ -20,9 +23,9 @@ def parse_event(event: ChannelEvent) -> ChannelEvent:
 def make_message(
     event: ChannelEvent,
     topic: str,
-    ref: Optional[str] = None,
-    payload: Optional[dict[str, Any]] = None,
-    join_ref: Optional[str] = None,
+    ref: str | None = None,
+    payload: dict[str, Any] | None = None,
+    join_ref: str | None = None,
 ) -> ChannelMessage:
     if payload is None:
         payload = {}
@@ -36,22 +39,37 @@ def make_message(
             payload=payload,
             join_ref=join_ref,
         )
-    else:
-        return PHXMessage(
-            event=processed_event,
-            topic=topic,
-            ref=ref,
-            payload=payload,
-            join_ref=join_ref,
-        )
+    return PHXMessage(
+        event=processed_event,
+        topic=topic,
+        ref=ref,
+        payload=payload,
+        join_ref=join_ref,
+    )
+
+
+async def cancel_and_wait(*futures: asyncio.Future[Any]) -> None:
+    """Cancel ``futures`` and wait until they have all finished.
+
+    Unlike ``suppress(CancelledError)``, the caller's own cancellation still
+    propagates. A failure raised while a future unwinds is logged, not raised.
+    """
+    if not futures:
+        return
+    for future in futures:
+        future.cancel()
+    await asyncio.wait(futures)
+    for future in futures:
+        if not future.cancelled() and (error := future.exception()):
+            logger.error("Failed while being cancelled", exc_info=error)
 
 
 def setup_logging(level: int = logging.INFO) -> None:
-    """
-    Configure clean logging with timestamps for Phoenix Channels Python Client.
+    """Configure clean logging with timestamps for Phoenix Channels Python Client.
 
     Args:
-        level: Logging level (default: logging.INFO for production, use logging.DEBUG for development)
+        level: Logging level (default: logging.INFO for production, use
+            logging.DEBUG for development)
 
     Example:
         >>> from phoenix_channels_python_client.utils import setup_logging

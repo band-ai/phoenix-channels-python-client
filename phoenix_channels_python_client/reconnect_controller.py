@@ -7,6 +7,7 @@ from collections import deque
 
 from websockets import ClientConnection
 from websockets.exceptions import ConnectionClosed
+from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client_types import (
     ReconnectDecision,
@@ -60,39 +61,63 @@ class ReconnectControllerMixin:
             )
         return should_suppress
 
-    def _compute_reconnect_delay(self, attempt: int) -> float:
-        base_delay = min(
+    def _rapid_floors(self) -> tuple[float, ...]:
+        """The floor for each rapid-disconnect count before the cooldown starts."""
+        return (
+            0.0,
+            self.reconnect_policy.rapid_first_min_delay_s,
+            self.reconnect_policy.rapid_second_min_delay_s,
+        )
+
+    def _rapid_cooldown_steps(self, rapid_count: int) -> int:
+        """Steps into the cooldown; negative while a floor still applies."""
+        return rapid_count - len(self._rapid_floors())
+
+    def _rapid_min_delay(self, rapid_count: int) -> float:
+        steps = self._rapid_cooldown_steps(rapid_count)
+        if steps < 0:
+            return self._rapid_floors()[rapid_count]
+        return min(
+            self.reconnect_policy.rapid_cooldown_base_s
+            + (self.reconnect_policy.rapid_cooldown_step_s * steps),
+            self.reconnect_policy.rapid_cooldown_max_s,
+        )
+
+    def _exponential_delay(self, attempt: int) -> float:
+        """The policy's capped exponential backoff for ``attempt``, unjittered."""
+        return min(
             self.reconnect_policy.max_delay_s,
             self.reconnect_policy.base_delay_s
             * (self.reconnect_policy.factor ** max(attempt, 0)),
         )
 
+    def _equal_jitter(self, delay: float) -> float:
+        # Equal jitter avoids synchronization while keeping a meaningful minimum delay.
+        return self._random_between(delay / 2, delay)
+
+    def _channel_rejoin_delay(self, attempt: int) -> float:
+        # No rapid-disconnect floors: those describe socket churn, not one channel.
+        return self._equal_jitter(self._exponential_delay(attempt))
+
+    def _compute_reconnect_delay(self, attempt: int) -> float:
+        base_delay = self._exponential_delay(attempt)
+
         rapid_count = len(self._rapid_disconnects)
-        min_delay = 0.0
-        if rapid_count == 1:
-            min_delay = self.reconnect_policy.rapid_first_min_delay_s
-        elif rapid_count == 2:
-            min_delay = self.reconnect_policy.rapid_second_min_delay_s
-        elif rapid_count >= 3:
-            cooldown_delay = min(
-                self.reconnect_policy.rapid_cooldown_base_s
-                + (self.reconnect_policy.rapid_cooldown_step_s * (rapid_count - 3)),
-                self.reconnect_policy.rapid_cooldown_max_s,
-            )
-            min_delay = cooldown_delay
+        min_delay = self._rapid_min_delay(rapid_count)
 
         delay = max(base_delay, min_delay)
         if delay <= 0:
             return 0.0
 
-        if rapid_count >= 3:
+        if self._rapid_cooldown_steps(rapid_count) >= 0:
             low_ratio = self.reconnect_policy.rapid_hold_down_jitter_low_ratio
             high_ratio = self.reconnect_policy.rapid_hold_down_jitter_high_ratio
             min_jittered = delay * low_ratio
             max_jittered = delay * high_ratio
             computed = self._random_between(min_jittered, max_jittered)
             logger.debug(
-                "Computed reconnect delay with hold-down jitter. attempt=%s rapid_count=%s base_delay_s=%s min_delay_s=%s computed_delay_s=%s",
+                "Computed reconnect delay with hold-down jitter. attempt=%s "
+                "rapid_count=%s base_delay_s=%s min_delay_s=%s computed_delay_s=%s",
                 attempt,
                 rapid_count,
                 base_delay,
@@ -108,10 +133,10 @@ class ReconnectControllerMixin:
             )
             return computed
 
-        # Equal jitter avoids synchronization while keeping a meaningful minimum delay.
-        computed = (delay / 2) + (random.random() * (delay / 2))
+        computed = self._equal_jitter(delay)
         logger.debug(
-            "Computed reconnect delay with equal jitter. attempt=%s rapid_count=%s base_delay_s=%s min_delay_s=%s computed_delay_s=%s",
+            "Computed reconnect delay with equal jitter. attempt=%s rapid_count=%s "
+            "base_delay_s=%s min_delay_s=%s computed_delay_s=%s",
             attempt,
             rapid_count,
             base_delay,
@@ -146,7 +171,8 @@ class ReconnectControllerMixin:
         if close_code is None:
             decision = ReconnectDecision(should_reconnect=True)
             logger.debug(
-                "Disconnect classification result. close_code=%s close_reason=%s should_reconnect=%s",
+                "Disconnect classification result. close_code=%s close_reason=%s "
+                "should_reconnect=%s",
                 close_code,
                 close_reason,
                 decision.should_reconnect,
@@ -159,12 +185,13 @@ class ReconnectControllerMixin:
             return decision
 
         if (
-            close_code in {1000, 1001}
+            close_code in {CloseCode.NORMAL_CLOSURE, CloseCode.GOING_AWAY}
             and not self.reconnect_policy.reconnect_on_normal_close
         ):
             decision = ReconnectDecision(should_reconnect=False)
             logger.debug(
-                "Disconnect classification result. close_code=%s close_reason=%s should_reconnect=%s",
+                "Disconnect classification result. close_code=%s close_reason=%s "
+                "should_reconnect=%s",
                 close_code,
                 close_reason,
                 decision.should_reconnect,
@@ -176,16 +203,21 @@ class ReconnectControllerMixin:
             )
             return decision
 
-        if close_code == 1008 and self.reconnect_policy.policy_violation_is_terminal:
+        if (
+            close_code == CloseCode.POLICY_VIOLATION
+            and self.reconnect_policy.policy_violation_is_terminal
+        ):
             reason = close_reason or "policy violation"
             decision = ReconnectDecision(
                 should_reconnect=False,
                 terminal_error=PHXConnectionError(
-                    f"Reconnect disabled due to terminal close code 1008 ({reason})"
+                    "Reconnect disabled due to terminal close code "
+                    f"{CloseCode.POLICY_VIOLATION} ({reason})"
                 ),
             )
             logger.debug(
-                "Disconnect classification result. close_code=%s close_reason=%s should_reconnect=%s terminal=%s",
+                "Disconnect classification result. close_code=%s close_reason=%s "
+                "should_reconnect=%s terminal=%s",
                 close_code,
                 close_reason,
                 decision.should_reconnect,
@@ -199,14 +231,15 @@ class ReconnectControllerMixin:
             )
             return decision
 
-        if close_code == 1012:
+        if close_code == CloseCode.SERVICE_RESTART:
             decision = ReconnectDecision(
                 should_reconnect=True,
                 min_delay_s=self.reconnect_policy.service_restart_min_delay_s,
                 max_delay_s=self.reconnect_policy.service_restart_max_delay_s,
             )
             logger.debug(
-                "Disconnect classification result. close_code=%s close_reason=%s should_reconnect=%s min_delay_s=%s max_delay_s=%s",
+                "Disconnect classification result. close_code=%s close_reason=%s "
+                "should_reconnect=%s min_delay_s=%s max_delay_s=%s",
                 close_code,
                 close_reason,
                 decision.should_reconnect,
@@ -222,14 +255,15 @@ class ReconnectControllerMixin:
             )
             return decision
 
-        if close_code == 1013:
+        if close_code == CloseCode.TRY_AGAIN_LATER:
             decision = ReconnectDecision(
                 should_reconnect=True,
                 min_delay_s=self.reconnect_policy.try_again_later_min_delay_s,
                 max_delay_s=self.reconnect_policy.try_again_later_max_delay_s,
             )
             logger.debug(
-                "Disconnect classification result. close_code=%s close_reason=%s should_reconnect=%s min_delay_s=%s max_delay_s=%s",
+                "Disconnect classification result. close_code=%s close_reason=%s "
+                "should_reconnect=%s min_delay_s=%s max_delay_s=%s",
                 close_code,
                 close_reason,
                 decision.should_reconnect,
@@ -247,7 +281,8 @@ class ReconnectControllerMixin:
 
         decision = ReconnectDecision(should_reconnect=True)
         logger.debug(
-            "Disconnect classification result. close_code=%s close_reason=%s should_reconnect=%s",
+            "Disconnect classification result. close_code=%s close_reason=%s "
+            "should_reconnect=%s",
             close_code,
             close_reason,
             decision.should_reconnect,
@@ -278,4 +313,4 @@ class ReconnectControllerMixin:
         high = max(low, max_delay_s)
         if high == low:
             return low
-        return low + (random.random() * (high - low))
+        return low + (random.random() * (high - low))  # noqa: S311  # jitter
