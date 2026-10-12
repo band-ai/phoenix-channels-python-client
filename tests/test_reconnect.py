@@ -227,7 +227,7 @@ async def test_a_send_failure_during_rejoin_keeps_the_topic_and_recovers(
     phoenix_server: FakePhoenixServer,
     received: asyncio.Queue[ChannelMessage],
     monkeypatch: pytest.MonkeyPatch,
-):
+) -> None:
     """The socket dies as the rejoin's join is sent. That failure is transient."""
     joins_failed = 0
 
@@ -355,7 +355,7 @@ async def test_a_subscribe_interrupted_by_a_disconnect_fails_fast(
 
 async def test_a_subscribe_during_a_rejoin_fails_fast_when_the_socket_drops(
     phoenix_server: FakePhoenixServer,
-):
+) -> None:
     # The rejoin is blocked on its join reply, so a drop here never reaches
     # cleanup. The default join timeout outlasts ASYNC_TIMEOUT_S.
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
