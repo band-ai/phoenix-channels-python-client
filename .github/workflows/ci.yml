@@ -13,6 +13,8 @@ jobs:
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # Backstop for a hung async test; the suite takes well under a minute.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -35,8 +37,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
+      # Coverage on one version is enough to report the number.
       - name: Run tests
-        run: uv run pytest
+        run: uv run pytest ${{ matrix.python-version == '3.13' && '--cov' || '' }}
 
   lint:
     name: Lint
