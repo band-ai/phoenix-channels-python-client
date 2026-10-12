@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import NoReturn
 
 import pytest
 
@@ -11,7 +11,6 @@ from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
 from phoenix_channels_python_client.phx_messages import PHXEvent, UserEvent
 from phoenix_channels_python_client.utils import make_message
-
 from tests.fake_server import ReplyStatus
 from tests.harness import (
     DEFAULT_JOIN_REF,
@@ -193,7 +192,7 @@ async def test_a_processor_error_unregisters_the_topic_with_that_error(
     topic = runtime.register(make_subscription())
     failure = RuntimeError("state boom")
 
-    def fail(_: Any) -> Any:
+    def fail(_: object) -> NoReturn:
         raise failure
 
     monkeypatch.setattr(runtime, "_determine_processing_state", fail)

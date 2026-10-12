@@ -3,21 +3,24 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import pytest
 from websockets import ClientConnection
 
+from phoenix_channels_python_client.phx_messages import ChannelMessage
 from phoenix_channels_python_client.protocol_handler import (
-    PHXProtocolHandler,
     PhoenixChannelsProtocolVersion,
+    PHXProtocolHandler,
 )
-
 from tests.harness import make_subscription
 from tests.support import EVENT, TOPIC
 
 V1 = PhoenixChannelsProtocolVersion.V1
 V2 = PhoenixChannelsProtocolVersion.V2
+
+# v1 servers may send refs as JSON numbers.
+INTEGER_REF = 1
 
 
 @dataclass
@@ -39,16 +42,16 @@ class ScriptedConnection:
         self.sent.append(text)
 
 
-class QueueEmptiedWhileFull(asyncio.Queue[Any]):
+class QueueEmptiedWhileFull(asyncio.Queue[ChannelMessage]):
     """Reports full, but is empty by the time the oldest message is dropped."""
 
     def full(self) -> bool:
         return True
 
-    def get_nowait(self) -> Any:
+    def get_nowait(self) -> NoReturn:
         raise asyncio.QueueEmpty
 
-    async def put(self, item: Any) -> None:
+    async def put(self, item: ChannelMessage) -> None:
         cast(Any, self)._queue.append(item)
 
 
@@ -84,8 +87,24 @@ def test_a_v1_frame_parses_into_a_message() -> None:
     assert (message.topic, message.event, message.ref) == (TOPIC, EVENT, "1")
 
 
+def test_a_v1_frame_with_integer_refs_parses_as_strings() -> None:
+    message = PHXProtocolHandler(V1).parse_message(
+        json.dumps(
+            {
+                "topic": TOPIC,
+                "event": EVENT,
+                "ref": INTEGER_REF,
+                "join_ref": INTEGER_REF,
+                "payload": {},
+            }
+        )
+    )
+
+    assert (message.ref, message.join_ref) == (str(INTEGER_REF), str(INTEGER_REF))
+
+
 @pytest.mark.parametrize(
-    "protocol,raw,expected_exception",
+    ("protocol", "raw", "expected_exception"),
     [
         (V2, json.dumps({"bad": "shape"}), TypeError),
         (V2, json.dumps([1, 2, 3]), ValueError),
@@ -106,7 +125,7 @@ def test_a_malformed_frame_is_rejected(
 
 
 @pytest.mark.parametrize(
-    "protocol,raw",
+    ("protocol", "raw"),
     [
         (V2, json.dumps([None, None, TOPIC, EVENT, None])),
         (V1, json.dumps({"topic": TOPIC, "event": EVENT, "payload": "not-a-dict"})),
@@ -119,7 +138,8 @@ def test_a_frame_without_an_object_payload_parses_with_an_empty_one(
 
 
 @pytest.mark.parametrize(
-    "topic,subtopic", [("room:lobby", "lobby"), ("room:a:b", "a:b"), ("lobby", None)]
+    ("topic", "subtopic"),
+    [("room:lobby", "lobby"), ("room:a:b", "a:b"), ("lobby", None)],
 )
 def test_a_message_subtopic_is_what_follows_the_first_colon(
     topic: str, subtopic: str | None
@@ -134,7 +154,7 @@ def test_a_message_subtopic_is_what_follows_the_first_colon(
 def test_an_unexpected_parse_failure_is_reported_as_a_value_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fail(_: str | bytes) -> Any:
+    def fail(_: str | bytes) -> NoReturn:
         raise RuntimeError("boom")
 
     monkeypatch.setattr(

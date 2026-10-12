@@ -1,124 +1,143 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
+from itertools import pairwise
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
 from phoenix_channels_python_client.exceptions import PHXConnectionError
+from tests.fake_server import FakePhoenixServer
+from tests.support import API_KEY, STOP_REASON, derive_policy, make_client
+
+# No jitter, and every pre-cooldown delay stays below the cooldown base.
+COOLDOWN_POLICY = ReconnectPolicy(
+    base_delay_s=0.01,
+    max_delay_s=0.1,
+    rapid_first_min_delay_s=0.0,
+    rapid_second_min_delay_s=0.0,
+    rapid_cooldown_base_s=0.5,
+    rapid_cooldown_step_s=0.25,
+    rapid_cooldown_max_s=1.0,
+    rapid_hold_down_jitter_low_ratio=1.0,
+    rapid_hold_down_jitter_high_ratio=1.0,
+)
+
+# Enough rapid disconnects for COOLDOWN_POLICY's cooldown to reach its cap.
+RAPID_COUNTS = range(1, 10)
+
+JITTER_LOW_RATIO = 0.25
+JITTER_HIGH_RATIO = 0.75
+
+
+@pytest.fixture
+def random_draw(monkeypatch: pytest.MonkeyPatch) -> Callable[[float], None]:
+    """Fix the value the reconnect jitter draws from ``random.random``."""
+
+    def draw(value: float) -> None:
+        monkeypatch.setattr(
+            "phoenix_channels_python_client.reconnect_controller.random.random",
+            lambda: value,
+        )
+
+    return draw
 
 
 def _make_client(policy: ReconnectPolicy | None = None) -> PHXChannelsClient:
-    return PHXChannelsClient(
-        "ws://example.invalid/socket/websocket",
-        api_key="test-key",
-        reconnect_policy=policy or ReconnectPolicy(),
-    )
+    """A client that is never connected; these tests call its reconnect logic."""
+    return make_client(FakePhoenixServer(), reconnect_policy=policy)
 
 
-def test_invalid_reconnect_policy_is_rejected() -> None:
-    bad_policy = ReconnectPolicy(
-        service_restart_min_delay_s=2.0,
-        service_restart_max_delay_s=1.0,
-    )
-    with pytest.raises(ValueError, match="Invalid reconnect policy"):
-        _ = _make_client(bad_policy)
+def _delay_after_rapid_disconnects(client: PHXChannelsClient, count: int) -> float:
+    client._rapid_disconnects = deque([0.0] * count)
+    return client._compute_reconnect_delay(attempt=0)
 
 
-def test_client_maintains_redacted_socket_url_for_logging() -> None:
+def _query(url: str) -> dict[str, list[str]]:
+    return parse_qs(urlsplit(url).query)
+
+
+def test_the_logged_socket_url_masks_the_api_key() -> None:
     client = _make_client()
-    assert "api_key=test-key" in client.channel_socket_url
-    assert "api_key=%2A%2A%2A" in client.channel_socket_url_redacted
-    assert "test-key" not in client.channel_socket_url_redacted
+    sent = _query(client.channel_socket_url)
+    logged = _query(client.channel_socket_url_redacted)
+
+    assert API_KEY in sent["api_key"]
+    assert logged.keys() == sent.keys()
+    assert API_KEY not in client.channel_socket_url_redacted
 
 
-def test_close_code_classification_uses_expected_semantics() -> None:
-    policy = ReconnectPolicy(
-        reconnect_on_normal_close=False,
-        policy_violation_is_terminal=True,
-        service_restart_min_delay_s=0.5,
-        service_restart_max_delay_s=1.0,
-        try_again_later_min_delay_s=2.0,
-        try_again_later_max_delay_s=4.0,
-    )
+def test_close_codes_are_classified_by_the_policy() -> None:
+    policy = ReconnectPolicy()
     client = _make_client(policy)
 
-    normal = client._classify_disconnect(1000, "normal")
+    normal = client._classify_disconnect(CloseCode.NORMAL_CLOSURE, STOP_REASON)
     assert normal.should_reconnect is False
     assert normal.terminal_error is None
 
-    policy_violation = client._classify_disconnect(1008, "policy")
-    assert policy_violation.should_reconnect is False
-    assert isinstance(policy_violation.terminal_error, PHXConnectionError)
+    violation = client._classify_disconnect(CloseCode.POLICY_VIOLATION, STOP_REASON)
+    assert violation.should_reconnect is False
+    assert isinstance(violation.terminal_error, PHXConnectionError)
 
-    service_restart = client._classify_disconnect(1012, "restart")
-    assert service_restart.should_reconnect is True
-    assert service_restart.min_delay_s == 0.5
-    assert service_restart.max_delay_s == 1.0
+    restart = client._classify_disconnect(CloseCode.SERVICE_RESTART, STOP_REASON)
+    assert restart.should_reconnect is True
+    assert restart.min_delay_s == policy.service_restart_min_delay_s
+    assert restart.max_delay_s == policy.service_restart_max_delay_s
 
-    try_again_later = client._classify_disconnect(1013, "busy")
-    assert try_again_later.should_reconnect is True
-    assert try_again_later.min_delay_s == 2.0
-    assert try_again_later.max_delay_s == 4.0
+    busy = client._classify_disconnect(CloseCode.TRY_AGAIN_LATER, STOP_REASON)
+    assert busy.should_reconnect is True
+    assert busy.min_delay_s == policy.try_again_later_min_delay_s
+    assert busy.max_delay_s == policy.try_again_later_max_delay_s
 
 
-def test_linear_rapid_cooldown_floor_is_monotonic_until_cap(
-    monkeypatch: pytest.MonkeyPatch,
+def test_the_rapid_cooldown_steps_from_its_base_up_to_its_cap() -> None:
+    client = _make_client(COOLDOWN_POLICY)
+    base = COOLDOWN_POLICY.rapid_cooldown_base_s
+    step = COOLDOWN_POLICY.rapid_cooldown_step_s
+    cap = COOLDOWN_POLICY.rapid_cooldown_max_s
+
+    delays = [_delay_after_rapid_disconnects(client, count) for count in RAPID_COUNTS]
+    cooldowns = [delay for delay in delays if delay >= base]
+
+    assert cooldowns[0] == pytest.approx(base)
+    for earlier, later in pairwise(cooldowns):
+        assert later == pytest.approx(min(earlier + step, cap))
+    assert cooldowns[-1] == pytest.approx(cap)
+
+
+def test_a_reconnect_without_rapid_disconnects_waits_half_to_all_of_its_delay(
+    random_draw: Callable[[float], None],
 ) -> None:
-    policy = ReconnectPolicy(
-        base_delay_s=0.01,
-        factor=2.0,
-        max_delay_s=0.1,
-        rapid_cooldown_base_s=0.5,
-        rapid_cooldown_step_s=0.25,
-        rapid_cooldown_max_s=1.0,
-        rapid_hold_down_jitter_low_ratio=1.0,
-        rapid_hold_down_jitter_high_ratio=1.0,
+    client = _make_client(COOLDOWN_POLICY)
+
+    random_draw(0.0)
+    lowest = _delay_after_rapid_disconnects(client, 0)
+    random_draw(1.0)
+    highest = _delay_after_rapid_disconnects(client, 0)
+
+    assert lowest == pytest.approx(COOLDOWN_POLICY.base_delay_s / 2)
+    assert highest == pytest.approx(COOLDOWN_POLICY.base_delay_s)
+
+
+def test_the_hold_down_jitter_spans_the_configured_ratios_of_the_cooldown(
+    random_draw: Callable[[float], None],
+) -> None:
+    policy = derive_policy(
+        COOLDOWN_POLICY,
+        rapid_hold_down_jitter_low_ratio=JITTER_LOW_RATIO,
+        rapid_hold_down_jitter_high_ratio=JITTER_HIGH_RATIO,
     )
     client = _make_client(policy)
-    monkeypatch.setattr(
-        "phoenix_channels_python_client.reconnect_controller.random.random", lambda: 1.0
-    )
+    # Past the cap, so the cooldown floor is the cap.
+    floor = policy.rapid_cooldown_max_s
 
-    client._rapid_disconnects = deque([1.0, 2.0, 3.0])
-    delay_3 = client._compute_reconnect_delay(attempt=0)
-    client._rapid_disconnects = deque([1.0, 2.0, 3.0, 4.0])
-    delay_4 = client._compute_reconnect_delay(attempt=0)
-    client._rapid_disconnects = deque([1.0, 2.0, 3.0, 4.0, 5.0])
-    delay_5 = client._compute_reconnect_delay(attempt=0)
+    random_draw(0.0)
+    lowest = _delay_after_rapid_disconnects(client, RAPID_COUNTS[-1])
+    random_draw(1.0)
+    highest = _delay_after_rapid_disconnects(client, RAPID_COUNTS[-1])
 
-    assert delay_3 == 0.5
-    assert delay_4 == 0.75
-    assert delay_5 == 1.0
-    assert delay_3 <= delay_4 <= delay_5
-
-
-def test_hold_down_jitter_respects_configured_band(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    policy = ReconnectPolicy(
-        base_delay_s=0.01,
-        factor=2.0,
-        max_delay_s=0.1,
-        rapid_cooldown_base_s=0.6,
-        rapid_cooldown_step_s=0.2,
-        rapid_cooldown_max_s=2.0,
-        rapid_hold_down_jitter_low_ratio=0.25,
-        rapid_hold_down_jitter_high_ratio=1.0,
-    )
-    client = _make_client(policy)
-    client._rapid_disconnects = deque([1.0, 2.0, 3.0, 4.0])
-
-    monkeypatch.setattr(
-        "phoenix_channels_python_client.reconnect_controller.random.random", lambda: 0.0
-    )
-    delay_low = client._compute_reconnect_delay(attempt=0)
-
-    monkeypatch.setattr(
-        "phoenix_channels_python_client.reconnect_controller.random.random", lambda: 1.0
-    )
-    delay_high = client._compute_reconnect_delay(attempt=0)
-
-    # rapid_count=4 => floor = 0.8
-    assert delay_low == 0.2
-    assert delay_high == 0.8
+    assert lowest == pytest.approx(floor * JITTER_LOW_RATIO)
+    assert highest == pytest.approx(floor * JITTER_HIGH_RATIO)

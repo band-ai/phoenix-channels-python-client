@@ -1,15 +1,13 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from phoenix_channels_python_client.client_state_machine import transition_client_state
-from phoenix_channels_python_client.client_types import (
-    ClientState,
-    ReconnectPolicy,
-    reconnect_policy_is_invalid,
-)
+from phoenix_channels_python_client.client_types import ClientState, ReconnectPolicy
 
 
 def test_transitioning_to_the_same_state_is_allowed() -> None:
@@ -48,11 +46,32 @@ def test_an_invalid_state_transition_raises() -> None:
             "rapid_hold_down_jitter_high_ratio": 0.1,
             "rapid_hold_down_jitter_low_ratio": 0.2,
         },
+        {"service_restart_max_delay_s": math.nan},
+        {"try_again_later_max_delay_s": math.nan},
+        {"rapid_cooldown_max_s": math.nan},
+        {"rapid_hold_down_jitter_high_ratio": math.nan},
     ],
 )
-def test_an_out_of_range_reconnect_policy_is_invalid(kwargs: dict[str, Any]) -> None:
-    assert reconnect_policy_is_invalid(ReconnectPolicy(**kwargs)) is True
+def test_an_out_of_range_reconnect_policy_cannot_be_built(
+    kwargs: dict[str, Any],
+) -> None:
+    with pytest.raises(ValidationError):
+        ReconnectPolicy(**kwargs)
 
 
-def test_the_default_reconnect_policy_is_valid() -> None:
-    assert reconnect_policy_is_invalid(ReconnectPolicy()) is False
+def test_an_unknown_reconnect_policy_field_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ReconnectPolicy.model_validate({"base_delay": 1.0})
+
+
+def test_an_infinite_upper_bound_stays_valid() -> None:
+    policy = ReconnectPolicy(
+        service_restart_max_delay_s=math.inf,
+        try_again_later_max_delay_s=math.inf,
+        rapid_cooldown_max_s=math.inf,
+        rapid_hold_down_jitter_high_ratio=math.inf,
+    )
+    assert math.isinf(policy.service_restart_max_delay_s)
+    assert math.isinf(policy.try_again_later_max_delay_s)
+    assert math.isinf(policy.rapid_cooldown_max_s)
+    assert math.isinf(policy.rapid_hold_down_jitter_high_ratio)

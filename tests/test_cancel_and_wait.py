@@ -6,7 +6,6 @@ import logging
 import pytest
 
 from phoenix_channels_python_client.utils import cancel_and_wait
-
 from tests.support import ASYNC_TIMEOUT_S, wait_forever
 
 

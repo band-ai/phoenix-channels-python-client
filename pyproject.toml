@@ -11,6 +11,7 @@ license = "MIT"
 authors = [{ name = "Phoenix Channels Python Client" }]
 requires-python = ">=3.11"
 dependencies = [
+    "pydantic>=2.8",
     "websockets>=14.2",
 ]
 classifiers = [
@@ -38,6 +39,35 @@ test = [
     "pytest-asyncio>=1.4",
 ]
 
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    # CLAUDE.md: code speaks for itself; docstrings only where it doesn't.
+    "D1",
+    # Conflicts with `ruff format`.
+    "COM812",
+    # CLAUDE.md keeps TYPE_CHECKING for circular imports only.
+    "TC",
+    # A message variable before every raise adds nothing to the traceback.
+    "EM", "TRY003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest asserts; tests reach into internals on purpose.
+"tests/**" = ["S101", "SLF001"]
+# The supervisor calls its sibling mixins' private methods through a cast of self.
+"phoenix_channels_python_client/supervisor.py" = ["SLF001"]
+
+[tool.ruff.lint.flake8-annotations]
+# ``**options: Any`` forwards keywords; the callee types them.
+allow-star-arg-any = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
 [tool.coverage.run]
 source = ["phoenix_channels_python_client"]
 branch = true
@@ -54,9 +84,3 @@ exclude = ["tests*"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.1.0"
-version_files = [
-    "pyproject.toml:version",
-    "phoenix_channels_python_client/__init__.py:__version__",
-]
-tag_format = "v$version"
