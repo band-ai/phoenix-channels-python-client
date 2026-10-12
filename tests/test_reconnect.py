@@ -252,8 +252,9 @@ async def test_a_send_failure_during_rejoin_keeps_the_topic_and_recovers(
         monkeypatch.setattr(handler, "send_message", fail_one_join)
         await reconnect(phoenix_server, client)
 
-        assert await wait_for_condition(lambda: rejoin_outcome(client) is not None)
-        assert rejoin_outcome(client) is RejoinOutcome.REJOINED
+        assert await wait_for_condition(
+            lambda: rejoin_outcome(client) is RejoinOutcome.REJOINED
+        )
         assert joins_failed == 1
         await deliver(phoenix_server, client)
         await expect_message(received)
