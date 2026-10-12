@@ -4,13 +4,18 @@ import asyncio
 from asyncio import Future, Queue, Task
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
-from phoenix_channels_python_client.phx_messages import ChannelEvent, ChannelMessage
+from phoenix_channels_python_client.phx_messages import (
+    CLIENT_LIFECYCLE_EVENTS,
+    ChannelEvent,
+    ChannelMessage,
+)
+from phoenix_channels_python_client.utils import parse_event
 
 
-class TopicProcessingState(Enum):
+class TopicProcessingState(StrEnum):
     WAITING_FOR_JOIN = "waiting_for_join"
     PROCESSING_LEAVE = "processing_leave"
     NORMAL_PROCESSING = "normal_processing"
@@ -18,14 +23,13 @@ class TopicProcessingState(Enum):
 
 @dataclass()
 class TopicSubscription:
-    """Represents a topic subscription with all necessary components for message handling."""
+    """A topic subscription and everything needed to handle its messages."""
 
     name: str
     async_callback: Callable[[ChannelMessage], Awaitable[None]] | None
     queue: Queue[ChannelMessage]
     join_ref: str
     process_topic_messages_task: Task[None] | None
-    subscription_ready: Future[None] = field(default_factory=asyncio.Future)
     current_join_ready: Future[None] = field(default_factory=asyncio.Future)
     unsubscribe_completed: Future[None] = field(default_factory=asyncio.Future)
     leave_requested: asyncio.Event = field(default_factory=asyncio.Event)
@@ -34,11 +38,22 @@ class TopicSubscription:
     )
     conn_generation: int = 0
     dropped_message_count: int = 0
-    current_callback_task: Future[None] | None = None
+    current_callback_task: Task[None] | None = None
+    # A rejoin sets this before draining; the topic task then takes no new message.
+    restart_requested: bool = False
+    # Rejoins the channel after a crash, while the socket stays up.
+    recovery_task: Task[None] | None = None
 
     def add_event_handler(
         self, event: ChannelEvent, handler: Callable[[dict[str, Any]], Awaitable[None]]
     ) -> None:
+        # PHXEvent is not a StrEnum, so the wire strings "phx_error" and
+        # "phx_close" are not members of CLIENT_LIFECYCLE_EVENTS.
+        if parse_event(event) in CLIENT_LIFECYCLE_EVENTS:
+            raise ValueError(
+                f"{event} is handled by the client; use on_topic_lost and "
+                "is_topic_joined instead"
+            )
         self.event_handlers[event] = handler
 
     def remove_event_handler(self, event: ChannelEvent) -> None:

@@ -1,0 +1,85 @@
+name: PR Conventions
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Each job reads the types itself: a required job skipped because a shared
+# dependency failed may not block merging.
+jobs:
+  title:
+    name: Validate PR Title
+    runs-on: ubuntu-latest
+    # Bot PRs (dependabot, release-please) follow their own conventions. Gate on
+    # the PR's author: a person editing or updating a bot's PR triggers the run.
+    if: &human-author "!endsWith(github.event.pull_request.user.login, '[bot]')"
+    steps:
+      - &checkout-types
+        name: Check out the type list
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            release-please-config.json
+            .github/scripts/conventional-types.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Read the Conventional Commit types
+        id: types
+        run: |
+          {
+            echo "types<<TYPES"
+            .github/scripts/conventional-types.sh
+            echo "TYPES"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate Conventional Commits format
+        uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: ${{ steps.types.outputs.types }}
+          scopes: |
+            client
+            protocol
+            websocket
+            events
+            deps
+            ci
+          # Skip validation for PRs carrying one of these labels
+          ignoreLabels: |
+            dependencies
+            automated
+          subjectPattern: ^.{1,80}$
+          subjectPatternError: |
+            PR title must be 80 characters or less.
+
+            Expected format: type(scope): description
+            Example: feat(client): add heartbeat configuration
+
+            See CONTRIBUTING.md for details.
+
+  branch:
+    name: Validate Branch Name
+    runs-on: ubuntu-latest
+    if: *human-author
+    steps:
+      - *checkout-types
+
+      - name: Validate <type>/<slug>-<LINEAR-ID>
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          types=$(.github/scripts/conventional-types.sh | paste -sd '|' -)
+          pattern="^(${types})/[a-z0-9]+(-[a-z0-9]+)*-[A-Z][A-Z0-9]*-[0-9]+$"
+          if [[ ! "$BRANCH" =~ $pattern ]]; then
+            echo "::error::Branch names must be <type>/<slug>-<LINEAR-ID>."
+            echo "Got: $BRANCH"
+            echo "Example: feat/add-user-auth-ENG-123"
+            echo "Types: ${types//|/, }"
+            echo "Create the branch from its Linear issue with 'git lb'."
+            exit 1
+          fi
