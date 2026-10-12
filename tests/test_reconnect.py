@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from enum import StrEnum
+from typing import Any
 
 import pytest
 from websockets import ClientConnection
@@ -10,10 +11,11 @@ from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from phoenix_channels_python_client.phx_messages import ChannelMessage, PHXEvent
+from phoenix_channels_python_client.phx_messages import ChannelMessage, Event, PHXEvent
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     ASYNC_TIMEOUT_S,
+    EVENT,
     FAST_RECONNECT,
     JOIN_TIMEOUT_S,
     LEAVE_TIMEOUT_S,
@@ -39,6 +41,9 @@ from tests.support import (
 # Short, so a callback that is never released gets cancelled promptly.
 CALLBACK_DRAIN_TIMEOUT_S = 0.05
 
+# Outlasts the test, so the drain waits for the held message's release.
+HELD_DRAIN_TIMEOUT_S = ASYNC_TIMEOUT_S
+
 # Long enough to tell apart from FAST_RECONNECT's other delays.
 TRY_AGAIN_LATER_MIN_DELAY_S = 0.2
 TRY_AGAIN_LATER_MAX_DELAY_S = 0.25
@@ -58,11 +63,31 @@ class RejoinOutcome(StrEnum):
     JOIN_FAILED = "join failed"
 
 
+class HeldMessageHandlers:
+    """Message and event handlers that hold the first message until released."""
+
+    def __init__(self) -> None:
+        self.running = asyncio.Event()
+        self.release = asyncio.Event()
+        self.started: list[object] = []
+        self.finished_events: list[object] = []
+
+    async def on_message(self, message: ChannelMessage) -> None:
+        self.started.append(message.payload["id"])
+        if not self.running.is_set():
+            self.running.set()
+            await self.release.wait()
+
+    async def on_event(self, payload: dict[str, Any]) -> None:
+        # Yields first, so a cancel cuts the handler off before it records.
+        await asyncio.sleep(0)
+        self.finished_events.append(payload["id"])
+
+
 async def reconnect_while_draining(
-    server: FakePhoenixServer, client: PHXChannelsClient, busy: BusyCallback
+    server: FakePhoenixServer, client: PHXChannelsClient, running: asyncio.Event
 ) -> None:
-    await deliver(server, client)
-    await asyncio.wait_for(busy.running.wait(), ASYNC_TIMEOUT_S)
+    await asyncio.wait_for(running.wait(), ASYNC_TIMEOUT_S)
     # Nothing yields from the reconnect until the first topic's drain.
     await reconnect(server, client)
 
@@ -186,6 +211,63 @@ async def test_messages_queued_before_a_reconnect_are_dropped(
 
         assert await wait_for_condition(lambda: after_reconnect in handled)
         assert handled == [first, after_reconnect]
+
+
+@each_protocol
+async def test_the_drain_lets_the_held_message_finish_its_event_handler(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    handlers = HeldMessageHandlers()
+    client = make_client(
+        phoenix_server,
+        reconnect_policy=FAST_RECONNECT,
+        callback_drain_timeout_s=HELD_DRAIN_TIMEOUT_S,
+    )
+    async with client:
+        await client.subscribe_to_topic(TOPIC, handlers.on_message)
+        client.add_event_handler(TOPIC, Event(EVENT), handlers.on_event)
+        held, after_reconnect = 1, 2
+        await deliver(phoenix_server, client, payload={"id": held})
+        await reconnect_while_draining(phoenix_server, client, handlers.running)
+
+        handlers.release.set()
+        assert await wait_for_condition(rejoin_settled(client))
+        await deliver(phoenix_server, client, payload={"id": after_reconnect})
+
+        assert await wait_for_condition(
+            lambda: after_reconnect in handlers.finished_events
+        )
+        assert handlers.finished_events == [held, after_reconnect]
+
+
+@each_protocol
+async def test_the_drain_starts_no_message_queued_behind_the_held_one(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    handlers = HeldMessageHandlers()
+    client = make_client(
+        phoenix_server,
+        reconnect_policy=FAST_RECONNECT,
+        callback_drain_timeout_s=HELD_DRAIN_TIMEOUT_S,
+    )
+    async with client:
+        await client.subscribe_to_topic(TOPIC, handlers.on_message)
+        held, queued, after_reconnect = 1, 2, 3
+        await deliver(phoenix_server, client, payload={"id": held})
+        await deliver(phoenix_server, client, payload={"id": queued})
+        subscription = client.get_current_subscriptions()[TOPIC]
+        # The drain must find it queued, or the test checks nothing.
+        assert await wait_for_condition(
+            lambda: handlers.running.is_set() and not subscription.queue.empty()
+        )
+        await reconnect_while_draining(phoenix_server, client, handlers.running)
+
+        handlers.release.set()
+        assert await wait_for_condition(rejoin_settled(client))
+        await deliver(phoenix_server, client, payload={"id": after_reconnect})
+
+        assert await wait_for_condition(lambda: after_reconnect in handlers.started)
+        assert handlers.started == [held, after_reconnect]
 
 
 @each_protocol
@@ -327,7 +409,8 @@ async def test_unsubscribing_during_a_rejoin_drain_keeps_the_client_running(
     async with client:
         await client.subscribe_to_topic(TOPIC, busy)
         await client.subscribe_to_topic(OTHER_TOPIC, received.put)
-        await reconnect_while_draining(phoenix_server, client, busy)
+        await deliver(phoenix_server, client)
+        await reconnect_while_draining(phoenix_server, client, busy.running)
         run = asyncio.create_task(client.run_forever(install_signal_handlers=False))
 
         with pytest.raises(PHXTopicError):
@@ -348,7 +431,8 @@ async def test_a_callback_failing_while_the_rejoin_drains_it_does_not_stop_the_r
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         await client.subscribe_to_topic(TOPIC, busy)
         await client.subscribe_to_topic(OTHER_TOPIC, received.put)
-        await reconnect_while_draining(phoenix_server, client, busy)
+        await deliver(phoenix_server, client)
+        await reconnect_while_draining(phoenix_server, client, busy.running)
 
         busy.release.set()
 
@@ -372,7 +456,8 @@ async def test_a_callback_outlasting_the_drain_is_cancelled_and_the_topic_rejoin
     async with client:
         await client.subscribe_to_topic(TOPIC, busy)
         await client.subscribe_to_topic(OTHER_TOPIC, received.put)
-        await reconnect_while_draining(phoenix_server, client, busy)
+        await deliver(phoenix_server, client)
+        await reconnect_while_draining(phoenix_server, client, busy.running)
 
         assert await wait_for_condition(rejoin_settled(client))
         busy.running.clear()
