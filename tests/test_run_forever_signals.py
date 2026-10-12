@@ -20,12 +20,8 @@ from phoenix_channels_python_client.shutdown_signals import (
     handle_shutdown_signals,
 )
 
-from tests.conftest import (
-    ASYNC_TIMEOUT_S,
-    STOP_REASON,
-    FakePhoenixServer,
-    make_client,
-)
+from tests.fake_server import FakePhoenixServer
+from tests.support import ASYNC_TIMEOUT_S, STOP_REASON, make_client
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="a raised SIGINT kills the Windows test process"

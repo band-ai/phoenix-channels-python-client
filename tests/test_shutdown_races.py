@@ -10,18 +10,18 @@ from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.phx_messages import ChannelMessage
 
-from tests.conftest import (
+from tests.fake_server import FakePhoenixServer
+from tests.support import (
+    wait_forever,
     ASYNC_TIMEOUT_S,
-    EVENT,
     FAST_RECONNECT,
     LEAVE_TIMEOUT_S,
     STOP_REASON,
-    FakePhoenixServer,
+    TOPIC,
+    deliver,
     make_client,
     wait_for_condition,
 )
-
-TOPIC = FakePhoenixServer.TOPIC
 
 # Long enough for a shutdown that isn't held to finish against the local server.
 SETTLE_S = 0.2
@@ -48,17 +48,11 @@ class HeldCallback:
     async def __call__(self, message: ChannelMessage) -> None:
         self.running.set()
         try:
-            await asyncio.Event().wait()
+            await wait_forever()
         except asyncio.CancelledError:
             self.cancelled.set()
             await self.release.wait()
             raise
-
-
-async def deliver(server: FakePhoenixServer, client: PHXChannelsClient) -> None:
-    """Send one event to the client's current join of ``TOPIC``."""
-    join_ref = client.get_current_subscriptions()[TOPIC].join_ref
-    await server.simulate_server_event(TOPIC, EVENT, {}, join_ref=join_ref)
 
 
 async def run_held_callback(
