@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.2.5...phoenix-channels-python-client-v0.3.0) (2026-10-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** drop a topic the server closes, and reject lifecycle event handlers
+* **client:** phx_error and phx_close no longer reach a topic's message handler or event handlers, and add_event_handler raises ValueError for PHXEvent.error and PHXEvent.close. Use on_topic_lost and is_topic_joined instead.
+* **client:** An invalid ReconnectPolicy now raises pydantic.ValidationError (a ValueError) when the policy is built, instead of "Invalid reconnect policy configuration" when the client is built. Unknown ReconnectPolicy fields raise. dataclasses.replace, asdict and fields no longer work on ReconnectPolicy or the PHX messages: use model_dump() instead of asdict, and derive a policy with ReconnectPolicy.model_validate(policy.model_dump() | {...}), because model_copy(update=...) skips validation. Positional construction and positional case patterns are gone. PHXChannelsClient.reconnect_policy_is_invalid is removed. ClientState, PhoenixChannelsProtocolVersion and TopicProcessingState are now StrEnums, so a member equals its string value (ClientState.CONNECTED == "connected") and str() returns the value instead of the member name. pydantic is a new runtime dependency.
+
+### Features
+
+* **client:** add on_topic_lost and is_topic_joined ([62c376e](https://github.com/band-ai/phoenix-channels-python-client/commit/62c376edbe65801fbdd5dfbf1f6810afa6005bc5))
+* **client:** model the reconnect policy and messages with Pydantic ([6d66140](https://github.com/band-ai/phoenix-channels-python-client/commit/6d66140bcf462928fc2c5eac8c6d37002e5252a2))
+
+
+### Bug Fixes
+
+* **client:** close, reconnect and rejoin edge cases around shutdown ([#61](https://github.com/band-ai/phoenix-channels-python-client/issues/61)) ([7c1d69e](https://github.com/band-ai/phoenix-channels-python-client/commit/7c1d69ee52152f6f794c5926bea8cb21ee28d907))
+* **client:** drop a topic the server closes, and reject lifecycle event handlers ([62c376e](https://github.com/band-ai/phoenix-channels-python-client/commit/62c376edbe65801fbdd5dfbf1f6810afa6005bc5))
+* **client:** keep rejoining topics when a draining callback is cancelled or fails ([#59](https://github.com/band-ai/phoenix-channels-python-client/issues/59)) ([e1ad092](https://github.com/band-ai/phoenix-channels-python-client/commit/e1ad0925708222c56839aae0bbb172eb5e4c566d))
+* **client:** let a rejoin drain finish the held message and start no other ([#66](https://github.com/band-ai/phoenix-channels-python-client/issues/66)) ([57db8f5](https://github.com/band-ai/phoenix-channels-python-client/commit/57db8f5a999b685a7d9dcbc6754694269fd56784))
+* **client:** rejoin a crashed channel while the socket stays up ([62c376e](https://github.com/band-ai/phoenix-channels-python-client/commit/62c376edbe65801fbdd5dfbf1f6810afa6005bc5))
+* **client:** retry a timed-out rejoin on the live socket ([62c376e](https://github.com/band-ai/phoenix-channels-python-client/commit/62c376edbe65801fbdd5dfbf1f6810afa6005bc5))
+* **client:** stop logging "never retrieved" for a rejected join ([#57](https://github.com/band-ai/phoenix-channels-python-client/issues/57)) ([3789853](https://github.com/band-ai/phoenix-channels-python-client/commit/3789853821bb8e1fb9416539d5ea0cf8ec8dc96f))
+
+
+### Code Refactoring
+
+* **client:** split oversized functions and name protocol constants ([#63](https://github.com/band-ai/phoenix-channels-python-client/issues/63)) ([bbb96de](https://github.com/band-ai/phoenix-channels-python-client/commit/bbb96deaeda8e2c9867467a2c558bf878bd51b5b))
+
+
+### Tests
+
+* **client:** share fixtures and one fake server for both protocols ([#60](https://github.com/band-ai/phoenix-channels-python-client/issues/60)) ([f270f96](https://github.com/band-ai/phoenix-channels-python-client/commit/f270f965f0b30158fb6d21eabd13ed157826e501))
+
+
+### Continuous Integration
+
+* **deps:** bump actions/checkout from 6 to 7 ([#45](https://github.com/band-ai/phoenix-channels-python-client/issues/45)) ([173848d](https://github.com/band-ai/phoenix-channels-python-client/commit/173848d06af62bbdfd08493bcb08bc2cfe7c6e51))
+* **deps:** bump actions/setup-python from 6 to 7 ([#49](https://github.com/band-ai/phoenix-channels-python-client/issues/49)) ([8be656f](https://github.com/band-ai/phoenix-channels-python-client/commit/8be656f7ae9d9a19ddf6514765cf3efade55b150))
+* **deps:** bump pypa/gh-action-pypi-publish from 1.14.1 to 1.14.2 ([#52](https://github.com/band-ai/phoenix-channels-python-client/issues/52)) ([6d69260](https://github.com/band-ai/phoenix-channels-python-client/commit/6d69260df366774773b34937d25ef7073552708a))
+
 ## [0.2.5](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.2.4...phoenix-channels-python-client-v0.2.5) (2026-10-07)
 
 
