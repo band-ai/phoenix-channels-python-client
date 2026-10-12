@@ -108,9 +108,15 @@ _PROTOCOL_SPECS = {
 class PHXProtocolHandler:
     def __init__(
         self,
-        protocol_version: PhoenixChannelsProtocolVersion = DEFAULT_PROTOCOL_VERSION,
+        protocol_version: PhoenixChannelsProtocolVersion
+        | str = DEFAULT_PROTOCOL_VERSION,
     ) -> None:
-        self.protocol_version = protocol_version
+        # Non-v2 values select v1 for compatibility with the original client.
+        self.protocol_version = (
+            PhoenixChannelsProtocolVersion.V2
+            if protocol_version == PhoenixChannelsProtocolVersion.V2
+            else PhoenixChannelsProtocolVersion.V1
+        )
         self.logger = logger.getChild("ProtocolHandler")
         self.logger.debug(
             "Initialized PHXProtocolHandler for protocol version %s",

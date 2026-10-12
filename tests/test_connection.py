@@ -6,15 +6,22 @@ from typing import Any
 import pytest
 from websockets.frames import CloseCode
 
+from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.exceptions import PHXConnectionError
+from phoenix_channels_python_client.phx_messages import ChannelMessage
+from phoenix_channels_python_client.protocol_handler import (
+    PhoenixChannelsProtocolVersion,
+)
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     API_KEY,
     ASYNC_TIMEOUT_S,
+    EVENT,
     FAST_RECONNECT,
     STOP_REASON,
     TOPIC,
     UNPARSEABLE_FRAME,
+    deliver,
     expect_message,
     make_client,
     reconnect,
@@ -29,6 +36,36 @@ FORCED_CLOSE_CODE = 4000
 
 # A close reason's limit in bytes, per RFC 6455.
 MAX_CLOSE_REASON_BYTES = 123
+
+
+@pytest.mark.parametrize(
+    ("protocol", "version"),
+    [
+        (PhoenixChannelsProtocolVersion.V1, "1.0"),
+        (PhoenixChannelsProtocolVersion.V2, "2.0"),
+        (PhoenixChannelsProtocolVersion.V1, "unsupported"),
+    ],
+)
+async def test_a_string_version_connects_and_receives_a_message(
+    phoenix_server: FakePhoenixServer,
+    version: str,
+    received: asyncio.Queue[ChannelMessage],
+) -> None:
+    async with PHXChannelsClient(
+        phoenix_server.url_for(FakePhoenixServer.SOCKET_PATH),
+        API_KEY,
+        protocol_version=version,
+    ) as client:
+        await client.subscribe_to_topic(TOPIC, received.put)
+        await deliver(phoenix_server, client, payload={"ok": True})
+
+        message = await expect_message(received)
+
+    assert (message.topic, message.event, message.payload) == (
+        TOPIC,
+        EVENT,
+        {"ok": True},
+    )
 
 
 async def test_run_forever_returns_when_the_server_closes_normally(

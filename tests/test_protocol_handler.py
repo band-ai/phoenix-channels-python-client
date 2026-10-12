@@ -87,6 +87,20 @@ def test_a_v1_frame_parses_into_a_message() -> None:
     assert (message.topic, message.event, message.ref) == (TOPIC, EVENT, "1")
 
 
+def test_an_unknown_version_keeps_the_v1_frame_format() -> None:
+    handler = PHXProtocolHandler("unsupported")
+    frame = {"topic": TOPIC, "event": EVENT, "ref": "1", "payload": {"ok": True}}
+
+    message = handler.parse_message(json.dumps(frame))
+
+    assert (message.topic, message.event, message.payload) == (
+        TOPIC,
+        EVENT,
+        {"ok": True},
+    )
+    assert json.loads(handler.serialize_message(message)) == frame
+
+
 def test_a_v1_frame_with_integer_refs_parses_as_strings() -> None:
     message = PHXProtocolHandler(V1).parse_message(
         json.dumps(
