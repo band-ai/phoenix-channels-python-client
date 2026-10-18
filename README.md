@@ -334,7 +334,7 @@ setup_logging(logging.DEBUG)  # loggers live under "phoenix_channels_python_clie
 
 ## Security Considerations
 
-**API Key in URL**: This client passes the API key as a URL query parameter when connecting to the WebSocket (e.g., `wss://server.com/socket?api_key=xxx`). Even over WSS (encrypted in transit), the API key may be logged by:
+**API Key in URL**: Without an authentication header, this client passes the API key as a URL query parameter when connecting to the WebSocket (e.g., `wss://server.com/socket?api_key=xxx`). Even over WSS (encrypted in transit), the API key may be logged by:
 
 - Server access logs
 - Reverse proxies and load balancers
@@ -345,7 +345,7 @@ setup_logging(logging.DEBUG)  # loggers live under "phoenix_channels_python_clie
 - Use short-lived, rotatable tokens rather than long-lived API keys
 - Consider this limitation when evaluating this client for sensitive environments
 
-**Note:** The official Phoenix JS client (v1.8+) supports header-based authentication via the `authToken` option, which avoids URL logging. This client always sends `api_key` in the URL (logged URLs show `api_key=***`). Pass `additional_headers={"x-api-key": key}` to also send it as a handshake header on every (re)connect, e.g. for a proxy that reads it from there.
+Pass `additional_headers={"x-api-key": key}` or `{"x-auth-token": jwt}` to use header-only authentication on every connection and reconnect.
 
 ---
 
@@ -362,5 +362,11 @@ is preserved and remains visible to servers and proxies. No fallback is attempte
 
 `client.logger` forwards sanitized connection records without raw arguments,
 exception objects, or socket metadata. `client.redact_diagnostic(text)` applies
-the same credential policy to transport errors a caller needs to retain. This
-protects handshake and lifecycle diagnostics, not arbitrary application payloads.
+the credential policy to transport errors a caller needs to retain. Caller-visible
+errors may still contain personal data and should not be logged outside this policy.
+
+Connection diagnostics omit dynamic strings and transport payloads, including URLs,
+headers, frame bodies, user/topic identities, and untrusted server error details.
+Logs retain static lifecycle descriptions, native connection states,
+and exception types. Application data and caller-visible errors are not changed;
+applications remain responsible for logs outside this connection-owned boundary.

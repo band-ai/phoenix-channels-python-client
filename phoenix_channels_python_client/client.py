@@ -137,7 +137,9 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         if callback_drain_timeout_s <= 0:
             raise ValueError("callback_drain_timeout_s must be > 0")
 
-        self._protocol_handler = PHXProtocolHandler(protocol_version)
+        self._protocol_handler = PHXProtocolHandler(
+            protocol_version, diagnostic_logger=self.logger
+        )
         connect_url, redacted_url = _build_channel_socket_urls(
             websocket_url=websocket_url,
             api_key=api_key,

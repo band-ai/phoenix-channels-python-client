@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from http import HTTPStatus
 from logging.handlers import BufferingHandler
@@ -223,3 +224,62 @@ class TestConnectionSecurity:
         ]
         assert records
         assert all(secret not in repr(record.__dict__) for record in records)
+
+    async def test_transport_and_protocol_records_omit_personal_data(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        identity = "synthetic-person@example.invalid"
+        session = "synthetic-cookie-session"
+        delivered = asyncio.Event()
+
+        def response(
+            _connection: ServerConnection, _request: Request, reply: Response
+        ) -> Response:
+            reply.headers["Set-Cookie"] = "session=" + session + "; HttpOnly"
+            return reply
+
+        async def peer(connection: ServerConnection) -> None:
+            await connection.send(
+                json.dumps([None, None, identity, "event", {"email": identity}])
+            )
+            delivered.set()
+            await connection.wait_closed()
+
+        caplog.set_level(logging.DEBUG, logger="phoenix_channels_python_client.client")
+        async with serve(peer, "127.0.0.1", 0, process_response=response) as server:
+            port = server.sockets[0].getsockname()[1]
+            client = PHXChannelsClient(
+                f"ws://127.0.0.1:{port}/socket?email={identity}",
+                "synthetic-key",
+                additional_headers={
+                    "x-api-key": "synthetic-key",
+                    "Cookie": "session=" + session,
+                },
+                auto_reconnect=False,
+                heartbeat_interval_s=None,
+            )
+            collector = BufferingHandler(1000)
+            client.logger.addHandler(collector)
+            async with client:
+                await asyncio.wait_for(delivered.wait(), 5)
+                await asyncio.sleep(0.01)
+                try:
+                    raise RuntimeError(identity)  # noqa: TRY301 -- exercise exception records
+                except RuntimeError:
+                    client.logger.exception("Connection callback failed: %s", session)
+                client.logger.warning(
+                    "Untrusted numeric identity: %d %.2f %s",
+                    15555550123,
+                    15555550123.0,
+                    identity,
+                )
+        assert any(
+            "Parsing raw message:" in record.getMessage() for record in collector.buffer
+        )
+        assert any("OPEN" in record.getMessage() for record in collector.buffer)
+        for record in collector.buffer:
+            assert identity not in repr(record.__dict__)
+            assert session not in repr(record.__dict__)
+            assert "15555550123" not in repr(record.__dict__)
+            assert record.args == ()
+            assert record.exc_info is None

@@ -9,6 +9,7 @@ from typing import Any, NamedTuple
 
 from websockets import ClientConnection
 
+from phoenix_channels_python_client.diagnostics import ConnectionLogger
 from phoenix_channels_python_client.phx_messages import (
     PHOENIX_TOPIC,
     ChannelMessage,
@@ -110,6 +111,8 @@ class PHXProtocolHandler:
         self,
         protocol_version: PhoenixChannelsProtocolVersion
         | str = DEFAULT_PROTOCOL_VERSION,
+        *,
+        diagnostic_logger: logging.Logger | None = None,
     ) -> None:
         # Non-v2 values select v1 for compatibility with the original client.
         self.protocol_version = (
@@ -117,7 +120,9 @@ class PHXProtocolHandler:
             if protocol_version == PhoenixChannelsProtocolVersion.V2
             else PhoenixChannelsProtocolVersion.V1
         )
-        self.logger = logger.getChild("ProtocolHandler")
+        self.logger = diagnostic_logger or ConnectionLogger(
+            logger.getChild("ProtocolHandler"), set()
+        )
         self.logger.debug(
             "Initialized PHXProtocolHandler for protocol version %s",
             self.protocol_version,

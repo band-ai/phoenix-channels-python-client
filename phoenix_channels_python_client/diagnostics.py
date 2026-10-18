@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-import traceback
 from urllib.parse import parse_qsl, quote, quote_plus, urlsplit
+
+from websockets.protocol import State
 
 from phoenix_channels_python_client.authentication import (
     API_KEY_PARAMETER,
@@ -81,11 +82,17 @@ class ConnectionLogger(logging.Logger):
         return AUTHENTICATION_LABEL.sub(lambda match: match[1] + REDACTED, text)
 
     def handle(self, record: logging.LogRecord) -> None:
-        message = record.getMessage()
-        if record.exc_info:
-            message += "\n" + "".join(traceback.format_exception(*record.exc_info))
-        if record.stack_info:
-            message += "\n" + record.stack_info
+        message = str(record.msg)
+        if (
+            record.msg == "= connection is %s"
+            and isinstance(record.args, tuple)
+            and len(record.args) == 1
+            and isinstance(record.args[0], str)
+            and record.args[0] in State.__members__
+        ):
+            message = record.msg % record.args
+        if record.exc_info and record.exc_info[0]:
+            message += " [" + record.exc_info[0].__name__ + "]"
         safe_record = logging.LogRecord(
             record.name,
             record.levelno,
