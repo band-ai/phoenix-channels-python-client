@@ -10,12 +10,18 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from websockets import ClientConnection
 
+from phoenix_channels_python_client.authentication import (
+    API_KEY_PARAMETER,
+    TOKEN_PARAMETER,
+    AuthenticationHeader,
+    normalize_headers,
+    select_authentication_header,
+)
 from phoenix_channels_python_client.client_state_machine import transition_client_state
 from phoenix_channels_python_client.client_types import ClientState, ReconnectPolicy
 from phoenix_channels_python_client.diagnostics import (
     ConnectionLogger,
     diagnostic_secrets,
-    normalize_headers,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.protocol_handler import (
@@ -41,23 +47,31 @@ TopicLostCallback = Callable[[str, Exception], Awaitable[None]]
 
 
 def _build_channel_socket_urls(
-    websocket_url: str, api_key: str, vsn: str, *, header_auth: bool = False
+    websocket_url: str,
+    api_key: str,
+    vsn: str,
+    *,
+    header_auth: AuthenticationHeader | None = None,
 ) -> tuple[str, str]:
     split_url = urlsplit(websocket_url)
     query_params = parse_qsl(split_url.query, keep_blank_values=True)
-    if header_auth and any(
-        key.casefold() == "token" and value for key, value in query_params
+    if header_auth is AuthenticationHeader.API_KEY and any(
+        key.casefold() == TOKEN_PARAMETER and value for key, value in query_params
     ):
         raise ValueError("token query authentication cannot be combined with x-api-key")
     filtered = [
         (key, value)
         for key, value in query_params
         if key.casefold()
-        not in ({"api_key", "vsn", "token"} if header_auth else {"api_key", "vsn"})
+        not in (
+            {API_KEY_PARAMETER, "vsn", TOKEN_PARAMETER}
+            if header_auth
+            else {API_KEY_PARAMETER, "vsn"}
+        )
     ]
     with_auth = [
         *filtered,
-        *([] if header_auth else [("api_key", api_key)]),
+        *([] if header_auth else [(API_KEY_PARAMETER, api_key)]),
         ("vsn", vsn),
     ]
 
@@ -74,7 +88,12 @@ def _build_channel_socket_urls(
 
     return build(with_auth), build(
         [
-            (key, "***" if key.casefold() in {"api_key", "token"} else value)
+            (
+                key,
+                "***"
+                if key.casefold() in {API_KEY_PARAMETER, TOKEN_PARAMETER}
+                else value,
+            )
             for key, value in with_auth
         ]
     )
@@ -123,7 +142,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
             websocket_url=websocket_url,
             api_key=api_key,
             vsn=self._protocol_handler.protocol_version.vsn,
-            header_auth="x-api-key" in self.additional_headers,
+            header_auth=select_authentication_header(self.additional_headers),
         )
         self.channel_socket_url = connect_url
         self.channel_socket_url_redacted = redacted_url

@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from http import HTTPStatus
 from logging.handlers import BufferingHandler
 from urllib.parse import parse_qsl, quote, urlsplit
 
 import pytest
 from websockets.asyncio.server import ServerConnection, serve
+from websockets.http11 import Request, Response
 
 from phoenix_channels_python_client import PHXChannelsClient
 from phoenix_channels_python_client.client_types import ReconnectPolicy
 from phoenix_channels_python_client.diagnostics import ConnectionLogger
+from phoenix_channels_python_client.exceptions import PHXConnectionError
 
 
 class TestConnectionSecurity:
@@ -20,6 +23,9 @@ class TestConnectionSecurity:
             {"X-API-Key": ""},
             {"x-api-key": "  "},
             {"x-api-key": "one", "X-Api-Key": "two"},
+            {"x-auth-token": ""},
+            {"X-Auth-Token": " "},
+            {"x-auth-token": "one", "X-Auth-Token": "two"},
         ],
     )
     def test_invalid_headers_are_rejected_before_network(
@@ -76,7 +82,14 @@ class TestConnectionSecurity:
         assert first.redact_diagnostic("correlation%2fother") == "correlation%2fother"
 
     @pytest.mark.parametrize(
-        "header_names", [("X-Api-Key",), ("x-api-key", "X-API-KEY")]
+        "header_names",
+        [
+            ("X-Api-Key",),
+            ("x-api-key", "X-API-KEY"),
+            ("X-Auth-Token",),
+            ("x-auth-token", "X-AUTH-TOKEN"),
+            ("x-api-key", "x-auth-token"),
+        ],
     )
     async def test_real_reconnect_uses_only_header_and_safe_raw_records(
         self, caplog: pytest.LogCaptureFixture, header_names: tuple[str, ...]
@@ -97,14 +110,18 @@ class TestConnectionSecurity:
         caplog.set_level(logging.DEBUG, logger="phoenix_channels_python_client.client")
         async with serve(peer, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
-            url = f"ws://127.0.0.1:{port}/socket?API%5FKEY=embedded-secret&api_key=embedded-secret&aPi_KeY=embedded-secret&token=&keep=one&keep=&vsn=old"
+            token = (
+                "legacy-jwt"
+                if any(name.casefold() == "x-auth-token" for name in header_names)
+                else ""
+            )
+            url = f"ws://127.0.0.1:{port}/socket?API%5FKEY=embedded-secret&api_key=embedded-secret&aPi_KeY=embedded-secret&token={token}&keep=one&keep=&vsn=old"
             async with PHXChannelsClient(
                 url,
                 positional,
                 additional_headers={
                     **dict.fromkeys(header_names, secret),
                     "x-token": "synthetic-additional-token",
-                    "x-auth-token": "synthetic-other-token",
                 },
                 heartbeat_interval_s=None,
                 reconnect_policy=ReconnectPolicy(
@@ -146,9 +163,9 @@ class TestConnectionSecurity:
                 ("keep", ""),
                 ("vsn", "2.0.0"),
             ]
-            assert request.headers["x-api-key"] == secret
+            for name in header_names:
+                assert request.headers[name] == secret
             assert request.headers["x-token"] == "synthetic-additional-token"
-            assert request.headers["x-auth-token"] == "synthetic-other-token"
         records = [
             record
             for record in caplog.records
@@ -165,10 +182,44 @@ class TestConnectionSecurity:
                 positional,
                 "embedded-secret",
                 "synthetic-additional-token",
-                "synthetic-other-token",
                 "unconfigured-bearer-value",
                 "unconfigured-basic-value",
                 quote(secret, safe=""),
             ):
                 assert credential not in repr(record.__dict__)
         assert any("OPEN" in record.getMessage() for record in records)
+
+    async def test_refused_jwt_handshake_keeps_token_out_of_query_and_records(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        secret = "synthetic.jwt/private+ token"  # noqa: S105 -- synthetic credential
+        requests = []
+
+        def refuse(connection: ServerConnection, request: Request) -> Response:
+            requests.append(request)
+            return connection.respond(HTTPStatus.UNAUTHORIZED, secret)
+
+        async def peer(connection: ServerConnection) -> None:
+            await connection.wait_closed()
+
+        caplog.set_level(logging.DEBUG, logger="phoenix_channels_python_client.client")
+        async with serve(peer, "127.0.0.1", 0, process_request=refuse) as server:
+            port = server.sockets[0].getsockname()[1]
+            client = PHXChannelsClient(
+                f"ws://127.0.0.1:{port}/socket?token=old-jwt&api_key=old-key",
+                secret,
+                additional_headers={"X-Auth-Token": secret},
+                auto_reconnect=False,
+            )
+            with pytest.raises(PHXConnectionError, match="401"):
+                await client.__aenter__()
+        [request] = requests
+        assert parse_qsl(urlsplit(request.path).query) == [("vsn", "2.0.0")]
+        assert request.headers["x-auth-token"] == secret
+        records = [
+            record
+            for record in caplog.records
+            if record.name == "phoenix_channels_python_client.client"
+        ]
+        assert records
+        assert all(secret not in repr(record.__dict__) for record in records)

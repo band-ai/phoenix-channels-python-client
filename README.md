@@ -353,10 +353,11 @@ setup_logging(logging.DEBUG)  # loggers live under "phoenix_channels_python_clie
 
 ### Authentication and diagnostic safety
 
-A nonempty `x-api-key` handshake header selects header-only authentication on
+A nonempty `x-api-key` or `x-auth-token` handshake header selects header-only authentication on
 every connection and reconnect. Embedded API-key parameters are removed; empty
 or conflicting authentication headers and simultaneous token-query authentication
-are rejected before connecting. Without this header, legacy query authentication
+are rejected before connecting. A JWT header overrides an embedded token and takes
+precedence over an API-key header, matching the platform. Without an authentication header, legacy query authentication
 is preserved and remains visible to servers and proxies. No fallback is attempted.
 
 `client.logger` forwards sanitized connection records without raw arguments,

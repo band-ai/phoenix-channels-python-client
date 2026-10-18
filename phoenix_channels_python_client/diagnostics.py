@@ -6,17 +6,22 @@ import re
 import traceback
 from urllib.parse import parse_qsl, quote, quote_plus, urlsplit
 
+from phoenix_channels_python_client.authentication import (
+    API_KEY_PARAMETER,
+    TOKEN_PARAMETER,
+    AuthenticationHeader,
+)
+
 REDACTED = "[REDACTED]"
 PERCENT_ESCAPE = re.compile(r"%[0-9a-fA-F]{2}")
 
 
 AUTHENTICATION_NAMES = frozenset(
     {
-        "api_key",
-        "token",
-        "x-api-key",
+        API_KEY_PARAMETER,
+        TOKEN_PARAMETER,
+        *AuthenticationHeader,
         "x-token",
-        "x-auth-token",
         "authorization",
         "cookie",
     }
@@ -109,23 +114,3 @@ def diagnostic_secrets(url: str, api_key: str, headers: dict[str, str]) -> set[s
             if name.casefold() in AUTHENTICATION_NAMES
         ),
     }
-
-
-def normalize_headers(headers: dict[str, str] | None) -> dict[str, str]:
-    normalized = dict(headers or {})
-    credentials = [
-        value for name, value in normalized.items() if name.casefold() == "x-api-key"
-    ]
-    if credentials:
-        if (
-            any(not value.strip() for value in credentials)
-            or len(set(credentials)) != 1
-        ):
-            raise ValueError("x-api-key headers must contain one nonempty credential")
-        normalized = {
-            name: value
-            for name, value in normalized.items()
-            if name.casefold() != "x-api-key"
-        }
-        normalized["x-api-key"] = credentials[0]
-    return normalized
