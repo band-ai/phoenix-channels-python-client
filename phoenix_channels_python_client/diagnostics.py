@@ -41,6 +41,7 @@ class ConnectionLogger(logging.Logger):
 
     def __init__(self, target: logging.Logger, secrets: set[str]) -> None:
         super().__init__(target.name)
+        self.target = target
         self.parent = target
         variants = sorted(
             {
@@ -72,6 +73,7 @@ class ConnectionLogger(logging.Logger):
         # so its cache invalidation cannot track their effective level.
         return (
             not self.disabled
+            and not self.target.disabled
             and self.manager.disable < level
             and level >= self.getEffectiveLevel()
         )
@@ -82,6 +84,8 @@ class ConnectionLogger(logging.Logger):
         return AUTHENTICATION_LABEL.sub(lambda match: match[1] + REDACTED, text)
 
     def handle(self, record: logging.LogRecord) -> None:
+        if self.target.disabled:
+            return
         message = str(record.msg)
         if (
             record.msg == "= connection is %s"
@@ -103,7 +107,11 @@ class ConnectionLogger(logging.Logger):
             None,
             record.funcName,
         )
-        super().handle(safe_record)
+        filtered = self.target.filter(safe_record)
+        if filtered:
+            if isinstance(filtered, logging.LogRecord):
+                safe_record = filtered
+            super().handle(safe_record)
 
 
 def diagnostic_secrets(url: str, api_key: str, headers: dict[str, str]) -> set[str]:

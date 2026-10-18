@@ -82,6 +82,37 @@ class TestConnectionSecurity:
         assert second.redact_diagnostic("second-credential") == "[REDACTED]"
         assert first.redact_diagnostic("correlation%2fother") == "correlation%2fother"
 
+    @pytest.mark.parametrize("policy", ["disabled", "filtered"])
+    def test_connection_records_respect_registered_logger_policy(
+        self, policy: str
+    ) -> None:
+        client = PHXChannelsClient("ws://127.0.0.1:1/socket", "synthetic-key")
+        target = logging.getLogger("phoenix_channels_python_client.client")
+        collector = BufferingHandler(100)
+        client.logger.addHandler(collector)
+        client.logger.setLevel(logging.WARNING)
+        previous_disabled = target.disabled
+
+        def reject(_record: logging.LogRecord) -> bool:
+            return False
+
+        try:
+            target.disabled = policy == "disabled"
+            if policy == "filtered":
+                target.addFilter(reject)
+            client.logger.warning("suppressed connection record")
+            assert collector.buffer == []
+
+            target.disabled = False
+            target.removeFilter(reject)
+            client.logger.warning("enabled connection record")
+            assert [record.getMessage() for record in collector.buffer] == [
+                "enabled connection record"
+            ]
+        finally:
+            target.disabled = previous_disabled
+            target.removeFilter(reject)
+
     @pytest.mark.parametrize(
         "header_names",
         [
