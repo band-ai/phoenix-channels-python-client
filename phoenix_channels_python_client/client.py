@@ -5,13 +5,18 @@ import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
 from types import TracebackType
-from typing import Self
+from typing import Self, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from websockets import ClientConnection
 
 from phoenix_channels_python_client.client_state_machine import transition_client_state
 from phoenix_channels_python_client.client_types import ClientState, ReconnectPolicy
+from phoenix_channels_python_client.diagnostics import (
+    ConnectionLogger,
+    diagnostic_secrets,
+    normalize_headers,
+)
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.protocol_handler import (
     DEFAULT_PROTOCOL_VERSION,
@@ -36,39 +41,43 @@ TopicLostCallback = Callable[[str, Exception], Awaitable[None]]
 
 
 def _build_channel_socket_urls(
-    websocket_url: str, api_key: str, vsn: str
+    websocket_url: str, api_key: str, vsn: str, *, header_auth: bool = False
 ) -> tuple[str, str]:
     split_url = urlsplit(websocket_url)
     query_params = parse_qsl(split_url.query, keep_blank_values=True)
+    if header_auth and any(
+        key.casefold() == "token" and value for key, value in query_params
+    ):
+        raise ValueError("token query authentication cannot be combined with x-api-key")
     filtered = [
-        (key, value) for key, value in query_params if key not in {"api_key", "vsn"}
+        (key, value)
+        for key, value in query_params
+        if key.casefold()
+        not in ({"api_key", "vsn", "token"} if header_auth else {"api_key", "vsn"})
     ]
-    with_auth = [*filtered, ("api_key", api_key), ("vsn", vsn)]
+    with_auth = [
+        *filtered,
+        *([] if header_auth else [("api_key", api_key)]),
+        ("vsn", vsn),
+    ]
 
-    connect_url = urlunsplit(
-        (
-            split_url.scheme,
-            split_url.netloc,
-            split_url.path,
-            urlencode(with_auth),
-            split_url.fragment,
+    def build(params: list[tuple[str, str]]) -> str:
+        return urlunsplit(
+            (
+                split_url.scheme,
+                split_url.netloc,
+                split_url.path,
+                urlencode(params),
+                split_url.fragment,
+            )
         )
+
+    return build(with_auth), build(
+        [
+            (key, "***" if key.casefold() in {"api_key", "token"} else value)
+            for key, value in with_auth
+        ]
     )
-    redacted_url = urlunsplit(
-        (
-            split_url.scheme,
-            split_url.netloc,
-            split_url.path,
-            urlencode(
-                [
-                    (key, "***" if key == "api_key" else value)
-                    for key, value in with_auth
-                ]
-            ),
-            split_url.fragment,
-        )
-    )
-    return connect_url, redacted_url
 
 
 class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
@@ -92,7 +101,10 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         on_topic_lost: TopicLostCallback | None = None,
         additional_headers: dict[str, str] | None = None,
     ) -> None:
-        self.logger = logger
+        self.additional_headers = normalize_headers(additional_headers)
+        self.logger = ConnectionLogger(
+            logger, diagnostic_secrets(websocket_url, api_key, self.additional_headers)
+        )
 
         if heartbeat_interval_s is not None and heartbeat_interval_s <= 0:
             raise ValueError("heartbeat_interval_s must be > 0 or None to disable")
@@ -111,15 +123,10 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
             websocket_url=websocket_url,
             api_key=api_key,
             vsn=self._protocol_handler.protocol_version.vsn,
+            header_auth="x-api-key" in self.additional_headers,
         )
         self.channel_socket_url = connect_url
         self.channel_socket_url_redacted = redacted_url
-
-        # Extra WebSocket handshake headers, re-sent on every (re)connect. Lets a
-        # caller send the API key as an ``x-api-key`` header instead of (or
-        # alongside) the URL query, so a trusted proxy can inject/replace it
-        # in-header and the credential stays out of URL/proxy logs.
-        self.additional_headers = dict(additional_headers or {})
 
         self.auto_reconnect = auto_reconnect
         self.reconnect_policy = reconnect_policy or ReconnectPolicy()
@@ -151,6 +158,10 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._on_topic_lost = on_topic_lost
         self._lifecycle_tasks: set[asyncio.Task[None]] = set()
         self._forced_close_pending = False
+
+    def redact_diagnostic(self, text: str) -> str:
+        """Sanitize untrusted transport error text using this connection's policy."""
+        return cast(ConnectionLogger, self.logger).redact(text)
 
     @property
     def _active_shutdown(self) -> asyncio.Task[None] | None:

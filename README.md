@@ -350,3 +350,16 @@ setup_logging(logging.DEBUG)  # loggers live under "phoenix_channels_python_clie
 ---
 
 **Need help?** Open an issue on GitHub or check the [Phoenix Channels documentation](https://hexdocs.pm/phoenix/channels.html) for more information about the Phoenix Channels protocol.
+
+### Authentication and diagnostic safety
+
+A nonempty `x-api-key` handshake header selects header-only authentication on
+every connection and reconnect. Embedded API-key parameters are removed; empty
+or conflicting authentication headers and simultaneous token-query authentication
+are rejected before connecting. Without this header, legacy query authentication
+is preserved and remains visible to servers and proxies. No fallback is attempted.
+
+`client.logger` forwards sanitized connection records without raw arguments,
+exception objects, or socket metadata. `client.redact_diagnostic(text)` applies
+the same credential policy to transport errors a caller needs to retain. This
+protects handshake and lifecycle diagnostics, not arbitrary application payloads.

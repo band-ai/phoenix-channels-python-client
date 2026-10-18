@@ -177,7 +177,9 @@ class FakePhoenixServer:
         self._next_client_id += 1
         request_path = self._extract_request_path(websocket)
         path_only = urlparse(request_path).path
-        api_key = self._extract_api_key(request_path)
+        api_key = (
+            websocket.request.headers.get("x-api-key", "") if websocket.request else ""
+        ) or self._extract_api_key(request_path)
 
         self._clients.add(websocket)
         self._client_ids[websocket] = client_id
