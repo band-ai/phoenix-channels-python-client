@@ -60,7 +60,7 @@ UNRECOGNISED_CLOSE_CODE = 4001
 # More than one, so a retry follows a failed retry.
 REFUSED_HANDSHAKES = 2
 
-# Refusals the client retries: the platform's own 403 is what stops it.
+# Refusals the client retries; only a 403 stops it.
 RETRIED_REFUSALS = [HTTPStatus.SERVICE_UNAVAILABLE, HTTPStatus.UNAUTHORIZED]
 
 TERMINAL_REFUSAL = HTTPStatus.FORBIDDEN
