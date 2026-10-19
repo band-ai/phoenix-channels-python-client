@@ -43,6 +43,8 @@ async def test_a_suppressed_reconnect_after_a_failed_connect_is_terminal() -> No
     await harness._supervisor_loop()
 
     assert isinstance(harness._terminal_error, PHXConnectionError)
+    assert harness._initial_connection_future is not None
+    assert harness._initial_connection_future.exception() is harness._terminal_error
 
 
 async def test_a_terminal_connect_failure_ends_the_loop_with_its_error() -> None:

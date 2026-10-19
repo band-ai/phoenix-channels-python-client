@@ -63,6 +63,7 @@ UNRECOGNISED_CLOSE_CODE = 4001
 REFUSED_HANDSHAKES = 2
 
 TERMINAL_REFUSAL_ERROR = f"terminal handshake status {int(TERMINAL_REFUSAL)}"
+TERMINAL_STOP_LOG = "Reconnect stopped by a terminal error"
 
 
 class RejoinOutcome(StrEnum):
@@ -647,7 +648,7 @@ async def test_disabling_auto_reconnect_wins_over_a_normal_close(
 
 
 async def test_a_refused_handshake_after_a_close_is_terminal(
-    phoenix_server: FakePhoenixServer,
+    phoenix_server: FakePhoenixServer, caplog: pytest.LogCaptureFixture
 ) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         with phoenix_server.refusing(REFUSED_HANDSHAKES, TERMINAL_REFUSAL):
@@ -660,6 +661,7 @@ async def test_a_refused_handshake_after_a_close_is_terminal(
 
     assert phoenix_server.refused_handshakes == 1
     assert API_KEY not in str(stop.value)
+    assert TERMINAL_STOP_LOG in caplog.text
 
 
 async def test_a_refused_handshake_on_entry_raises_instead_of_retrying(

@@ -272,7 +272,6 @@ class SupervisorMixin:
         decision = self._deps._classify_connect_failure(exc)
         if decision.terminal_error is not None:
             self._record_terminal_error(decision.terminal_error)
-            self._settle_initial_connection(decision.terminal_error)
             return False
         if self._suppressed_after_disconnect(0.0):
             return False
@@ -384,7 +383,9 @@ class SupervisorMixin:
 
     def _record_terminal_error(self, error: PHXConnectionError) -> None:
         self._terminal_error = error
-        self.logger.error("%s", error)
+        # Log records stay static: the cause reaches the caller as the raised error.
+        self.logger.error("Reconnect stopped by a terminal error")
+        self._settle_initial_connection(error)
 
     def _settle_initial_connection(self, error: Exception | None) -> None:
         """Resolve ``__aenter__``'s wait, unless it already ended or was cancelled."""

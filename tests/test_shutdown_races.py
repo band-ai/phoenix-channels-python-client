@@ -146,6 +146,7 @@ async def test_a_refusal_is_ignored_from_the_moment_shutdown_is_called(
         # shutdown() has run to its first await; the task it created has not started.
         await asyncio.sleep(0)
 
+        assert client._state is ClientState.SHUTTING_DOWN
         assert client._retry_after_connect_failure(refused(TERMINAL_REFUSAL)) is False
         assert client._terminal_error is None
 
