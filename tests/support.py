@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
+from http import HTTPStatus
 from typing import Any, TypeVar
 
 import pytest
@@ -85,11 +86,28 @@ def derive_policy(base: ReconnectPolicy, **changes: object) -> ReconnectPolicy:
 STOPS_ON_NORMAL_CLOSE = derive_policy(FAST_RECONNECT, reconnect_on_normal_close=False)
 
 
+def _numeric_id(code: int) -> str:
+    return str(int(code))
+
+
 # Runs the test once per code a peer uses to close normally.
 each_normal_close_code = pytest.mark.parametrize(
     "close_code",
     [CloseCode.NORMAL_CLOSURE, CloseCode.GOING_AWAY],
-    ids=lambda code: str(int(code)),
+    ids=_numeric_id,
+)
+
+# Refusals the client retries; only a 403 stops it. Spelled out, not imported,
+# so the tests pin the value the platform sends.
+RETRIED_REFUSALS = [HTTPStatus.SERVICE_UNAVAILABLE, HTTPStatus.UNAUTHORIZED]
+TERMINAL_REFUSAL = HTTPStatus.FORBIDDEN
+
+# Runs the test once per refusal status, through the `refusal` parameter.
+each_retried_refusal = pytest.mark.parametrize(
+    "refusal", RETRIED_REFUSALS, ids=_numeric_id
+)
+each_refusal = pytest.mark.parametrize(
+    "refusal", [*RETRIED_REFUSALS, TERMINAL_REFUSAL], ids=_numeric_id
 )
 
 # Runs the test once per protocol version, through the `protocol` fixture.

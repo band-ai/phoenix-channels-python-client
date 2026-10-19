@@ -263,6 +263,9 @@ class SupervisorMixin:
             )
             self.logger.error("Connection failed and auto_reconnect=False: %s", exc)
             return False
+        # A requested stop outranks a refusal's terminal error.
+        if self._shutdown_event.is_set():
+            return False
         decision = self._deps._classify_connect_failure(exc)
         if decision.terminal_error is not None:
             self._record_terminal_error(decision.terminal_error)

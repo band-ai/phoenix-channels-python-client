@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from http import HTTPStatus
 from typing import Self
 
 import pytest
@@ -24,6 +25,7 @@ from tests.support import (
     crash_with_rejoin_in_flight,
     deliver,
     derive_policy,
+    each_refusal,
     make_client,
     reconnect,
     wait_for_condition,
@@ -33,13 +35,11 @@ from tests.support import (
 # Long enough for a shutdown that isn't held to finish against the local server.
 SETTLE_S = 0.2
 
-# A restart close holds the reconnect this long, outlasting the test, so only
-# a shutdown can end the wait.
-HELD_BACKOFF_S = 5 * ASYNC_TIMEOUT_S
+# The backoff after a close, long enough that even its jitter's lower half
+# outlasts the test, so only a shutdown can end the wait.
+HELD_BACKOFF_S = 4 * ASYNC_TIMEOUT_S
 HELD_BACKOFF = derive_policy(
-    FAST_RECONNECT,
-    service_restart_min_delay_s=HELD_BACKOFF_S,
-    service_restart_max_delay_s=HELD_BACKOFF_S,
+    FAST_RECONNECT, base_delay_s=HELD_BACKOFF_S, max_delay_s=HELD_BACKOFF_S
 )
 
 
@@ -116,8 +116,9 @@ async def test_reconnect_landing_during_shutdown_is_closed(
         )
 
 
+@each_refusal
 async def test_a_connect_failure_during_shutdown_closes_cleanly(
-    phoenix_server: FakePhoenixServer,
+    phoenix_server: FakePhoenixServer, refusal: HTTPStatus
 ) -> None:
     client = make_client(phoenix_server, reconnect_policy=FAST_RECONNECT)
     async with client:
@@ -125,7 +126,7 @@ async def test_a_connect_failure_during_shutdown_closes_cleanly(
             run, stop = await shut_down_during_a_held_reconnect(
                 phoenix_server, client, held
             )
-            with phoenix_server.refusing(1):
+            with phoenix_server.refusing(1, refusal):
                 phoenix_server.handshake_gate.set()
                 # Inside the block: the shutdown would otherwise cancel the
                 # supervisor before the held reconnect fails.
@@ -141,7 +142,7 @@ async def test_shutdown_during_the_reconnect_backoff_makes_no_new_connection(
     async with make_client(phoenix_server, reconnect_policy=HELD_BACKOFF) as client:
         run = asyncio.create_task(client.run_forever(install_signal_handlers=False))
         attempts = phoenix_server.get_connection_attempts(FakePhoenixServer.SOCKET_PATH)
-        await phoenix_server.close_all_clients(code=CloseCode.SERVICE_RESTART)
+        await phoenix_server.close_all_clients(code=CloseCode.GOING_AWAY)
         # The supervisor enters the backoff wait straight after this transition.
         assert await wait_for_condition(
             lambda: client._state is ClientState.RECONNECTING

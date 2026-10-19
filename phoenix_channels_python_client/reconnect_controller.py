@@ -21,6 +21,15 @@ from phoenix_channels_python_client.exceptions import PHXConnectionError
 TERMINAL_HANDSHAKE_STATUS = HTTPStatus.FORBIDDEN
 
 
+def _terminal_decision(cause: str) -> ReconnectDecision:
+    return ReconnectDecision(
+        should_reconnect=False,
+        terminal_error=PHXConnectionError(
+            f"Reconnect disabled due to terminal {cause}"
+        ),
+    )
+
+
 class ReconnectControllerMixin:
     logger: logging.Logger
 
@@ -216,12 +225,8 @@ class ReconnectControllerMixin:
             and self.reconnect_policy.policy_violation_is_terminal
         ):
             reason = close_reason or "policy violation"
-            decision = ReconnectDecision(
-                should_reconnect=False,
-                terminal_error=PHXConnectionError(
-                    "Reconnect disabled due to terminal close code "
-                    f"{CloseCode.POLICY_VIOLATION} ({reason})"
-                ),
+            decision = _terminal_decision(
+                f"close code {CloseCode.POLICY_VIOLATION} ({reason})"
             )
             self.logger.debug(
                 "Disconnect classification result. close_code=%s close_reason=%s "
@@ -307,12 +312,9 @@ class ReconnectControllerMixin:
             isinstance(error, InvalidStatus)
             and error.response.status_code == TERMINAL_HANDSHAKE_STATUS
         ):
-            return ReconnectDecision(
-                should_reconnect=False,
-                terminal_error=PHXConnectionError(
-                    "Reconnect disabled due to terminal handshake status "
-                    f"{TERMINAL_HANDSHAKE_STATUS} ({TERMINAL_HANDSHAKE_STATUS.phrase})"
-                ),
+            return _terminal_decision(
+                f"handshake status {TERMINAL_HANDSHAKE_STATUS} "
+                f"({TERMINAL_HANDSHAKE_STATUS.phrase})"
             )
         return ReconnectDecision(should_reconnect=True)
 

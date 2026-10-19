@@ -19,8 +19,10 @@ from tests.support import (
     API_KEY,
     STOP_REASON,
     STOPS_ON_NORMAL_CLOSE,
+    TERMINAL_REFUSAL,
     derive_policy,
     each_normal_close_code,
+    each_retried_refusal,
     make_client,
 )
 
@@ -127,22 +129,22 @@ def _refused(status: HTTPStatus) -> InvalidStatus:
 
 
 def test_a_forbidden_handshake_is_a_terminal_connect_failure() -> None:
-    decision = _make_client()._classify_connect_failure(_refused(HTTPStatus.FORBIDDEN))
+    decision = _make_client()._classify_connect_failure(_refused(TERMINAL_REFUSAL))
 
     assert decision.should_reconnect is False
     assert isinstance(decision.terminal_error, PHXConnectionError)
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [
-        pytest.param(_refused(HTTPStatus.UNAUTHORIZED), id="401"),
-        pytest.param(_refused(HTTPStatus.SERVICE_UNAVAILABLE), id="503"),
-        pytest.param(ConnectionRefusedError(), id="connection-refused"),
-    ],
-)
-def test_any_other_connect_failure_is_retried(failure: Exception) -> None:
-    decision = _make_client()._classify_connect_failure(failure)
+@each_retried_refusal
+def test_a_refusal_other_than_forbidden_is_retried(refusal: HTTPStatus) -> None:
+    decision = _make_client()._classify_connect_failure(_refused(refusal))
+
+    assert decision.should_reconnect is True
+    assert decision.terminal_error is None
+
+
+def test_a_failed_tcp_connect_is_retried() -> None:
+    decision = _make_client()._classify_connect_failure(ConnectionRefusedError())
 
     assert decision.should_reconnect is True
     assert decision.terminal_error is None

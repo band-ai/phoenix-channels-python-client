@@ -24,6 +24,7 @@ from tests.support import (
     OTHER_TOPIC,
     STOP_REASON,
     STOPS_ON_NORMAL_CLOSE,
+    TERMINAL_REFUSAL,
     TOPIC,
     UNPARSEABLE_FRAME,
     BusyCallback,
@@ -33,6 +34,7 @@ from tests.support import (
     derive_policy,
     each_normal_close_code,
     each_protocol,
+    each_retried_refusal,
     expect_message,
     make_client,
     reconnect,
@@ -60,10 +62,6 @@ UNRECOGNISED_CLOSE_CODE = 4001
 # More than one, so a retry follows a failed retry.
 REFUSED_HANDSHAKES = 2
 
-# Refusals the client retries; only a 403 stops it.
-RETRIED_REFUSALS = [HTTPStatus.SERVICE_UNAVAILABLE, HTTPStatus.UNAUTHORIZED]
-
-TERMINAL_REFUSAL = HTTPStatus.FORBIDDEN
 TERMINAL_REFUSAL_ERROR = f"terminal handshake status {int(TERMINAL_REFUSAL)}"
 
 
@@ -154,9 +152,7 @@ async def test_with_auto_reconnect_disabled_a_service_restart_disconnects(
         assert await wait_for_condition(lambda: client.connection is None)
 
 
-@pytest.mark.parametrize(
-    "refusal", RETRIED_REFUSALS, ids=lambda status: str(int(status))
-)
+@each_retried_refusal
 async def test_consecutive_failed_connects_keep_retrying_until_the_server_accepts(
     phoenix_server: FakePhoenixServer,
     received: asyncio.Queue[ChannelMessage],
@@ -640,6 +636,7 @@ async def test_disabling_auto_reconnect_wins_over_a_normal_close(
     phoenix_server: FakePhoenixServer,
 ) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        # What band-sdk's disable_reconnect does on a supersede: flip it once connected.
         client.auto_reconnect = False
 
         await phoenix_server.close_all_clients(code=CloseCode.GOING_AWAY)
@@ -678,6 +675,19 @@ async def test_a_refused_handshake_on_entry_raises_instead_of_retrying(
 
     assert phoenix_server.refused_handshakes == 1
     assert API_KEY not in str(stop.value)
+
+
+@each_retried_refusal
+async def test_a_non_forbidden_refusal_on_entry_is_retried_until_accepted(
+    phoenix_server: FakePhoenixServer, refusal: HTTPStatus
+) -> None:
+    client = make_client(phoenix_server, reconnect_policy=FAST_RECONNECT)
+
+    with phoenix_server.refusing(REFUSED_HANDSHAKES, refusal):
+        async with client:
+            pass
+
+    assert phoenix_server.refused_handshakes == REFUSED_HANDSHAKES
 
 
 @each_protocol
