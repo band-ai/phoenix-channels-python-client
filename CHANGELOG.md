@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.3.1...phoenix-channels-python-client-v0.4.0) (2026-10-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** with no policy override, run_forever() no longer returns after a server 1000/1001, and async with raises on a 403 refusal instead of retrying. Pass ReconnectPolicy(reconnect_on_normal_close=False) for the old close behaviour.
+
+### Bug Fixes
+
+* **client:** reconnect after a normal close by default and stop on a refused handshake ([#75](https://github.com/band-ai/phoenix-channels-python-client/issues/75)) ([5eaef98](https://github.com/band-ai/phoenix-channels-python-client/commit/5eaef9863eb3d543fa4c5768567c58e966b3dab6))
+
 ## [0.3.1](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.3.0...phoenix-channels-python-client-v0.3.1) (2026-10-19)
 
 
