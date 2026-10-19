@@ -23,7 +23,7 @@ jobs:
     steps:
       - &checkout-types
         name: Check out the type list
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           sparse-checkout: |
             release-please-config.json
