@@ -155,8 +155,7 @@ async def test_additional_headers_are_sent_on_the_ws_handshake(
         assert server_ws.request is not None
         assert server_ws.request.headers["x-api-key"] == headers["x-api-key"]
 
-    # the header is additive; the existing api_key query param is untouched
-    assert f"api_key={API_KEY}" in client.channel_socket_url
+    assert "api_key=" not in client.channel_socket_url
 
 
 async def test_entering_fails_when_the_server_is_unreachable(

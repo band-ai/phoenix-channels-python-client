@@ -52,6 +52,8 @@ class _CloseDetails(NamedTuple):
 
 
 class _SupervisorRuntimeDeps(Protocol):
+    def redact_diagnostic(self, text: str) -> str: ...
+
     def _generate_ref(self) -> str: ...
     async def _rejoin_topics(self, generation: int) -> None: ...
     def _fail_pending_joins(self, error: Exception) -> None: ...
@@ -243,14 +245,19 @@ class SupervisorMixin:
 
     async def _connect(self) -> ClientConnection:
         return await connect(
-            self.channel_socket_url, additional_headers=self.additional_headers
+            self.channel_socket_url,
+            additional_headers=self.additional_headers,
+            logger=self.logger,
         )
 
     def _retry_after_connect_failure(self, exc: Exception) -> bool:
         if not self.auto_reconnect:
             self._settle_initial_connection(
                 PHXConnectionError(
-                    f"Failed to connect to {self.channel_socket_url_redacted}: {exc}"
+                    self._deps.redact_diagnostic(
+                        "Failed to connect to "
+                        f"{self.channel_socket_url_redacted}: {exc}"
+                    )
                 )
             )
             self.logger.error("Connection failed and auto_reconnect=False: %s", exc)
