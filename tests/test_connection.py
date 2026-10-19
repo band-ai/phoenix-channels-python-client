@@ -69,7 +69,7 @@ async def test_a_string_version_connects_and_receives_a_message(
     )
 
 
-async def test_run_forever_returns_when_the_server_closes_normally(
+async def test_run_forever_returns_on_a_normal_close_when_reconnecting_on_it_is_off(
     phoenix_server: FakePhoenixServer,
 ) -> None:
     async with make_client(

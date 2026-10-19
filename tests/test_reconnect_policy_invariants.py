@@ -7,10 +7,7 @@ from itertools import pairwise
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from websockets.datastructures import Headers
-from websockets.exceptions import InvalidStatus
 from websockets.frames import CloseCode
-from websockets.http11 import Response
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
 from phoenix_channels_python_client.exceptions import PHXConnectionError
@@ -24,6 +21,7 @@ from tests.support import (
     each_normal_close_code,
     each_retried_refusal,
     make_client,
+    refused,
 )
 
 # No jitter, and every pre-cooldown delay stays below the cooldown base.
@@ -124,12 +122,8 @@ def test_close_codes_are_classified_by_the_policy() -> None:
     assert busy.max_delay_s == policy.try_again_later_max_delay_s
 
 
-def _refused(status: HTTPStatus) -> InvalidStatus:
-    return InvalidStatus(Response(status, status.phrase, Headers()))
-
-
 def test_a_forbidden_handshake_is_a_terminal_connect_failure() -> None:
-    decision = _make_client()._classify_connect_failure(_refused(TERMINAL_REFUSAL))
+    decision = _make_client()._classify_connect_failure(refused(TERMINAL_REFUSAL))
 
     assert decision.should_reconnect is False
     assert isinstance(decision.terminal_error, PHXConnectionError)
@@ -137,7 +131,7 @@ def test_a_forbidden_handshake_is_a_terminal_connect_failure() -> None:
 
 @each_retried_refusal
 def test_a_refusal_other_than_forbidden_is_retried(refusal: HTTPStatus) -> None:
-    decision = _make_client()._classify_connect_failure(_refused(refusal))
+    decision = _make_client()._classify_connect_failure(refused(refusal))
 
     assert decision.should_reconnect is True
     assert decision.terminal_error is None

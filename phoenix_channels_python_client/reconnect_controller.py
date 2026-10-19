@@ -16,8 +16,9 @@ from phoenix_channels_python_client.client_types import (
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 
-# The platform answers every auth refusal with 403, and its websocket spec makes a
-# rejected reconnect terminal. Any other status, 401 included, is retried.
+# The Band platform answers every auth refusal with 403, and its websocket spec
+# (thenvoi-platform spec/websocket-api.draft.md) makes a rejected reconnect terminal.
+# A 401 could only come from an edge layer, so it and every other status retry.
 TERMINAL_HANDSHAKE_STATUS = HTTPStatus.FORBIDDEN
 
 

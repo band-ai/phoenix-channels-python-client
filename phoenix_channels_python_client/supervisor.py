@@ -265,6 +265,9 @@ class SupervisorMixin:
             return False
         # A requested stop outranks a refusal's terminal error.
         if self._shutdown_event.is_set():
+            self.logger.debug(
+                "Ignoring a connect failure after shutdown began: %s", exc
+            )
             return False
         decision = self._deps._classify_connect_failure(exc)
         if decision.terminal_error is not None:
@@ -273,8 +276,7 @@ class SupervisorMixin:
             return False
         if self._suppressed_after_disconnect(0.0):
             return False
-        if self._state != ClientState.SHUTTING_DOWN:
-            self._deps._transition_state(ClientState.RECONNECTING)
+        self._deps._transition_state(ClientState.RECONNECTING)
         return True
 
     def _adopt_connection(self, connection: ClientConnection) -> bool:

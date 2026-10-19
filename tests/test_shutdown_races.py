@@ -19,6 +19,7 @@ from tests.support import (
     LEAVE_TIMEOUT_S,
     STOP_REASON,
     STOPS_ON_NORMAL_CLOSE,
+    TERMINAL_REFUSAL,
     TOPIC,
     UNPARSEABLE_FRAME,
     ReconnectCounter,
@@ -28,6 +29,7 @@ from tests.support import (
     each_refusal,
     make_client,
     reconnect,
+    refused,
     wait_for_condition,
     wait_forever,
 )
@@ -134,6 +136,20 @@ async def test_a_connect_failure_during_shutdown_closes_cleanly(
 
         await asyncio.wait_for(stop, ASYNC_TIMEOUT_S)
         assert client._state is ClientState.CLOSED
+
+
+async def test_a_refusal_is_ignored_from_the_moment_shutdown_is_called(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        stop = asyncio.create_task(client.shutdown(STOP_REASON))
+        # shutdown() has run to its first await; the task it created has not started.
+        await asyncio.sleep(0)
+
+        assert client._retry_after_connect_failure(refused(TERMINAL_REFUSAL)) is False
+        assert client._terminal_error is None
+
+        await asyncio.wait_for(stop, ASYNC_TIMEOUT_S)
 
 
 async def test_shutdown_during_the_reconnect_backoff_makes_no_new_connection(
