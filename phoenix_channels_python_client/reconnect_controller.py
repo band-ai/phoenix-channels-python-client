@@ -4,9 +4,10 @@ import asyncio
 import logging
 import random
 from collections import deque
+from http import HTTPStatus
 
 from websockets import ClientConnection
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client_types import (
@@ -14,6 +15,20 @@ from phoenix_channels_python_client.client_types import (
     ReconnectPolicy,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError
+
+# The Band platform answers every auth refusal with 403, and its websocket spec
+# (thenvoi-platform spec/websocket-api.draft.md) makes a rejected reconnect terminal.
+# A 401 could only come from an edge layer, so it and every other status retry.
+TERMINAL_HANDSHAKE_STATUS = HTTPStatus.FORBIDDEN
+
+
+def _terminal_decision(cause: str) -> ReconnectDecision:
+    return ReconnectDecision(
+        should_reconnect=False,
+        terminal_error=PHXConnectionError(
+            f"Reconnect disabled due to terminal {cause}"
+        ),
+    )
 
 
 class ReconnectControllerMixin:
@@ -211,12 +226,8 @@ class ReconnectControllerMixin:
             and self.reconnect_policy.policy_violation_is_terminal
         ):
             reason = close_reason or "policy violation"
-            decision = ReconnectDecision(
-                should_reconnect=False,
-                terminal_error=PHXConnectionError(
-                    "Reconnect disabled due to terminal close code "
-                    f"{CloseCode.POLICY_VIOLATION} ({reason})"
-                ),
+            decision = _terminal_decision(
+                f"close code {CloseCode.POLICY_VIOLATION} ({reason})"
             )
             self.logger.debug(
                 "Disconnect classification result. close_code=%s close_reason=%s "
@@ -296,6 +307,17 @@ class ReconnectControllerMixin:
             },
         )
         return decision
+
+    def _classify_connect_failure(self, error: Exception) -> ReconnectDecision:
+        if (
+            isinstance(error, InvalidStatus)
+            and error.response.status_code == TERMINAL_HANDSHAKE_STATUS
+        ):
+            return _terminal_decision(
+                f"handshake status {TERMINAL_HANDSHAKE_STATUS} "
+                f"({TERMINAL_HANDSHAKE_STATUS.phrase})"
+            )
+        return ReconnectDecision(should_reconnect=True)
 
     def _apply_disconnect_delay_override(
         self,

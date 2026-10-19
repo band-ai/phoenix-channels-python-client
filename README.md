@@ -279,18 +279,19 @@ Exceptions raised in callbacks are logged, not raised.
 
 ## Connection Lifecycle and Errors
 
-- `async with` waits for the first connection. With `auto_reconnect=True` it keeps retrying; with `auto_reconnect=False` a failed first connection raises `PHXConnectionError`.
-- `run_forever()` returns `None` after `shutdown()`, a signal, or a close that doesn't reconnect. It raises `PHXConnectionError` on a terminal close, after repeated rapid disconnects, or when the client has never entered `async with`.
+- `async with` waits for the first connection. With `auto_reconnect=True` it keeps retrying, except after a refused handshake with HTTP 403, which raises `PHXConnectionError`; with `auto_reconnect=False` a failed first connection raises `PHXConnectionError`.
+- `run_forever()` returns `None` after `shutdown()`, a signal, or a close that doesn't reconnect. It raises `PHXConnectionError` on a terminal close, a refused handshake with HTTP 403, after repeated rapid disconnects, or when the client has never entered `async with`.
 - `subscribe_to_topic()` raises `PHXTopicError` on a rejected join, a join timeout or a duplicate subscription, and `PHXConnectionError` while disconnected or if the connection drops before the join completes.
 - `await client.close_connection(reason)` force-closes the current connection; the client then reconnects if `auto_reconnect` is on. It does nothing if the client isn't connected or the connection is already closing.
 - Exceptions live in `phoenix_channels_python_client.exceptions`.
 
 ### Reconnects
 
-| Close code | Behaviour (defaults) |
+| Close code or handshake | Behaviour (defaults) |
 |---|---|
-| 1000, 1001 | Stop, unless `reconnect_on_normal_close=True` |
+| 1000, 1001 | Reconnect (Phoenix ≥ 1.8.8 sends 1001 for "reconnect expected"); stop with `reconnect_on_normal_close=False` |
 | 1008 | Stop with `PHXConnectionError` (`policy_violation_is_terminal=True`) |
+| Handshake refused with HTTP 403 | Stop with `PHXConnectionError`; other statuses (401, 5xx, …) retry with the backoff below |
 | 1012 | Reconnect after at least a random 1–5 s |
 | 1013 | Reconnect after at least a random 30–60 s |
 | Anything else, or no close frame | Reconnect with jittered backoff: 0.5 s × 2ⁿ, capped at 30 s, reset after 60 s of uptime |

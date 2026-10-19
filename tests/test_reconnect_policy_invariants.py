@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable
+from http import HTTPStatus
 from itertools import pairwise
 from urllib.parse import parse_qs, urlsplit
 
@@ -11,7 +12,17 @@ from websockets.frames import CloseCode
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from tests.fake_server import FakePhoenixServer
-from tests.support import API_KEY, STOP_REASON, derive_policy, make_client
+from tests.support import (
+    API_KEY,
+    STOP_REASON,
+    STOPS_ON_NORMAL_CLOSE,
+    TERMINAL_REFUSAL,
+    derive_policy,
+    each_normal_close_code,
+    each_retried_refusal,
+    make_client,
+    refused,
+)
 
 # No jitter, and every pre-cooldown delay stays below the cooldown base.
 COOLDOWN_POLICY = ReconnectPolicy(
@@ -70,13 +81,31 @@ def test_the_logged_socket_url_masks_the_api_key() -> None:
     assert API_KEY not in client.channel_socket_url_redacted
 
 
+@each_normal_close_code
+def test_the_default_policy_reconnects_after_a_normal_close(
+    close_code: CloseCode,
+) -> None:
+    decision = _make_client()._classify_disconnect(close_code, STOP_REASON)
+
+    assert decision.should_reconnect is True
+    assert decision.terminal_error is None
+
+
+@each_normal_close_code
+def test_a_policy_not_reconnecting_on_a_normal_close_stops_without_an_error(
+    close_code: CloseCode,
+) -> None:
+    client = _make_client(STOPS_ON_NORMAL_CLOSE)
+
+    decision = client._classify_disconnect(close_code, STOP_REASON)
+
+    assert decision.should_reconnect is False
+    assert decision.terminal_error is None
+
+
 def test_close_codes_are_classified_by_the_policy() -> None:
     policy = ReconnectPolicy()
     client = _make_client(policy)
-
-    normal = client._classify_disconnect(CloseCode.NORMAL_CLOSURE, STOP_REASON)
-    assert normal.should_reconnect is False
-    assert normal.terminal_error is None
 
     violation = client._classify_disconnect(CloseCode.POLICY_VIOLATION, STOP_REASON)
     assert violation.should_reconnect is False
@@ -91,6 +120,28 @@ def test_close_codes_are_classified_by_the_policy() -> None:
     assert busy.should_reconnect is True
     assert busy.min_delay_s == policy.try_again_later_min_delay_s
     assert busy.max_delay_s == policy.try_again_later_max_delay_s
+
+
+def test_a_forbidden_handshake_is_a_terminal_connect_failure() -> None:
+    decision = _make_client()._classify_connect_failure(refused(TERMINAL_REFUSAL))
+
+    assert decision.should_reconnect is False
+    assert isinstance(decision.terminal_error, PHXConnectionError)
+
+
+@each_retried_refusal
+def test_a_refusal_other_than_forbidden_is_retried(refusal: HTTPStatus) -> None:
+    decision = _make_client()._classify_connect_failure(refused(refusal))
+
+    assert decision.should_reconnect is True
+    assert decision.terminal_error is None
+
+
+def test_a_failed_tcp_connect_is_retried() -> None:
+    decision = _make_client()._classify_connect_failure(ConnectionRefusedError())
+
+    assert decision.should_reconnect is True
+    assert decision.terminal_error is None
 
 
 def test_the_rapid_cooldown_steps_from_its_base_up_to_its_cap() -> None:

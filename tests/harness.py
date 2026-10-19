@@ -208,6 +208,7 @@ class SupervisorHarness(SupervisorMixin):
         self._waits_before_stop = waits_before_stop
         self.suppress_values: list[bool] = []
         self.disconnect_decision = ReconnectDecision(should_reconnect=True)
+        self.connect_failure_decision = ReconnectDecision(should_reconnect=True)
         self.rejoin_error: Exception | None = None
 
     async def _connect(self) -> ClientConnection:
@@ -251,6 +252,10 @@ class SupervisorHarness(SupervisorMixin):
     ) -> ReconnectDecision:
         del close_code, close_reason
         return self.disconnect_decision
+
+    def _classify_connect_failure(self, error: Exception) -> ReconnectDecision:
+        del error
+        return self.connect_failure_decision
 
     def _apply_disconnect_delay_override(
         self, computed_delay_s: float, decision: ReconnectDecision

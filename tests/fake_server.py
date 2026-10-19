@@ -26,6 +26,9 @@ ANY_FREE_PORT = 0
 # The socket-level topic heartbeats travel on.
 SYSTEM_TOPIC = "phoenix"
 
+# What a refused handshake answers with unless the test picks a status.
+DEFAULT_REFUSAL_STATUS = HTTPStatus.SERVICE_UNAVAILABLE
+
 
 # Wire names are spelled out here, not taken from the client, so the server
 # checks the client's protocol independently.
@@ -97,6 +100,7 @@ class FakePhoenixServer:
         # Refused handshakes never reach `handler`, so they are counted here.
         self.refused_handshakes = 0
         self._refusals_left = 0
+        self._refusal_status = DEFAULT_REFUSAL_STATUS
 
     def _encode(self, frame: Frame) -> str:
         match self.protocol:
@@ -170,7 +174,7 @@ class FakePhoenixServer:
             return None
         self._refusals_left -= 1
         self.refused_handshakes += 1
-        return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "refused\n")
+        return connection.respond(self._refusal_status, "refused\n")
 
     async def handler(self, websocket: ServerConnection) -> None:
         client_id = self._next_client_id
@@ -319,13 +323,17 @@ class FakePhoenixServer:
             await websocket.send(text)
 
     @contextmanager
-    def refusing(self, count: int) -> Iterator[None]:
+    def refusing(
+        self, count: int, status: HTTPStatus = DEFAULT_REFUSAL_STATUS
+    ) -> Iterator[None]:
         """Refuse the next ``count`` opening handshakes made before exit."""
         self._refusals_left = count
+        self._refusal_status = status
         try:
             yield
         finally:
             self._refusals_left = 0
+            self._refusal_status = DEFAULT_REFUSAL_STATUS
 
     @contextmanager
     def unresponsive(self) -> Iterator[None]:

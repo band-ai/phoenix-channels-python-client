@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
+from http import HTTPStatus
 from typing import Any, TypeVar
 
 import pytest
+from websockets.datastructures import Headers
+from websockets.exceptions import InvalidStatus
 from websockets.frames import CloseCode
+from websockets.http11 import Response
 from websockets.protocol import State
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
@@ -79,6 +83,31 @@ FAST_RECONNECT = ReconnectPolicy(
 def derive_policy(base: ReconnectPolicy, **changes: object) -> ReconnectPolicy:
     """``base`` with ``changes``, validated; ``model_copy`` would skip validation."""
     return ReconnectPolicy.model_validate(base.model_dump() | changes)
+
+
+# Stops on a server 1000/1001, which the default policy reconnects from.
+STOPS_ON_NORMAL_CLOSE = derive_policy(FAST_RECONNECT, reconnect_on_normal_close=False)
+
+
+# Runs the test once per code a peer uses to close normally.
+each_normal_close_code = pytest.mark.parametrize(
+    "close_code",
+    [CloseCode.NORMAL_CLOSURE, CloseCode.GOING_AWAY],
+)
+
+# Refusals the client retries; only a 403 stops it. Spelled out, not imported,
+# so the tests pin the value the platform sends.
+RETRIED_REFUSALS = [HTTPStatus.SERVICE_UNAVAILABLE, HTTPStatus.UNAUTHORIZED]
+TERMINAL_REFUSAL = HTTPStatus.FORBIDDEN
+
+# Runs the test once per refusal status, through the `refusal` parameter.
+each_retried_refusal = pytest.mark.parametrize("refusal", RETRIED_REFUSALS)
+each_refusal = pytest.mark.parametrize("refusal", [*RETRIED_REFUSALS, TERMINAL_REFUSAL])
+
+
+def refused(status: HTTPStatus) -> InvalidStatus:
+    """The error a client's connect raises when the server refuses the handshake."""
+    return InvalidStatus(Response(status, status.phrase, Headers()))
 
 
 # Runs the test once per protocol version, through the `protocol` fixture.

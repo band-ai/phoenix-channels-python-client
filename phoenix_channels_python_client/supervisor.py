@@ -67,6 +67,7 @@ class _SupervisorRuntimeDeps(Protocol):
     def _classify_disconnect(
         self, close_code: int | None, close_reason: str
     ) -> ReconnectDecision: ...
+    def _classify_connect_failure(self, error: Exception) -> ReconnectDecision: ...
     def _apply_disconnect_delay_override(
         self, computed_delay_s: float, decision: ReconnectDecision
     ) -> float: ...
@@ -262,10 +263,19 @@ class SupervisorMixin:
             )
             self.logger.error("Connection failed and auto_reconnect=False: %s", exc)
             return False
+        # A requested stop outranks a refusal's terminal error.
+        if self._shutdown_event.is_set():
+            self.logger.debug(
+                "Ignoring a connect failure after shutdown began: %s", exc
+            )
+            return False
+        decision = self._deps._classify_connect_failure(exc)
+        if decision.terminal_error is not None:
+            self._record_terminal_error(decision.terminal_error)
+            return False
         if self._suppressed_after_disconnect(0.0):
             return False
-        if self._state != ClientState.SHUTTING_DOWN:
-            self._deps._transition_state(ClientState.RECONNECTING)
+        self._deps._transition_state(ClientState.RECONNECTING)
         return True
 
     def _adopt_connection(self, connection: ClientConnection) -> bool:
@@ -347,8 +357,7 @@ class SupervisorMixin:
         else:
             decision = self._deps._classify_disconnect(close.code, close.reason)
         if decision.terminal_error is not None:
-            self._terminal_error = decision.terminal_error
-            self.logger.error("%s", self._terminal_error)
+            self._record_terminal_error(decision.terminal_error)
             return None
 
         if not decision.should_reconnect:
@@ -364,12 +373,19 @@ class SupervisorMixin:
         self._deps._record_disconnect(connection_uptime_s=uptime_s)
         if not self._deps._should_suppress_reconnect():
             return False
-        self._terminal_error = PHXConnectionError(
-            "Reconnect suppressed after repeated rapid disconnects. "
-            "Likely duplicate connection or unstable endpoint."
+        self._record_terminal_error(
+            PHXConnectionError(
+                "Reconnect suppressed after repeated rapid disconnects. "
+                "Likely duplicate connection or unstable endpoint."
+            )
         )
-        self.logger.error("%s", self._terminal_error)
         return True
+
+    def _record_terminal_error(self, error: PHXConnectionError) -> None:
+        self._terminal_error = error
+        # Log records stay static: the cause reaches the caller as the raised error.
+        self.logger.error("Reconnect stopped by a terminal error")
+        self._settle_initial_connection(error)
 
     def _settle_initial_connection(self, error: Exception | None) -> None:
         """Resolve ``__aenter__``'s wait, unless it already ended or was cancelled."""

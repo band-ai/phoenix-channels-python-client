@@ -234,17 +234,21 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         if task is None:
             if self._is_fully_closed:
                 return
+            self._request_stop()
             task = self._shutdown_task = asyncio.create_task(self._shutdown(reason))
         # Every caller waits for the same shutdown, and one caller's
         # cancellation never aborts it.
         await asyncio.shield(task)
 
-    async def _shutdown(self, reason: str) -> None:
-        self.logger.info("Event loop shutting down! reason=%s", reason)
-
+    def _request_stop(self) -> None:
+        # Runs inside the shutdown() call, not in its task: a refusal or close landing
+        # before the task's first step must already see the stop.
         if self._state not in (ClientState.SHUTTING_DOWN, ClientState.CLOSED):
             self._transition_state(ClientState.SHUTTING_DOWN)
         self._shutdown_event.set()
+
+    async def _shutdown(self, reason: str) -> None:
+        self.logger.info("Event loop shutting down! reason=%s", reason)
 
         await self._unsubscribe_all()
         # Includes on_topic_lost callbacks still running for topics already gone.
