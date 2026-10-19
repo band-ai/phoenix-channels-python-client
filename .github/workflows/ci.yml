@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The merge queue re-runs the required checks on each merge group.
+  merge_group:
 
 permissions:
   contents: read
