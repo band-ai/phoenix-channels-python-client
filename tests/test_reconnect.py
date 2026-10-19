@@ -679,6 +679,23 @@ async def test_a_refused_handshake_on_entry_raises_instead_of_retrying(
     assert API_KEY not in str(stop.value)
 
 
+async def test_refusals_on_entry_raise_the_suppression_error_not_a_generic_one(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    policy = derive_policy(
+        FAST_RECONNECT, rapid_suppress_disconnect_count=SUPPRESS_AFTER_DISCONNECTS
+    )
+    client = make_client(phoenix_server, reconnect_policy=policy)
+
+    with (
+        phoenix_server.refusing(2 * SUPPRESS_AFTER_DISCONNECTS),
+        pytest.raises(PHXConnectionError, match="Reconnect suppressed"),
+    ):
+        await asyncio.wait_for(client.__aenter__(), ASYNC_TIMEOUT_S)
+
+    assert phoenix_server.refused_handshakes == SUPPRESS_AFTER_DISCONNECTS
+
+
 @each_retried_refusal
 async def test_a_non_forbidden_refusal_on_entry_is_retried_until_accepted(
     phoenix_server: FakePhoenixServer, refusal: HTTPStatus
