@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.3.0...phoenix-channels-python-client-v0.3.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* **client:** keep authentication credentials out of URLs and diagnostics ([#71](https://github.com/band-ai/phoenix-channels-python-client/issues/71)) ([884fde5](https://github.com/band-ai/phoenix-channels-python-client/commit/884fde55a50654076f8bb8623a8219f59156622a))
+
+
+### Miscellaneous Chores
+
+* add CODEOWNERS ([#72](https://github.com/band-ai/phoenix-channels-python-client/issues/72)) ([397bf31](https://github.com/band-ai/phoenix-channels-python-client/commit/397bf3124f2573b380f5ac8994fd47043a41c0f9))
+
+
+### Continuous Integration
+
+* **deps:** bump actions/download-artifact from 8.0.1 to 8.0.2 ([#69](https://github.com/band-ai/phoenix-channels-python-client/issues/69)) ([48bbc27](https://github.com/band-ai/phoenix-channels-python-client/commit/48bbc275363bb967302ec0c72775fd5e2eca1d4a))
+* **deps:** bump actions/upload-artifact from 7.0.1 to 7.0.2 ([#68](https://github.com/band-ai/phoenix-channels-python-client/issues/68)) ([3be7b4b](https://github.com/band-ai/phoenix-channels-python-client/commit/3be7b4b39c1e490ff5e83d8e7d199b7c573e7141))
+* run in the merge queue, not on draft PRs ([#73](https://github.com/band-ai/phoenix-channels-python-client/issues/73)) ([9ef0e08](https://github.com/band-ai/phoenix-channels-python-client/commit/9ef0e088a3aa4de06ddeedf8e6a9c38a7abeae85))
+
 ## [0.3.0](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.2.5...phoenix-channels-python-client-v0.3.0) (2026-10-12)
 
 
