@@ -5,12 +5,17 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  # The merge queue re-runs the required checks on each merge group.
+  merge_group:
 
 permissions:
   contents: read
 
 jobs:
   test:
+    # Drafts get no CI; ready_for_review above fires the first real run.
+    if: &not-draft github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     # Backstop for a hung async test; the suite takes well under a minute.
@@ -42,6 +47,7 @@ jobs:
         run: uv run pytest ${{ matrix.python-version == '3.13' && '--cov' || '' }}
 
   lint:
+    if: *not-draft
     name: Lint
     runs-on: ubuntu-latest
 
@@ -69,6 +75,7 @@ jobs:
         run: uv run ruff format --check
 
   type-check:
+    if: *not-draft
     name: Type Check
     runs-on: ubuntu-latest
 

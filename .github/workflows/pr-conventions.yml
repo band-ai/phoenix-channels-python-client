@@ -3,6 +3,9 @@ name: PR Conventions
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
+  # Required checks must also report on the merge queue's branch, or the queue
+  # deadlocks. A merge group has no PR, so both jobs skip, which counts as success.
+  merge_group:
 
 permissions:
   contents: read
@@ -16,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     # Bot PRs (dependabot, release-please) follow their own conventions. Gate on
     # the PR's author: a person editing or updating a bot's PR triggers the run.
-    if: &human-author "!endsWith(github.event.pull_request.user.login, '[bot]')"
+    if: &human-pr "github.event_name == 'pull_request' && !endsWith(github.event.pull_request.user.login, '[bot]')"
     steps:
       - &checkout-types
         name: Check out the type list
@@ -65,7 +68,7 @@ jobs:
   branch:
     name: Validate Branch Name
     runs-on: ubuntu-latest
-    if: *human-author
+    if: *human-pr
     steps:
       - *checkout-types
 
