@@ -40,7 +40,10 @@ class ReconnectPolicy(BaseModel):
     factor: PositiveFloat = 2.0
     max_delay_s: NonNegativeFloat = 30.0
     stable_reset_s: PositiveFloat = 60.0
-    reconnect_on_normal_close: bool = False
+    # Phoenix >= 1.8.8 closes deliberate disconnects with 1001 ("reconnect
+    # expected"), and Bandit answers a close the peer started with 1000, so
+    # neither code is a stop signal.
+    reconnect_on_normal_close: bool = True
     policy_violation_is_terminal: bool = True
     service_restart_min_delay_s: NonNegativeFloat = 1.0
     service_restart_max_delay_s: NonNegativeFloat = 5.0

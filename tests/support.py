@@ -81,6 +81,17 @@ def derive_policy(base: ReconnectPolicy, **changes: object) -> ReconnectPolicy:
     return ReconnectPolicy.model_validate(base.model_dump() | changes)
 
 
+# Stops on a server 1000/1001, which the default policy reconnects from.
+STOPS_ON_NORMAL_CLOSE = derive_policy(FAST_RECONNECT, reconnect_on_normal_close=False)
+
+
+# Runs the test once per code a peer uses to close normally.
+each_normal_close_code = pytest.mark.parametrize(
+    "close_code",
+    [CloseCode.NORMAL_CLOSURE, CloseCode.GOING_AWAY],
+    ids=lambda code: str(int(code)),
+)
+
 # Runs the test once per protocol version, through the `protocol` fixture.
 each_protocol = pytest.mark.parametrize(
     "protocol",

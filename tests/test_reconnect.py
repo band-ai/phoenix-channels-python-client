@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from enum import StrEnum
+from http import HTTPStatus
 from typing import Any
 
 import pytest
@@ -14,6 +15,7 @@ from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTop
 from phoenix_channels_python_client.phx_messages import ChannelMessage, Event, PHXEvent
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
+    API_KEY,
     ASYNC_TIMEOUT_S,
     EVENT,
     FAST_RECONNECT,
@@ -21,6 +23,7 @@ from tests.support import (
     LEAVE_TIMEOUT_S,
     OTHER_TOPIC,
     STOP_REASON,
+    STOPS_ON_NORMAL_CLOSE,
     TOPIC,
     UNPARSEABLE_FRAME,
     BusyCallback,
@@ -28,6 +31,7 @@ from tests.support import (
     ReconnectCounter,
     deliver,
     derive_policy,
+    each_normal_close_code,
     each_protocol,
     expect_message,
     make_client,
@@ -55,6 +59,12 @@ UNRECOGNISED_CLOSE_CODE = 4001
 
 # More than one, so a retry follows a failed retry.
 REFUSED_HANDSHAKES = 2
+
+# Refusals the client retries: the platform's own 403 is what stops it.
+RETRIED_REFUSALS = [HTTPStatus.SERVICE_UNAVAILABLE, HTTPStatus.UNAUTHORIZED]
+
+TERMINAL_REFUSAL = HTTPStatus.FORBIDDEN
+TERMINAL_REFUSAL_ERROR = f"terminal handshake status {int(TERMINAL_REFUSAL)}"
 
 
 class RejoinOutcome(StrEnum):
@@ -144,8 +154,13 @@ async def test_with_auto_reconnect_disabled_a_service_restart_disconnects(
         assert await wait_for_condition(lambda: client.connection is None)
 
 
+@pytest.mark.parametrize(
+    "refusal", RETRIED_REFUSALS, ids=lambda status: str(int(status))
+)
 async def test_consecutive_failed_connects_keep_retrying_until_the_server_accepts(
-    phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
+    phoenix_server: FakePhoenixServer,
+    received: asyncio.Queue[ChannelMessage],
+    refusal: HTTPStatus,
 ) -> None:
     reconnects = ReconnectCounter()
     client = make_client(
@@ -154,7 +169,7 @@ async def test_consecutive_failed_connects_keep_retrying_until_the_server_accept
     async with client:
         await client.subscribe_to_topic(TOPIC, received.put)
 
-        with phoenix_server.refusing(REFUSED_HANDSHAKES):
+        with phoenix_server.refusing(REFUSED_HANDSHAKES, refusal):
             await reconnect(phoenix_server, client)
 
         assert phoenix_server.refused_handshakes == REFUSED_HANDSHAKES
@@ -590,17 +605,79 @@ async def test_a_policy_violation_close_stops_reconnecting_with_a_terminal_error
 
 
 @each_protocol
-async def test_a_normal_close_does_not_reconnect_by_default(
+@each_normal_close_code
+async def test_a_normal_close_reconnects_by_default(
     phoenix_server: FakePhoenixServer,
+    received: asyncio.Queue[ChannelMessage],
+    close_code: CloseCode,
+) -> None:
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        await client.subscribe_to_topic(TOPIC, received.put)
+
+        await reconnect(phoenix_server, client, code=close_code)
+
+        await assert_delivers_after_rejoin(phoenix_server, client, TOPIC, received)
+
+
+@each_protocol
+@each_normal_close_code
+async def test_a_normal_close_stops_when_reconnecting_on_it_is_off(
+    phoenix_server: FakePhoenixServer, close_code: CloseCode
 ) -> None:
     phoenix_server.close_on_join_ids.add(phoenix_server.next_client_id)
-    phoenix_server.close_on_join_code = CloseCode.NORMAL_CLOSURE
+    phoenix_server.close_on_join_code = close_code
 
-    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+    async with make_client(
+        phoenix_server, reconnect_policy=STOPS_ON_NORMAL_CLOSE
+    ) as client:
         await client.subscribe_to_topic(TOPIC)
         await asyncio.wait_for(client.run_forever(), ASYNC_TIMEOUT_S)
 
     assert phoenix_server.get_connection_attempts(FakePhoenixServer.SOCKET_PATH) == 1
+
+
+async def test_disabling_auto_reconnect_wins_over_a_normal_close(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        client.auto_reconnect = False
+
+        await phoenix_server.close_all_clients(code=CloseCode.GOING_AWAY)
+
+        await asyncio.wait_for(client.run_forever(), ASYNC_TIMEOUT_S)
+
+    assert phoenix_server.get_connection_attempts(FakePhoenixServer.SOCKET_PATH) == 1
+
+
+async def test_a_refused_handshake_after_a_close_is_terminal(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        with phoenix_server.refusing(REFUSED_HANDSHAKES, TERMINAL_REFUSAL):
+            await phoenix_server.close_all_clients(code=CloseCode.GOING_AWAY)
+
+            with pytest.raises(
+                PHXConnectionError, match=TERMINAL_REFUSAL_ERROR
+            ) as stop:
+                await asyncio.wait_for(client.run_forever(), ASYNC_TIMEOUT_S)
+
+    assert phoenix_server.refused_handshakes == 1
+    assert API_KEY not in str(stop.value)
+
+
+async def test_a_refused_handshake_on_entry_raises_instead_of_retrying(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    client = make_client(phoenix_server, reconnect_policy=FAST_RECONNECT)
+
+    with (
+        phoenix_server.refusing(REFUSED_HANDSHAKES, TERMINAL_REFUSAL),
+        pytest.raises(PHXConnectionError, match=TERMINAL_REFUSAL_ERROR) as stop,
+    ):
+        await asyncio.wait_for(client.__aenter__(), ASYNC_TIMEOUT_S)
+
+    assert phoenix_server.refused_handshakes == 1
+    assert API_KEY not in str(stop.value)
 
 
 @each_protocol

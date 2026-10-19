@@ -19,6 +19,7 @@ from tests.support import (
     EVENT,
     FAST_RECONNECT,
     STOP_REASON,
+    STOPS_ON_NORMAL_CLOSE,
     TOPIC,
     UNPARSEABLE_FRAME,
     deliver,
@@ -71,7 +72,9 @@ async def test_a_string_version_connects_and_receives_a_message(
 async def test_run_forever_returns_when_the_server_closes_normally(
     phoenix_server: FakePhoenixServer,
 ) -> None:
-    async with make_client(phoenix_server) as client:
+    async with make_client(
+        phoenix_server, reconnect_policy=STOPS_ON_NORMAL_CLOSE
+    ) as client:
         await client.subscribe_to_topic(TOPIC)
         run = asyncio.create_task(client.run_forever())
 

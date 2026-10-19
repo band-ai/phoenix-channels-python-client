@@ -6,7 +6,10 @@ import asyncio
 
 import pytest
 
-from phoenix_channels_python_client.client_types import ReconnectDecision
+from phoenix_channels_python_client.client_types import (
+    ClientState,
+    ReconnectDecision,
+)
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.phx_messages import (
     PHOENIX_TOPIC,
@@ -40,6 +43,24 @@ async def test_a_suppressed_reconnect_after_a_failed_connect_is_terminal() -> No
     await harness._supervisor_loop()
 
     assert isinstance(harness._terminal_error, PHXConnectionError)
+
+
+async def test_a_terminal_connect_failure_ends_the_loop_with_its_error() -> None:
+    terminal = PHXConnectionError("refused for good")
+    harness = SupervisorHarness(connect_failures=1)
+    harness.connect_failure_decision = ReconnectDecision(
+        should_reconnect=False, terminal_error=terminal
+    )
+    # Consulted first, it would replace the terminal error with its own.
+    harness.suppress_values = [True]
+
+    await harness._supervisor_loop()
+
+    assert harness.connect_attempts == 1
+    assert harness._terminal_error is terminal
+    assert harness._initial_connection_future is not None
+    assert harness._initial_connection_future.exception() is terminal
+    assert harness._state is ClientState.CLOSED
 
 
 async def test_the_initial_connect_retries_before_succeeding() -> None:

@@ -17,6 +17,7 @@ from tests.support import (
     FAST_RECONNECT,
     LEAVE_TIMEOUT_S,
     STOP_REASON,
+    STOPS_ON_NORMAL_CLOSE,
     TOPIC,
     UNPARSEABLE_FRAME,
     ReconnectCounter,
@@ -262,7 +263,8 @@ async def test_shutdown_from_a_topic_callback_cancels_the_callback(
 async def test_forced_close_racing_shutdown_does_not_leak_into_the_next_session(
     phoenix_server: FakePhoenixServer,
 ) -> None:
-    client = make_client(phoenix_server)
+    # A leaked forced-close flag would reconnect after the normal close below.
+    client = make_client(phoenix_server, reconnect_policy=STOPS_ON_NORMAL_CLOSE)
     async with client:
         await asyncio.wait_for(
             asyncio.gather(

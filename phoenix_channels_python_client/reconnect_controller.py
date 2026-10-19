@@ -4,9 +4,10 @@ import asyncio
 import logging
 import random
 from collections import deque
+from http import HTTPStatus
 
 from websockets import ClientConnection
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client_types import (
@@ -14,6 +15,10 @@ from phoenix_channels_python_client.client_types import (
     ReconnectPolicy,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError
+
+# The platform answers every auth refusal with 403, and its websocket spec makes a
+# rejected reconnect terminal. Any other status, 401 included, is retried.
+TERMINAL_HANDSHAKE_STATUS = HTTPStatus.FORBIDDEN
 
 
 class ReconnectControllerMixin:
@@ -296,6 +301,20 @@ class ReconnectControllerMixin:
             },
         )
         return decision
+
+    def _classify_connect_failure(self, error: Exception) -> ReconnectDecision:
+        if (
+            isinstance(error, InvalidStatus)
+            and error.response.status_code == TERMINAL_HANDSHAKE_STATUS
+        ):
+            return ReconnectDecision(
+                should_reconnect=False,
+                terminal_error=PHXConnectionError(
+                    "Reconnect disabled due to terminal handshake status "
+                    f"{TERMINAL_HANDSHAKE_STATUS} ({TERMINAL_HANDSHAKE_STATUS.phrase})"
+                ),
+            )
+        return ReconnectDecision(should_reconnect=True)
 
     def _apply_disconnect_delay_override(
         self,
