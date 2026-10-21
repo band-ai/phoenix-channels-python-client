@@ -28,7 +28,7 @@ classifiers = [
 dev = [
     "pytest",
     "pytest-asyncio>=1.4",
-    "looptime>=0.7,<0.8",
+    "looptime>=0.7,<0.10",
     "pytest-cov",
     "pre-commit>=3.0.0",
     "commitizen>=3.13.0",
@@ -38,7 +38,7 @@ dev = [
 test = [
     "pytest",
     "pytest-asyncio>=1.4",
-    "looptime>=0.7,<0.8",
+    "looptime>=0.7,<0.10",
 ]
 
 [tool.ruff.lint]
