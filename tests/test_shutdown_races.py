@@ -12,6 +12,9 @@ from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import PHXConnectionError
 from phoenix_channels_python_client.phx_messages import ChannelMessage
+from phoenix_channels_python_client.protocol_handler import (
+    PhoenixChannelsProtocolVersion,
+)
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     ASYNC_TIMEOUT_S,
@@ -175,14 +178,15 @@ async def test_shutdown_during_the_reconnect_backoff_makes_no_new_connection(
 
 
 async def test_shutdown_during_recovery_leaves_no_tasks(
-    phoenix_server: FakePhoenixServer,
+    protocol: PhoenixChannelsProtocolVersion,
 ) -> None:
+    # Proactor replaces the listener's accept task per connection: own it too.
     before = asyncio.all_tasks()
-    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
-        await client.subscribe_to_topic(TOPIC)
-        await crash_with_rejoin_in_flight(phoenix_server, client)
+    async with FakePhoenixServer(protocol) as server:
+        async with make_client(server, reconnect_policy=FAST_RECONNECT) as client:
+            await client.subscribe_to_topic(TOPIC)
+            await crash_with_rejoin_in_flight(server, client)
 
-    # The server's handler for the closed connection finishes on its own.
     assert await wait_for_condition(lambda: not asyncio.all_tasks() - before), [
         repr(task) for task in asyncio.all_tasks() - before
     ]
