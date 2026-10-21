@@ -81,6 +81,11 @@ class FakePhoenixServer:
         self.unanswered_join_ids: set[int] = set()
         # Clear to leave heartbeats unanswered, like an unresponsive server.
         self.answer_heartbeats = True
+        self.heartbeats: asyncio.Queue[tuple[ServerConnection, Frame]] = asyncio.Queue()
+        self.defer_join_targets: set[tuple[int, str]] = set()
+        self.deferred_joins: asyncio.Queue[tuple[ServerConnection, Frame]] = (
+            asyncio.Queue()
+        )
         # Every topic a client asked to join, in order, answered or not.
         self.join_topics: list[str] = []
         # Joined channels, (client id, topic) -> the join frame's join_ref, as
@@ -234,10 +239,10 @@ class FakePhoenixServer:
 
     async def handle_frame(self, websocket: ServerConnection, frame: Frame) -> None:
         match frame.event:
-            case WireEvent.HEARTBEAT if (
-                frame.topic == SYSTEM_TOPIC and self.answer_heartbeats
-            ):
-                await self._reply(websocket, frame, ReplyStatus.OK)
+            case WireEvent.HEARTBEAT if frame.topic == SYSTEM_TOPIC:
+                self.heartbeats.put_nowait((websocket, frame))
+                if self.answer_heartbeats:
+                    await self._reply(websocket, frame, ReplyStatus.OK)
             case WireEvent.JOIN:
                 await self._handle_join(websocket, frame)
             case WireEvent.LEAVE:
@@ -246,9 +251,16 @@ class FakePhoenixServer:
     async def _handle_join(self, websocket: ServerConnection, frame: Frame) -> None:
         client_id = self._client_ids.get(websocket)
         self.join_topics.append(frame.topic)
+        if (client_id, frame.topic) in self.defer_join_targets:
+            self.deferred_joins.put_nowait((websocket, frame))
+            return
         if client_id in self.unanswered_join_ids:
             return
 
+        await self._answer_join(websocket, frame)
+
+    async def _answer_join(self, websocket: ServerConnection, frame: Frame) -> None:
+        client_id = self._client_ids.get(websocket)
         if (client_id, frame.topic) in self.fail_join_targets:
             await self._reply(
                 websocket, frame, ReplyStatus.ERROR, "forced join failure"
@@ -268,6 +280,13 @@ class FakePhoenixServer:
             await websocket.close(
                 code=self.close_on_join_code, reason="forced close on join"
             )
+
+    async def reply_heartbeat(self, connection: ServerConnection, frame: Frame) -> None:
+        await self._reply(connection, frame, ReplyStatus.OK)
+
+    async def release_join(self, connection: ServerConnection, frame: Frame) -> None:
+        self.defer_join_targets.discard((self._client_ids[connection], frame.topic))
+        await self._answer_join(connection, frame)
 
     async def _handle_leave(self, websocket: ServerConnection, frame: Frame) -> None:
         # Phoenix answers a leave for a topic with no channel with an ok reply

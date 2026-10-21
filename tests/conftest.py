@@ -14,6 +14,8 @@ from phoenix_channels_python_client.protocol_handler import (
 from tests.fake_server import FakePhoenixServer
 from tests.support import make_client
 
+pytest_plugins = ("tests.clock",)
+
 
 @pytest.fixture
 def protocol() -> PhoenixChannelsProtocolVersion:

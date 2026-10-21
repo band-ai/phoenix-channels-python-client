@@ -46,6 +46,24 @@ jobs:
       - name: Run tests
         run: uv run pytest ${{ matrix.python-version == '3.13' && '--cov' || '' }}
 
+  windows-heartbeat:
+    if: *not-draft
+    name: Windows heartbeat (Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --extra dev
+      - run: uv run pytest tests/test_heartbeat.py tests/test_heartbeat_timeout.py tests/test_supervisor_internals.py tests/test_shutdown_races.py tests/test_reconnect.py
+
   lint:
     if: *not-draft
     name: Lint

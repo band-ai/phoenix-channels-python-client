@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections import deque
 from collections.abc import Awaitable, Callable
 from types import TracebackType
@@ -99,6 +100,19 @@ def _build_channel_socket_urls(
     )
 
 
+def _validate_heartbeat_threshold(
+    interval: float | None, threshold: float | None
+) -> None:
+    if threshold is None:
+        return
+    if not math.isfinite(threshold) or threshold <= 0:
+        raise ValueError("heartbeat_dead_threshold_s must be finite and > 0")
+    if interval is not None and (not math.isfinite(interval) or threshold <= interval):
+        raise ValueError(
+            "heartbeat_dead_threshold_s must exceed the finite heartbeat interval"
+        )
+
+
 class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
     def __init__(  # noqa: PLR0913  # the public options
         self,
@@ -114,6 +128,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         max_topic_queue_size: int = 1000,
         callback_drain_timeout_s: float = 2.0,
         heartbeat_interval_s: float | None = 30.0,
+        heartbeat_dead_threshold_s: float | None = None,
         on_reconnect: ReconnectCallback | None = None,
         on_disconnect: DisconnectCallback | None = None,
         on_heartbeat_ack: HeartbeatAckCallback | None = None,
@@ -127,6 +142,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
 
         if heartbeat_interval_s is not None and heartbeat_interval_s <= 0:
             raise ValueError("heartbeat_interval_s must be > 0 or None to disable")
+
+        _validate_heartbeat_threshold(heartbeat_interval_s, heartbeat_dead_threshold_s)
 
         if join_timeout_s <= 0:
             raise ValueError("join_timeout_s must be > 0")
@@ -170,6 +187,9 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._initial_connection_future: asyncio.Future[None] | None = None
         self._rapid_disconnects: deque[float] = deque()
         self._terminal_error: Exception | None = None
+        self._heartbeat_dead_threshold_s = heartbeat_dead_threshold_s
+        self._heartbeat_deadline: float | None = None
+        self._heartbeat_timeout: asyncio.Timeout | None = None
         self._heartbeat_interval_s = heartbeat_interval_s
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._pending_heartbeat_ref: str | None = None

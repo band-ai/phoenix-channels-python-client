@@ -264,7 +264,8 @@ Everything after `api_key` is keyword-only:
 | `protocol_version` | `V2` | Phoenix Channels protocol version |
 | `auto_reconnect` | `True` | Reconnect and rejoin topics after a disconnect |
 | `reconnect_policy` | `ReconnectPolicy()` | Backoff and close-code handling (see below) |
-| `heartbeat_interval_s` | `30.0` | Heartbeat period; `None` disables heartbeats |
+| `heartbeat_interval_s` | `30.0` | Heartbeat period; `None` disables heartbeats and timeout enforcement |
+| `heartbeat_dead_threshold_s` | `None` | Optional finite positive acknowledgement-silence limit, greater than the enabled finite interval |
 | `join_timeout_s` | `10.0` | Wait for a join reply |
 | `leave_timeout_s` | `5.0` | Wait for a leave reply |
 | `max_topic_queue_size` | `1000` | Per-topic buffer; the oldest message is dropped when full |
@@ -315,7 +316,21 @@ The client drops the topic and calls `on_topic_lost(topic, error)` once when the
 
 ### Heartbeats
 
-The client sends a `heartbeat` on the `phoenix` topic every `heartbeat_interval_s`. A missed reply only logs a warning; to act on it, combine `on_heartbeat_ack` with `close_connection()`.
+The client sends a `heartbeat` on the `phoenix` topic every `heartbeat_interval_s`. By default, missed replies log warnings and sending continues with a new reference each interval.
+
+Set `heartbeat_dead_threshold_s` to enable closure after acknowledgement silence:
+
+```python
+client = PHXChannelsClient(
+    websocket_url, api_key,
+    heartbeat_interval_s=30.0,
+    heartbeat_dead_threshold_s=60.0,
+)
+```
+
+The deadline starts when each socket is adopted, including during rejoin and reconnect callbacks. Only a matching pending reply received strictly before expiry renews it, before `on_heartbeat_ack` runs. Enabled enforcement keeps one outstanding heartbeat, skipping sends until it is acknowledged or expires. WebSocket Pong and unrelated messages do not renew it. Rejoin completion grants no additional grace.
+
+Expiry or heartbeat send failure force-closes that socket; the supervisor handles cleanup and reconnect/rejoin according to `auto_reconnect` and the existing policy. The deadline bounds close initiation; the transport has its own close-handshake timeout. `heartbeat_interval_s=None` disables heartbeat activity even with a threshold, but a supplied threshold must still be finite and positive. Long thresholds do not prevent the server from applying its own inactivity timeout.
 
 ## Logging
 
