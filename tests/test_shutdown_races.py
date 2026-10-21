@@ -183,7 +183,9 @@ async def test_shutdown_during_recovery_leaves_no_tasks(
         await crash_with_rejoin_in_flight(phoenix_server, client)
 
     # The server's handler for the closed connection finishes on its own.
-    assert await wait_for_condition(lambda: not asyncio.all_tasks() - before)
+    assert await wait_for_condition(lambda: not asyncio.all_tasks() - before), [
+        repr(task) for task in asyncio.all_tasks() - before
+    ]
 
 
 async def test_a_slow_on_topic_lost_does_not_outlive_shutdown(
