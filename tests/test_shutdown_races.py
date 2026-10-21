@@ -186,6 +186,8 @@ async def test_shutdown_during_recovery_leaves_no_tasks(
         async with make_client(server, reconnect_policy=FAST_RECONNECT) as client:
             await client.subscribe_to_topic(TOPIC)
             await crash_with_rejoin_in_flight(server, client)
+        assert client.connection is None
+        assert await wait_for_condition(lambda: not server.list_client_connections())
 
     assert await wait_for_condition(lambda: not asyncio.all_tasks() - before), [
         repr(task) for task in asyncio.all_tasks() - before
