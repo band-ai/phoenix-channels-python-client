@@ -16,7 +16,7 @@ jobs:
   test:
     # Drafts get no CI; ready_for_review above fires the first real run.
     if: &not-draft github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    name: Test (Python ${{ matrix.python-version }})
+    name: Test (Python ${{ matrix.python-version }}${{ matrix.os == 'windows-latest' && ', Windows' || '' }})
     runs-on: ${{ matrix.os }}
     # Backstop for a hung async test; the suite takes well under a minute.
     timeout-minutes: 10
@@ -27,7 +27,7 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
         include:
           - os: windows-latest
-            python-version: "3.15"
+            python-version: "3.13"
 
     steps:
       - name: Checkout repository
@@ -37,6 +37,7 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+          check-latest: ${{ matrix.os == 'windows-latest' }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -48,7 +49,7 @@ jobs:
 
       # Coverage on one version is enough to report the number.
       - name: Run tests
-        run: uv run pytest ${{ matrix.python-version == '3.13' && '--cov' || '' }}
+        run: uv run pytest ${{ matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' && '--cov' || '' }}
 
   lint:
     if: *not-draft
