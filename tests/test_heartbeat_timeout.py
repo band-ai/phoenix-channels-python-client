@@ -452,7 +452,6 @@ async def test_public_force_close_aborts_and_preserves_failure(
     ) as client:
         socket = client.connection
         assert socket is not None
-        close = socket.close
 
         async def failed_close(code: int = 1000, reason: str = "") -> None:
             del code, reason
@@ -464,15 +463,12 @@ async def test_public_force_close_aborts_and_preserves_failure(
         with monkeypatch.context() as patch:
             patch.setattr(socket, "close", failed_close)
             closing = asyncio.create_task(client.close_connection(STOP_REASON))
-            try:
-                await entered.wait()
-                if cancel:
-                    closing.cancel()
-                with pytest.raises(asyncio.CancelledError if cancel else CallbackError):
-                    await closing
-                await socket.wait_closed()
-            finally:
-                patch.setattr(socket, "close", close)
+            await entered.wait()
+            if cancel:
+                closing.cancel()
+            with pytest.raises(asyncio.CancelledError if cancel else CallbackError):
+                await closing
+            await socket.wait_closed()
         await client.run_forever(install_signal_handlers=False)
         assert socket.state is State.CLOSED
 
