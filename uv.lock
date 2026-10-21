@@ -323,6 +323,15 @@ wheels = [
 ]
 
 [[package]]
+name = "looptime"
+version = "0.7"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d6/3e/74b54612606b87eedd21820517d206c370888fea8c66d93c05f1f4d4388e/looptime-0.7.tar.gz", hash = "sha256:6b32eab62d2f11af9d2322a0d120054a38b9eb9380383a427a68155cf34963c4", size = 38328, upload-time = "2026-01-03T13:06:26.224Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/24/3c/2bec447bf2486dfe8ed9c99d01892d57388b3620883d2374b975f36f1963/looptime-0.7-py3-none-any.whl", hash = "sha256:efb3916196dbbe943a7f2853d79647e4476a5dd149306ce2736607d814930327", size = 21890, upload-time = "2026-01-03T13:06:24.785Z" },
+]
+
+[[package]]
 name = "markupsafe"
 version = "3.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -426,6 +435,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "commitizen" },
+    { name = "looptime" },
     { name = "pre-commit" },
     { name = "pyrefly" },
     { name = "pytest" },
@@ -434,6 +444,7 @@ dev = [
     { name = "ruff" },
 ]
 test = [
+    { name = "looptime" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -441,6 +452,8 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "commitizen", marker = "extra == 'dev'", specifier = ">=3.13.0" },
+    { name = "looptime", marker = "extra == 'dev'", specifier = ">=0.7,<0.8" },
+    { name = "looptime", marker = "extra == 'test'", specifier = ">=0.7,<0.8" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.0.0" },
     { name = "pydantic", specifier = ">=2.8" },
     { name = "pyrefly", marker = "extra == 'dev'" },

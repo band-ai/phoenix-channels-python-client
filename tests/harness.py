@@ -193,6 +193,9 @@ class SupervisorHarness(SupervisorMixin):
         )
         self._rapid_disconnects = deque[float]()
         self._terminal_error: Exception | None = None
+        self._heartbeat_dead_threshold_s: float | None = None
+        self._heartbeat_deadline: float | None = None
+        self._heartbeat_timeout: asyncio.Timeout | None = None
         self._heartbeat_interval_s: float | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._pending_heartbeat_ref = pending_heartbeat_ref
