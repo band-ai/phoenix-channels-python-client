@@ -38,6 +38,7 @@ class TopicSubscription:
         field(default_factory=dict)
     )
     on_join_response: JoinResponseCallback | None = None
+    blocks_reconnect: bool = True
     established: bool = False
     join_drop_baseline: int = 0
     leave_ref: str | None = None

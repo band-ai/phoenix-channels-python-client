@@ -270,13 +270,14 @@ Everything after `api_key` is keyword-only:
 | `leave_timeout_s` | `5.0` | Wait for a leave reply |
 | `max_topic_queue_size` | `1000` | Per-topic buffer; the oldest message is dropped when full |
 | `callback_drain_timeout_s` | `2.0` | How long the message being handled (its message handler, then its event handler) may finish before a rejoin cancels it; queued messages are dropped |
-| `on_reconnect` | `None` | `async () -> None`, called after topics are rejoined |
+| `on_reconnect` | `None` | `async () -> None`, called after required first-attempt reconciliation |
 | `on_disconnect` | `None` | `async (error: Exception \| None) -> None`; `None` on a clean close |
 | `on_heartbeat_ack` | `None` | Synchronous `() -> None`; runs on the message path, so keep it fast |
 | `on_topic_lost` | `None` | `async (topic: str, error: Exception) -> None`, called when the client drops a topic you didn't unsubscribe |
 | `additional_headers` | `None` | Extra handshake headers sent on every (re)connect |
 
-Exceptions raised in callbacks are logged, not raised.
+Exceptions raised in ordinary message and lifecycle callbacks are logged, not raised.
+Join-response installation failures instead fail the join (see below).
 
 ## Connection Lifecycle and Errors
 
@@ -431,3 +432,24 @@ replay guarantee. A fresh client must install a fresh snapshot after process los
 Join replies match request refs on both protocols. V2 also filters stale channel
 generations by `join_ref`. V1 cannot reliably fence unsolicited events/lifecycle
 frames from older channels; it does not provide V2 event-generation isolation.
+
+### Optional reconnect participation
+
+`subscribe_to_topic(topic, async_callback=None, *, on_join_response=None,
+blocks_reconnect=True) -> None` preserves required recovery by default. Required
+topics reconcile their first socket-rejoin attempt sequentially before
+`on_reconnect`; transient failures continue through existing recovery/backoff.
+The barrier does not wait for eventual success of every required topic.
+
+Set `blocks_reconnect=False` for optional subscriptions. After required first
+attempts, their existing per-topic recovery tasks perform an immediate join and
+retry transient failures with the existing backoff. Required event delivery and
+`on_reconnect` do not wait for optional replies, old callback drains or retries.
+This option cannot isolate synchronous code that blocks the event loop. Explicit
+initial subscribe always waits for its own join response and installation.
+
+`on_reconnect` conveys no optional readiness or registration-absence guarantee.
+Check `is_topic_joined()` for current readiness and use `on_topic_lost` to replace
+permanently rejected optional subscriptions; do not blindly resubscribe them
+from `on_reconnect`. Leave, shutdown and another socket disconnect cancel/await
+the owned recovery; obsolete generations cannot install or revive a replacement.

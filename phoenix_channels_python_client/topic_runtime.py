@@ -316,13 +316,22 @@ class TopicRuntimeMixin:
         if not task.cancelled() and (error := task.exception()):
             self.logger.error("Channel lifecycle task failed", exc_info=error)
 
-    def _start_channel_recovery(self, topic: TopicSubscription) -> None:
-        # Off the current connection, the socket rejoin owns the topic. A running
-        # recovery keeps going until the channel stays joined.
-        if not self._is_on_current_connection(topic) or self._is_recovering(topic):
+    def _start_channel_recovery(
+        self, topic: TopicSubscription, *, generation: int | None = None
+    ) -> None:
+        # A socket rejoin supplies its new generation for an immediate attempt.
+        if (
+            self._is_recovering(topic)
+            or not self._should_rejoin(topic)
+            or not self._is_connected()
+            or (generation is None and not self._is_on_current_connection(topic))
+            or (generation is not None and generation != self._conn_generation)
+        ):
             return
         self.logger.info("Recovering channel for topic %s", topic.name)
-        topic.recovery_task = self._track_lifecycle_task(self._recover_channel(topic))
+        topic.recovery_task = self._track_lifecycle_task(
+            self._recover_channel(topic, generation=generation)
+        )
 
     def _start_topic_loss(self, topic: TopicSubscription, error: Exception) -> None:
         if not topic.established:
@@ -332,27 +341,35 @@ class TopicRuntimeMixin:
         # loss unregisters the topic, which also cancels its recovery.
         self._track_lifecycle_task(self._lose_topic(topic, error))
 
-    def _can_recover(self, topic: TopicSubscription) -> bool:
+    def _can_recover(self, topic: TopicSubscription, generation: int) -> bool:
         return (
             not self._shutdown_event.is_set()
             and self._should_rejoin(topic)
-            and self._is_on_current_connection(topic)
+            and self._is_connected()
+            and generation == self._conn_generation
         )
 
-    async def _recover_channel(self, topic: TopicSubscription) -> None:
+    async def _recover_channel(
+        self, topic: TopicSubscription, *, generation: int | None = None
+    ) -> None:
+        immediate = generation is not None
+        generation = self._conn_generation if generation is None else generation
         attempt = 0
         # Socket cleanup fails the pending join and cancels this task in one
         # tick; on Python 3.11 the join's failure can arrive instead of the
         # cancel, so both checks must end the loop.
-        while self._can_recover(topic):
-            await self._runtime_deps._wait_for_shutdown_or_timeout(
-                self._runtime_deps._channel_rejoin_delay(attempt)
-            )
-            if not self._can_recover(topic):
+        while self._can_recover(topic, generation):
+            if immediate:
+                immediate = False
+            else:
+                await self._runtime_deps._wait_for_shutdown_or_timeout(
+                    self._runtime_deps._channel_rejoin_delay(attempt)
+                )
+                attempt += 1
+            if not self._can_recover(topic, generation):
                 return
-            attempt += 1
             try:
-                await self._rejoin_topic(topic, self._conn_generation)
+                await self._rejoin_topic(topic, generation)
             except PHXTopicError as exc:
                 self._start_topic_loss(topic, self._rejoin_rejected(topic, exc))
                 return
@@ -598,6 +615,7 @@ class TopicRuntimeMixin:
         async_callback: Callable[[ChannelMessage], Awaitable[None]] | None = None,
         *,
         on_join_response: JoinResponseCallback | None = None,
+        blocks_reconnect: bool = True,
     ) -> None:
         self._ensure_can_send("subscribe")
         if inspect.iscoroutinefunction(on_join_response) or inspect.iscoroutinefunction(
@@ -616,6 +634,7 @@ class TopicRuntimeMixin:
             process_topic_messages_task=None,
             conn_generation=self._conn_generation,
             on_join_response=on_join_response,
+            blocks_reconnect=blocks_reconnect,
         )
 
         async with self._topics_lock:
@@ -790,10 +809,16 @@ class TopicRuntimeMixin:
             subscriptions = list(self._topic_subscriptions.values())
 
         for topic_subscription in subscriptions:
+            if not topic_subscription.blocks_reconnect:
+                continue
             try:
                 await self._rejoin_topic(topic_subscription, generation)
             except Exception as exc:  # noqa: BLE001  # handled per topic
                 await self._handle_rejoin_failure(topic_subscription, exc)
+
+        for topic_subscription in subscriptions:
+            if not topic_subscription.blocks_reconnect:
+                self._start_channel_recovery(topic_subscription, generation=generation)
 
     async def _rejoin_topic(
         self, topic_subscription: TopicSubscription, generation: int
