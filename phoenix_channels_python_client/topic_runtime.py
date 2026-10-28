@@ -320,12 +320,13 @@ class TopicRuntimeMixin:
         self, topic: TopicSubscription, *, generation: int | None = None
     ) -> None:
         # A socket rejoin supplies its new generation for an immediate attempt.
+        recovery_generation = (
+            self._conn_generation if generation is None else generation
+        )
         if (
             self._is_recovering(topic)
-            or not self._should_rejoin(topic)
-            or not self._is_connected()
-            or (generation is None and not self._is_on_current_connection(topic))
-            or (generation is not None and generation != self._conn_generation)
+            or not self._can_recover(topic, recovery_generation)
+            or (generation is None and topic.conn_generation != recovery_generation)
         ):
             return
         self.logger.info("Recovering channel for topic %s", topic.name)

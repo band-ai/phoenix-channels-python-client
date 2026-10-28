@@ -1,3 +1,5 @@
+"""Required reconnect completion is independent of optional recovery work."""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,16 +10,42 @@ from phoenix_channels_python_client.phx_messages import ChannelMessage
 from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer
 from tests.join_support import JoinProbe, deadline, push
+from tests.optional_support import JOIN_DEADLINE, subscribed_optional_pair
 from tests.support import FAST_RECONNECT, OTHER_TOPIC, TOPIC, each_protocol, make_client
-
-JOIN_DEADLINE = 10.0
 
 
 @each_protocol
 class TestOptionalReconnect:
-    @pytest.mark.parametrize("hold_callback", [False, True])
-    async def test_required_delivery_and_reconnect_finish_while_optional_work_is_held(
-        self, phoenix_server: FakePhoenixServer, *, hold_callback: bool
+    async def test_required_delivery_and_reconnect_finish_while_optional_reply_is_held(
+        self, phoenix_server: FakePhoenixServer
+    ) -> None:
+        async with subscribed_optional_pair(phoenix_server) as (
+            client,
+            optional,
+            required,
+            reconnects,
+        ):
+            phoenix_server.defer_join_targets.add(
+                (phoenix_server.next_client_id, TOPIC)
+            )
+            await phoenix_server.close_all_clients()
+            await reconnects.get()
+            _, request = await phoenix_server.joined.get()
+            await required.installed.get()
+            await push(phoenix_server, request, payload={"required": True})
+            assert (await required.delivered.get()).payload == {"required": True}
+            assert TOPIC in client.get_current_subscriptions()
+            assert not client.is_topic_joined(TOPIC)
+            connection, held = await phoenix_server.deferred_joins.get()
+            await phoenix_server.release_join(connection, held)
+            await optional.installed.get()
+            _, current = await phoenix_server.joined.get()
+            await push(phoenix_server, current, payload={"optional": True})
+            await optional.delivered.get()
+            assert optional.order == [{}, {}, {"optional": True}]
+
+    async def test_required_recovery_finishes_during_optional_callback_drain(
+        self, phoenix_server: FakePhoenixServer
     ) -> None:
         reconnects: asyncio.Queue[None] = asyncio.Queue()
         running, release, finished = (asyncio.Event() for _ in range(3))
@@ -33,15 +61,19 @@ class TestOptionalReconnect:
             optional = JoinProbe(client)
             required = JoinProbe(client, OTHER_TOPIC)
 
+            received: asyncio.Queue[tuple[ChannelMessage, object, bool]] = (
+                asyncio.Queue()
+            )
+
             async def receive(message: ChannelMessage) -> None:
-                if hold_callback and not running.is_set():
-                    running.set()
-                    try:
-                        await release.wait()
-                    finally:
-                        finished.set()
-                else:
-                    await optional.receive(message)
+                running.set()
+                try:
+                    await release.wait()
+                    received.put_nowait(
+                        (message, optional.state, client.is_topic_joined(TOPIC))
+                    )
+                finally:
+                    finished.set()
 
             await client.subscribe_to_topic(
                 TOPIC,
@@ -55,41 +87,52 @@ class TestOptionalReconnect:
             _, initial = await phoenix_server.joined.get()
             await phoenix_server.joined.get()
             await asyncio.gather(optional.installed.get(), required.installed.get())
-            if hold_callback:
-                await push(phoenix_server, initial)
-                await running.wait()
-            else:
-                phoenix_server.defer_join_targets.add(
-                    (phoenix_server.next_client_id, TOPIC)
-                )
+            await push(phoenix_server, initial)
+            await running.wait()
             try:
                 await phoenix_server.close_all_clients()
                 await reconnects.get()
                 _, request = await phoenix_server.joined.get()
-                assert request.topic == OTHER_TOPIC
                 await required.installed.get()
                 await push(phoenix_server, request, payload={"required": True})
                 assert (await required.delivered.get()).payload == {"required": True}
                 assert TOPIC in client.get_current_subscriptions()
                 assert not client.is_topic_joined(TOPIC)
-                if hold_callback:
-                    assert not finished.is_set()
-                    release.set()
-                    await finished.wait()
-                else:
-                    connection, held = await phoenix_server.deferred_joins.get()
-                    await phoenix_server.release_join(connection, held)
+                assert not finished.is_set()
+                release.set()
+                await finished.wait()
+                await received.get()
                 await optional.installed.get()
                 _, current = await phoenix_server.joined.get()
                 await push(phoenix_server, current, payload={"optional": True})
-                await optional.delivered.get()
-                assert optional.order == [{}, {}, {"optional": True}]
+                message, snapshot, ready = await received.get()
+                assert (message.payload, snapshot, ready) == (
+                    {"optional": True},
+                    {},
+                    True,
+                )
+                assert optional.order == [{}, {}]
             finally:
                 release.set()
 
-    @pytest.mark.parametrize("with_topic", [False, True])
-    async def test_empty_required_pass_handles_no_topics_and_all_optional_topics(
-        self, phoenix_server: FakePhoenixServer, *, with_topic: bool
+    async def test_global_reconnect_finishes_without_topics(
+        self, phoenix_server: FakePhoenixServer
+    ) -> None:
+        reconnects: asyncio.Queue[None] = asyncio.Queue()
+        async with (
+            deadline(),
+            make_client(
+                phoenix_server,
+                reconnect_policy=FAST_RECONNECT,
+                on_reconnect=lambda: reconnects.put(None),
+            ) as client,
+        ):
+            await phoenix_server.close_all_clients()
+            await reconnects.get()
+            assert not client.get_current_subscriptions()
+
+    async def test_global_reconnect_finishes_before_all_optional_topics_are_ready(
+        self, phoenix_server: FakePhoenixServer
     ) -> None:
         reconnects: asyncio.Queue[None] = asyncio.Queue()
         async with (
@@ -101,29 +144,25 @@ class TestOptionalReconnect:
             ) as client,
         ):
             probe = JoinProbe(client)
-            if with_topic:
-                await client.subscribe_to_topic(
-                    TOPIC,
-                    probe.receive,
-                    on_join_response=probe.install,
-                    blocks_reconnect=False,
-                )
-                await phoenix_server.joined.get()
-                await probe.installed.get()
-                phoenix_server.defer_join_targets.add(
-                    (phoenix_server.next_client_id, TOPIC)
-                )
+            await client.subscribe_to_topic(
+                TOPIC,
+                probe.receive,
+                on_join_response=probe.install,
+                blocks_reconnect=False,
+            )
+            await phoenix_server.joined.get()
+            await probe.installed.get()
+            phoenix_server.defer_join_targets.add(
+                (phoenix_server.next_client_id, TOPIC)
+            )
             await phoenix_server.close_all_clients()
             await reconnects.get()
-            if with_topic:
-                connection, request = await phoenix_server.deferred_joins.get()
-                assert not client.is_topic_joined(TOPIC)
-                await phoenix_server.release_join(connection, request)
-                await probe.installed.get()
-                await push(phoenix_server, request)
-                await probe.delivered.get()
-            else:
-                assert not client.get_current_subscriptions()
+            connection, request = await phoenix_server.deferred_joins.get()
+            assert not client.is_topic_joined(TOPIC)
+            await phoenix_server.release_join(connection, request)
+            await probe.installed.get()
+            await push(phoenix_server, request)
+            await probe.delivered.get()
 
     async def test_default_required_first_attempts_remain_sequential(
         self, phoenix_server: FakePhoenixServer
