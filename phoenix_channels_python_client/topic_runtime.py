@@ -217,8 +217,8 @@ class TopicRuntimeMixin:
             try:
                 self._install_join_response(topic, message.payload.get("response"))
             except (Exception, asyncio.CancelledError) as exc:
-                self.logger.exception("Join response installation failed")
                 error = PHXTopicError("Join response installation failed")
+                self.logger.exception(str(error))
                 error.__cause__ = exc
                 self._set_future_exception(topic.current_join_ready, error)
                 return

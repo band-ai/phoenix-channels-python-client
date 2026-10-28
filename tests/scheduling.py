@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterator
+import inspect
+from collections.abc import Callable, Coroutine, Generator, Iterator
 from contextlib import contextmanager
 from contextvars import Context, copy_context
 from types import CodeType
@@ -99,3 +100,66 @@ class TaskTimerObserver:
 
         with patch.object(loop, "call_later", call_later):
             yield
+
+
+class TaskLifecycleGate:
+    """Hold one real task's start or finalizer without replacing its coroutine."""
+
+    def __init__(
+        self, code: CodeType, *, hold_start: bool = False, hold_exit: bool = False
+    ) -> None:
+        self.code = code
+        self.started = asyncio.Event()
+        self.exiting = asyncio.Event()
+        self.start = asyncio.Event()
+        self.finish = asyncio.Event()
+        if not hold_start:
+            self.start.set()
+        if not hold_exit:
+            self.finish.set()
+        self.task: asyncio.Task[None] | None = None
+        self._used = False
+
+    @contextmanager
+    def installed(self) -> Iterator[None]:
+        loop = asyncio.get_running_loop()
+        previous = loop.get_task_factory()
+
+        def factory(
+            loop: asyncio.AbstractEventLoop,
+            work: Coroutine[Any, Any, Any] | Generator[Any, None, Any],
+            /,
+            *,
+            context: Context | None = None,
+        ) -> asyncio.Future[Any]:
+            if (
+                not self._used
+                and inspect.iscoroutine(work)
+                and work.cr_code is self.code
+            ):
+                self._used = True
+                self.task = asyncio.Task(self._run(work), loop=loop, context=context)
+                return self.task
+            if previous is not None:
+                if context is not None:
+                    return context.run(previous, loop, work)
+                return previous(loop, work)
+            return asyncio.Task(work, loop=loop, context=context)
+
+        loop.set_task_factory(factory)
+        try:
+            yield
+        finally:
+            loop.set_task_factory(previous)
+            self.start.set()
+            self.finish.set()
+
+    async def _run(self, work: Coroutine[Any, Any, None]) -> None:
+        self.started.set()
+        try:
+            await self.start.wait()
+            await work
+        finally:
+            work.close()
+            self.exiting.set()
+            await self.finish.wait()

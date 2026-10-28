@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
-from collections.abc import AsyncIterator, Coroutine, Generator, Iterator
-from contextlib import asynccontextmanager, contextmanager
-from contextvars import Context
-from typing import Any
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from phoenix_channels_python_client import PHXChannelsClient
 from phoenix_channels_python_client.phx_messages import ChannelMessage
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from tests.fake_server import FakePhoenixServer, Frame, ReplyStatus, WireEvent
+from tests.scheduling import TaskLifecycleGate
 from tests.support import ASYNC_TIMEOUT_S, EVENT, TOPIC
 
 
@@ -80,65 +78,12 @@ async def deadline() -> AsyncIterator[None]:
         yield
 
 
-class ProcessorGate:
-    """Hold one real processor's start or finalizer at the task boundary.
-
-    Initial joins have no application callback to hold. The task factory supplies
-    that missing lifecycle boundary without replacing the router or processor.
-    """
+class ProcessorGate(TaskLifecycleGate):
+    """Control a processor lifetime when no application callback exists to hold."""
 
     def __init__(self, *, hold_start: bool = False, hold_exit: bool = False) -> None:
-        self.started = asyncio.Event()
-        self.exiting = asyncio.Event()
-        self.start = asyncio.Event()
-        self.finish = asyncio.Event()
-        if not hold_start:
-            self.start.set()
-        if not hold_exit:
-            self.finish.set()
-        self.task: asyncio.Task[None] | None = None
-        self._used = False
-
-    @contextmanager
-    def installed(self) -> Iterator[None]:
-        loop = asyncio.get_running_loop()
-        previous = loop.get_task_factory()
-
-        def factory(
-            loop: asyncio.AbstractEventLoop,
-            work: Coroutine[Any, Any, Any] | Generator[Any, None, Any],
-            /,
-            *,
-            context: Context | None = None,
-        ) -> asyncio.Future[Any]:
-            if (
-                not self._used
-                and inspect.iscoroutine(work)
-                and work.cr_code is TopicRuntimeMixin._process_topic_messages.__code__
-            ):
-                self._used = True
-                self.task = asyncio.Task(self._run(work), loop=loop, context=context)
-                return self.task
-            if previous is not None:
-                if context is not None:
-                    return context.run(previous, loop, work)
-                return previous(loop, work)
-            return asyncio.Task(work, loop=loop, context=context)
-
-        loop.set_task_factory(factory)
-        try:
-            yield
-        finally:
-            loop.set_task_factory(previous)
-            self.start.set()
-            self.finish.set()
-
-    async def _run(self, work: Coroutine[Any, Any, None]) -> None:
-        self.started.set()
-        try:
-            await self.start.wait()
-            await work
-        finally:
-            work.close()
-            self.exiting.set()
-            await self.finish.wait()
+        super().__init__(
+            TopicRuntimeMixin._process_topic_messages.__code__,
+            hold_start=hold_start,
+            hold_exit=hold_exit,
+        )
