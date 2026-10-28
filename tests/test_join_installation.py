@@ -1,7 +1,11 @@
+"""Join installation rejects invalid hooks and known pre-installation loss."""
+
 from __future__ import annotations
 
 import asyncio
-from typing import cast
+import logging
+from collections.abc import Coroutine
+from typing import Any, cast
 
 import pytest
 
@@ -9,7 +13,7 @@ from phoenix_channels_python_client import JoinResponseCallback
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
 from phoenix_channels_python_client.phx_messages import ChannelMessage
 from tests.clock import Clock
-from tests.fake_server import FakePhoenixServer
+from tests.fake_server import FakePhoenixServer, ReplyStatus
 from tests.join_support import (
     JoinProbe,
     ProcessorGate,
@@ -21,7 +25,6 @@ from tests.join_support import (
 from tests.support import (
     FAST_RECONNECT,
     OTHER_TOPIC,
-    REJOINED_ONCE,
     TOPIC,
     each_protocol,
     make_client,
@@ -40,11 +43,18 @@ def throwing_hook(error: BaseException) -> JoinResponseCallback:
 class TestJoinInstallation:
     @pytest.mark.parametrize(
         "error",
-        [ValueError("invalid snapshot"), asyncio.CancelledError("hook failure")],
+        [
+            ValueError("private snapshot content"),
+            asyncio.CancelledError("private hook details"),
+        ],
     )
     async def test_initial_hook_failure_preserves_cause_and_allows_replacement(
-        self, phoenix_server: FakePhoenixServer, error: BaseException
+        self,
+        phoenix_server: FakePhoenixServer,
+        error: BaseException,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
+        caplog.set_level(logging.ERROR, logger="phoenix_channels_python_client.client")
         lost: asyncio.Queue[tuple[str, Exception]] = asyncio.Queue()
 
         async def on_lost(topic: str, failure: Exception) -> None:
@@ -59,6 +69,13 @@ class TestJoinInstallation:
                     TOPIC, on_join_response=throwing_hook(error)
                 )
             assert caught.value.__cause__ is error
+            assert caplog.record_tuples == [
+                (
+                    "phoenix_channels_python_client.client",
+                    logging.ERROR,
+                    f"Join response installation failed [{type(error).__name__}]",
+                )
+            ]
             assert TOPIC not in client.get_current_subscriptions()
             probe = JoinProbe(client)
             await client.subscribe_to_topic(
@@ -70,9 +87,8 @@ class TestJoinInstallation:
             await probe.delivered.get()
             assert lost.empty()
 
-    @pytest.mark.parametrize("wrapped", [False, True])
-    async def test_async_installers_are_never_run(
-        self, phoenix_server: FakePhoenixServer, *, wrapped: bool
+    async def test_async_function_is_rejected_before_join(
+        self, phoenix_server: FakePhoenixServer
     ) -> None:
         ran = asyncio.Event()
 
@@ -80,7 +96,7 @@ class TestJoinInstallation:
             del response
             ran.set()
 
-        hook = (lambda response: asynchronous(response)) if wrapped else asynchronous
+        hook = asynchronous
         async with deadline(), make_client(phoenix_server) as client:
             with pytest.raises(PHXTopicError):
                 await client.subscribe_to_topic(
@@ -88,24 +104,51 @@ class TestJoinInstallation:
                 )
             assert not ran.is_set()
             assert not client.get_current_subscriptions()
-            assert len(phoenix_server.join_topics) == int(wrapped)
+            assert len(phoenix_server.join_topics) == 0
 
-    @pytest.mark.parametrize("external_future", [False, True])
-    async def test_non_none_results_fail_without_canceling_external_work(
-        self, phoenix_server: FakePhoenixServer, *, external_future: bool
+    async def test_wrapped_coroutine_is_closed_without_running(
+        self, phoenix_server: FakePhoenixServer
     ) -> None:
-        future = asyncio.get_running_loop().create_future()
-        result = future if external_future else "invalid return"
-        hook = cast("JoinResponseCallback", lambda _: result)
+        ran = asyncio.Event()
+
+        async def asynchronous(response: object) -> None:
+            del response
+            ran.set()
+
+        def hook(response: object) -> Coroutine[Any, Any, None]:
+            return asynchronous(response)
+
+        async with deadline(), make_client(phoenix_server) as client:
+            with pytest.raises(PHXTopicError):
+                await client.subscribe_to_topic(
+                    TOPIC, on_join_response=cast("JoinResponseCallback", hook)
+                )
+            assert not ran.is_set()
+            assert not client.get_current_subscriptions()
+            assert len(phoenix_server.join_topics) == 1
+
+    async def test_invalid_return_fails_installation(
+        self, phoenix_server: FakePhoenixServer
+    ) -> None:
+        hook = cast("JoinResponseCallback", lambda _: "invalid return")
+        async with deadline(), make_client(phoenix_server) as client:
+            with pytest.raises(PHXTopicError):
+                await client.subscribe_to_topic(TOPIC, on_join_response=hook)
+            assert not client.get_current_subscriptions()
+
+    async def test_returned_future_is_not_canceled(
+        self, phoenix_server: FakePhoenixServer
+    ) -> None:
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        hook = cast("JoinResponseCallback", lambda _: future)
         async with deadline(), make_client(phoenix_server) as client:
             with pytest.raises(PHXTopicError):
                 await client.subscribe_to_topic(TOPIC, on_join_response=hook)
             assert not future.cancelled()
-            assert not client.is_topic_joined(TOPIC)
+            assert not client.get_current_subscriptions()
 
-    @pytest.mark.parametrize("socket_reconnect", [False, True])
-    async def test_established_installation_failure_is_permanent_once(
-        self, phoenix_server: FakePhoenixServer, *, socket_reconnect: bool
+    async def test_socket_rejoin_hook_failure_preserves_cause_and_loses_once(
+        self, phoenix_server: FakePhoenixServer
     ) -> None:
         lost: asyncio.Queue[Exception] = asyncio.Queue()
 
@@ -113,14 +156,13 @@ class TestJoinInstallation:
             assert topic == TOPIC
             await lost.put(error)
 
-        calls = 0
+        installed: list[object] = []
+        failure = ValueError("private snapshot content")
 
         def install(response: object) -> None:
-            nonlocal calls
-            del response
-            calls += 1
-            if calls > 1:
-                raise ValueError("invalid recovery snapshot")
+            if installed:
+                raise failure
+            installed.append(response)
 
         async with (
             deadline(),
@@ -129,20 +171,54 @@ class TestJoinInstallation:
             ) as client,
         ):
             await client.subscribe_to_topic(TOPIC, on_join_response=install)
-            if socket_reconnect:
-                await phoenix_server.close_all_clients()
-            else:
-                await phoenix_server.crash_channel(TOPIC)
-            assert isinstance(await lost.get(), PHXTopicError)
+            await phoenix_server.close_all_clients()
+            error = await lost.get()
+            assert isinstance(error, PHXTopicError)
+            assert isinstance(error.__cause__, PHXTopicError)
+            assert error.__cause__.__cause__ is failure
             assert not client.get_current_subscriptions()
             probe = JoinProbe(client)
             await client.subscribe_to_topic(TOPIC, on_join_response=probe.install)
-            assert calls == REJOINED_ONCE
+            assert installed == [{}]
             assert lost.empty()
 
-    @pytest.mark.parametrize("overflow", [False, True])
-    async def test_queue_loss_before_installation_fails_closed(
-        self, phoenix_server: FakePhoenixServer, *, overflow: bool
+    async def test_channel_recovery_hook_failure_preserves_cause_and_loses_once(
+        self, phoenix_server: FakePhoenixServer
+    ) -> None:
+        lost: asyncio.Queue[Exception] = asyncio.Queue()
+
+        async def on_lost(topic: str, error: Exception) -> None:
+            assert topic == TOPIC
+            await lost.put(error)
+
+        installed: list[object] = []
+        failure = ValueError("private snapshot content")
+
+        def install(response: object) -> None:
+            if installed:
+                raise failure
+            installed.append(response)
+
+        async with (
+            deadline(),
+            make_client(
+                phoenix_server, on_topic_lost=on_lost, reconnect_policy=FAST_RECONNECT
+            ) as client,
+        ):
+            await client.subscribe_to_topic(TOPIC, on_join_response=install)
+            await phoenix_server.crash_channel(TOPIC)
+            error = await lost.get()
+            assert isinstance(error, PHXTopicError)
+            assert isinstance(error.__cause__, PHXTopicError)
+            assert error.__cause__.__cause__ is failure
+            assert not client.get_current_subscriptions()
+            probe = JoinProbe(client)
+            await client.subscribe_to_topic(TOPIC, on_join_response=probe.install)
+            assert installed == [{}]
+            assert lost.empty()
+
+    async def test_preinstall_queue_at_capacity_installs(
+        self, phoenix_server: FakePhoenixServer
     ) -> None:
         capacity = 2
         barrier = asyncio.Event()
@@ -166,22 +242,52 @@ class TestJoinInstallation:
                 async with pending_subscribe(client, probe) as admission:
                     _, request = await phoenix_server.deferred_joins.get()
                     await gate.started.wait()
-                    for _ in range(capacity if overflow else capacity - 1):
+                    for _ in range(capacity - 1):
                         await push(phoenix_server, request)
                     await reply(phoenix_server, request)
                     await push(phoenix_server, independent)
                     await barrier.wait()
                     gate.start.set()
-                    if overflow:
-                        with pytest.raises(PHXConnectionError, match="Messages lost"):
-                            await admission
-                        assert probe.order == []
-                        assert not client.is_topic_joined(TOPIC)
-                    else:
+                    await admission
+                    await push(phoenix_server, request, payload={"after": True})
+                    await probe.delivered.get()
+                    assert probe.order == [None, {"after": True}]
+
+    async def test_preinstall_overflow_fails_closed(
+        self, phoenix_server: FakePhoenixServer
+    ) -> None:
+        capacity = 2
+        barrier = asyncio.Event()
+        gate = ProcessorGate(hold_start=True)
+        async with (
+            deadline(),
+            make_client(phoenix_server, max_topic_queue_size=capacity) as client,
+        ):
+            # This independent topic proves the router has consumed the burst.
+            async def routed(message: ChannelMessage) -> None:
+                del message
+                barrier.set()
+
+            await client.subscribe_to_topic(OTHER_TOPIC, routed)
+            _, independent = await phoenix_server.joined.get()
+            phoenix_server.defer_join_targets.add(
+                (phoenix_server.next_client_id - 1, TOPIC)
+            )
+            probe = JoinProbe(client)
+            with gate.installed():
+                async with pending_subscribe(client, probe) as admission:
+                    _, request = await phoenix_server.deferred_joins.get()
+                    await gate.started.wait()
+                    for _ in range(capacity):
+                        await push(phoenix_server, request)
+                    await reply(phoenix_server, request)
+                    await push(phoenix_server, independent)
+                    await barrier.wait()
+                    gate.start.set()
+                    with pytest.raises(PHXConnectionError, match="Messages lost"):
                         await admission
-                        await push(phoenix_server, request, payload={"after": True})
-                        await probe.delivered.get()
-                        assert probe.order == [None, {"after": True}]
+                    assert probe.order == []
+                    assert not client.is_topic_joined(TOPIC)
 
     async def test_established_overflow_retries_with_a_new_snapshot(
         self, phoenix_server: FakePhoenixServer
@@ -223,7 +329,7 @@ class TestJoinInstallation:
                 await barrier.get()
                 phoenix_server.defer_join_targets.discard((client_id, TOPIC))
                 phoenix_server.join_payloads[TOPIC] = {
-                    "status": "ok",
+                    "status": ReplyStatus.OK,
                     "response": {"fresh": True},
                 }
                 gate.start.set()

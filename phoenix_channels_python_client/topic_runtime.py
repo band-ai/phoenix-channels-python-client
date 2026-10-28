@@ -216,7 +216,8 @@ class TopicRuntimeMixin:
                 return
             try:
                 self._install_join_response(topic, message.payload.get("response"))
-            except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 - fail closed at the synchronous hook boundary
+            except (Exception, asyncio.CancelledError) as exc:
+                self.logger.exception("Join response installation failed")
                 error = PHXTopicError("Join response installation failed")
                 error.__cause__ = exc
                 self._set_future_exception(topic.current_join_ready, error)
@@ -377,7 +378,9 @@ class TopicRuntimeMixin:
     def _rejoin_rejected(
         self, topic: TopicSubscription, error: PHXTopicError
     ) -> PHXTopicError:
-        return PHXTopicError(f"Failed to rejoin topic {topic.name}: {error}")
+        failure = PHXTopicError(f"Failed to rejoin topic {topic.name}: {error}")
+        failure.__cause__ = error
+        return failure
 
     async def _lose_topic(self, topic: TopicSubscription, error: Exception) -> None:
         if await self._unregister_topic(topic.name, error=error, only=topic) is None:

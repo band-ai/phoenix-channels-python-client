@@ -12,7 +12,7 @@ from typing import Any
 from phoenix_channels_python_client import PHXChannelsClient
 from phoenix_channels_python_client.phx_messages import ChannelMessage
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
-from tests.fake_server import FakePhoenixServer, Frame, WireEvent
+from tests.fake_server import FakePhoenixServer, Frame, ReplyStatus, WireEvent
 from tests.support import ASYNC_TIMEOUT_S, EVENT, TOPIC
 
 
@@ -68,7 +68,7 @@ async def push(
 
 
 async def reply(
-    server: FakePhoenixServer, request: Frame, *, status: str = "ok"
+    server: FakePhoenixServer, request: Frame, *, status: ReplyStatus = ReplyStatus.OK
 ) -> None:
     await push(server, request, WireEvent.REPLY, {"status": status}, ref=request.ref)
 

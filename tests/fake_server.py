@@ -89,6 +89,7 @@ class FakePhoenixServer:
         # Every topic a client asked to join, in order, answered or not.
         self.join_topics: list[str] = []
         self.join_payloads: dict[str, Mapping[str, object]] = {}
+        self.join_events: dict[str, list[tuple[str, Mapping[str, object]]]] = {}
         self.joined: asyncio.Queue[tuple[ServerConnection, Frame]] = asyncio.Queue()
         self.left: asyncio.Queue[tuple[ServerConnection, Frame]] = asyncio.Queue()
         # Joined channels, (client id, topic) -> the join frame's join_ref, as
@@ -276,6 +277,10 @@ class FakePhoenixServer:
         if frame.topic in self.VALID_TOPICS:
             self.members[(self._client_ids[websocket], frame.topic)] = frame.join_ref
             await self._reply(websocket, frame, ReplyStatus.OK)
+            for event, payload in self.join_events.get(frame.topic, []):
+                await self._send(
+                    websocket, Frame(frame.join_ref, None, frame.topic, event, payload)
+                )
             if self.crashes_after_join:
                 self.crashes_after_join -= 1
                 await self._end_channel(websocket, frame.topic, WireEvent.ERROR)

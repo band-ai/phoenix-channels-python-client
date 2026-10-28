@@ -216,6 +216,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
             self._state == ClientState.CLOSED
             and not self._topic_subscriptions
             and self.connection is None
+            and not self._cleanup_tasks
         )
 
     async def __aenter__(self) -> Self:
