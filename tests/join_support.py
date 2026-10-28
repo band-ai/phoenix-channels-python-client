@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 
@@ -39,11 +40,14 @@ class JoinProbe:
 
 @asynccontextmanager
 async def pending_subscribe(
-    client: PHXChannelsClient, probe: JoinProbe
+    client: PHXChannelsClient, probe: JoinProbe, *, blocks_reconnect: bool = True
 ) -> AsyncIterator[asyncio.Task[None]]:
     task = asyncio.create_task(
         client.subscribe_to_topic(
-            probe.topic, probe.receive, on_join_response=probe.install
+            probe.topic,
+            probe.receive,
+            on_join_response=probe.install,
+            blocks_reconnect=blocks_reconnect,
         )
     )
     try:
@@ -100,3 +104,23 @@ def paused_writes(connection: ClientConnection) -> Iterator[None]:
     finally:
         if connection.paused:
             connection.resume_writing()
+
+
+class RecoveryFailures(logging.Handler):
+    """Signal a reported transient failure before advancing its retry clock."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.receipts: asyncio.Queue[logging.LogRecord] = asyncio.Queue()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.getMessage().startswith("Rejoin attempt "):
+            self.receipts.put_nowait(record)
+
+    @contextmanager
+    def attached(self, logger: logging.Logger) -> Iterator[RecoveryFailures]:
+        logger.addHandler(self)
+        try:
+            yield self
+        finally:
+            logger.removeHandler(self)

@@ -242,7 +242,10 @@ async def test_each_channel_rejoin_attempt_backs_off_further() -> None:
     runtime._mark_channel_errored(topic)
 
     try:
-        await asyncio.wait_for(runtime._recover_channel(topic), ASYNC_TIMEOUT_S)
+        await asyncio.wait_for(
+            runtime._recover_channel(topic, generation=runtime._conn_generation),
+            ASYNC_TIMEOUT_S,
+        )
     finally:
         await runtime._unregister_topic(TOPIC)
 
