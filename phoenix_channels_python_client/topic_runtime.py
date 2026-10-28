@@ -331,7 +331,11 @@ class TopicRuntimeMixin:
             return
         self.logger.info("Recovering channel for topic %s", topic.name)
         topic.recovery_task = self._track_lifecycle_task(
-            self._recover_channel(topic, generation=generation)
+            self._recover_channel(
+                topic,
+                generation=recovery_generation,
+                immediate=generation is not None,
+            )
         )
 
     def _start_topic_loss(self, topic: TopicSubscription, error: Exception) -> None:
@@ -351,10 +355,12 @@ class TopicRuntimeMixin:
         )
 
     async def _recover_channel(
-        self, topic: TopicSubscription, *, generation: int | None = None
+        self,
+        topic: TopicSubscription,
+        *,
+        generation: int,
+        immediate: bool = False,
     ) -> None:
-        immediate = generation is not None
-        generation = self._conn_generation if generation is None else generation
         attempt = 0
         # Socket cleanup fails the pending join and cancels this task in one
         # tick; on Python 3.11 the join's failure can arrive instead of the

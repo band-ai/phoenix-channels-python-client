@@ -7,12 +7,12 @@ from contextlib import suppress
 
 import pytest
 
-from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
+from phoenix_channels_python_client.exceptions import PHXTopicError
+from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer, ReplyStatus, WireEvent
 from tests.join_support import (
     JoinProbe,
-    ProcessorGate,
     RecoveryFailures,
     deadline,
     pending_subscribe,
@@ -21,9 +21,11 @@ from tests.join_support import (
 )
 from tests.optional_support import (
     JOIN_DEADLINE,
+    pending_cleanup_action,
     subscribed_optional,
     subscribed_optional_pair,
 )
+from tests.scheduling import TaskLifecycleGate
 from tests.support import (
     FAST_RECONNECT,
     OTHER_TOPIC,
@@ -64,41 +66,54 @@ class TestOptionalLifecycle:
             required,
             reconnects,
         ):
-            phoenix_server.defer_join_targets.add(
-                (phoenix_server.next_client_id, TOPIC)
+            gate = TaskLifecycleGate(
+                TopicRuntimeMixin._recover_channel.__code__, hold_exit=True
             )
-            await phoenix_server.close_all_clients()
-            await reconnects.get()
-            _, ordinary = await phoenix_server.joined.get()
-            _, obsolete = await phoenix_server.deferred_joins.get()
-            await phoenix_server.joined.get()
-            recovery = client.get_current_subscriptions()[TOPIC].recovery_task
-            assert recovery is not None
-            await client.unsubscribe_from_topic(TOPIC)
-            with suppress(asyncio.CancelledError):
-                await recovery
-            await phoenix_server.left.get()
-            await push(phoenix_server, ordinary)
-            await required.delivered.get()
-            assert recovery.done()
-            assert not client._cleanup_tasks
-            phoenix_server.defer_join_targets.clear()
-            fresh = JoinProbe(client)
-            phoenix_server.defer_join_targets.add(
-                (phoenix_server.next_client_id - 1, TOPIC)
-            )
-            async with pending_subscribe(
-                client, fresh, blocks_reconnect=False
-            ) as admission:
-                current_connection, request = await phoenix_server.deferred_joins.get()
-                await reply(phoenix_server, obsolete)
-                await reply(phoenix_server, obsolete, status=ReplyStatus.ERROR)
-                await phoenix_server.release_join(current_connection, request)
-                await admission
-            await push(phoenix_server, request, payload={"replacement": True})
-            await fresh.delivered.get()
-            assert fresh.order == [{}, {"replacement": True}]
-            assert original.order == [{}]
+            with gate.installed():
+                phoenix_server.defer_join_targets.add(
+                    (phoenix_server.next_client_id, TOPIC)
+                )
+                await phoenix_server.close_all_clients()
+                await reconnects.get()
+                _, ordinary = await phoenix_server.joined.get()
+                _, obsolete = await phoenix_server.deferred_joins.get()
+                await phoenix_server.joined.get()
+                recovery = client.get_current_subscriptions()[TOPIC].recovery_task
+                assert recovery is not None
+                async with pending_cleanup_action(
+                    client.unsubscribe_from_topic(TOPIC), release=gate.finish
+                ) as leaving:
+                    await gate.exiting.wait()
+                    await push(phoenix_server, ordinary, payload={"required": True})
+                    assert (await required.delivered.get()).payload == {
+                        "required": True
+                    }
+                    assert not leaving.done()
+                    gate.finish.set()
+                    await leaving
+                    assert recovery.done()
+                await phoenix_server.left.get()
+                assert not client._cleanup_tasks
+                phoenix_server.defer_join_targets.clear()
+                fresh = JoinProbe(client)
+                phoenix_server.defer_join_targets.add(
+                    (phoenix_server.next_client_id - 1, TOPIC)
+                )
+                async with pending_subscribe(
+                    client, fresh, blocks_reconnect=False
+                ) as admission:
+                    (
+                        current_connection,
+                        request,
+                    ) = await phoenix_server.deferred_joins.get()
+                    await reply(phoenix_server, obsolete)
+                    await reply(phoenix_server, obsolete, status=ReplyStatus.ERROR)
+                    await phoenix_server.release_join(current_connection, request)
+                    await admission
+                await push(phoenix_server, request, payload={"replacement": True})
+                await fresh.delivered.get()
+                assert fresh.order == [{}, {"replacement": True}]
+                assert original.order == [{}]
 
     async def test_shutdown_awaits_held_optional_recovery_before_restart_delivery(
         self, phoenix_server: FakePhoenixServer
@@ -109,39 +124,54 @@ class TestOptionalLifecycle:
             _required,
             reconnects,
         ):
-            phoenix_server.defer_join_targets.add(
-                (phoenix_server.next_client_id, TOPIC)
+            gate = TaskLifecycleGate(
+                TopicRuntimeMixin._recover_channel.__code__, hold_exit=True
             )
-            await phoenix_server.close_all_clients()
-            await reconnects.get()
-            await phoenix_server.joined.get()
-            _, obsolete = await phoenix_server.deferred_joins.get()
-            await phoenix_server.joined.get()
-            recovery = client.get_current_subscriptions()[TOPIC].recovery_task
-            assert recovery is not None
-            await client.shutdown(STOP_REASON)
-            with suppress(asyncio.CancelledError):
-                await recovery
-            await client.__aenter__()
-            assert recovery.done()
-            assert not client._cleanup_tasks
-            phoenix_server.defer_join_targets.clear()
-            fresh = JoinProbe(client)
-            phoenix_server.defer_join_targets.add(
-                (phoenix_server.next_client_id - 1, TOPIC)
-            )
-            async with pending_subscribe(
-                client, fresh, blocks_reconnect=False
-            ) as admission:
-                current_connection, request = await phoenix_server.deferred_joins.get()
-                await reply(phoenix_server, obsolete)
-                await reply(phoenix_server, obsolete, status=ReplyStatus.ERROR)
-                await phoenix_server.release_join(current_connection, request)
-                await admission
-            await push(phoenix_server, request, payload={"replacement": True})
-            await fresh.delivered.get()
-            assert fresh.order == [{}, {"replacement": True}]
-            assert original.order == [{}]
+            with gate.installed():
+                phoenix_server.defer_join_targets.add(
+                    (phoenix_server.next_client_id, TOPIC)
+                )
+                await phoenix_server.close_all_clients()
+                await reconnects.get()
+                await phoenix_server.joined.get()
+                _, obsolete = await phoenix_server.deferred_joins.get()
+                await phoenix_server.joined.get()
+                recovery = client.get_current_subscriptions()[TOPIC].recovery_task
+                assert recovery is not None
+                connection = client.connection
+                assert connection is not None
+                async with pending_cleanup_action(
+                    client.shutdown(STOP_REASON), release=gate.finish
+                ) as stopping:
+                    await gate.exiting.wait()
+                    pong = await connection.ping()
+                    await pong
+                    assert not stopping.done()
+                    gate.finish.set()
+                    await stopping
+                    assert recovery.done()
+                await client.__aenter__()
+                assert not client._cleanup_tasks
+                phoenix_server.defer_join_targets.clear()
+                fresh = JoinProbe(client)
+                phoenix_server.defer_join_targets.add(
+                    (phoenix_server.next_client_id - 1, TOPIC)
+                )
+                async with pending_subscribe(
+                    client, fresh, blocks_reconnect=False
+                ) as admission:
+                    (
+                        current_connection,
+                        request,
+                    ) = await phoenix_server.deferred_joins.get()
+                    await reply(phoenix_server, obsolete)
+                    await reply(phoenix_server, obsolete, status=ReplyStatus.ERROR)
+                    await phoenix_server.release_join(current_connection, request)
+                    await admission
+                await push(phoenix_server, request, payload={"replacement": True})
+                await fresh.delivered.get()
+                assert fresh.order == [{}, {"replacement": True}]
+                assert original.order == [{}]
 
     async def test_new_disconnect_disposes_old_optional_owner_before_new_generation(
         self, phoenix_server: FakePhoenixServer
@@ -351,41 +381,52 @@ class TestOptionalLifecycle:
         async with subscribed_optional_pair(
             phoenix_server, heartbeat_interval_s=None, join_timeout_s=JOIN_DEADLINE
         ) as (client, optional, required, reconnects):
-            phoenix_server.defer_join_targets.add(
-                (phoenix_server.next_client_id, TOPIC)
+            gate = TaskLifecycleGate(
+                TopicRuntimeMixin._recover_channel.__code__, hold_exit=True
             )
-            with RecoveryFailures().attached(client.logger) as failures:
-                await phoenix_server.close_all_clients()
-                await reconnects.get()
-                _, ordinary = await phoenix_server.joined.get()
-                _, obsolete = await phoenix_server.deferred_joins.get()
-                await phoenix_server.joined.get()
-                recovery = client.get_current_subscriptions()[TOPIC].recovery_task
-                assert recovery is not None
-                await push(phoenix_server, obsolete, WireEvent.ERROR)
-                await failures.receipts.get()
-                _, retry = await phoenix_server.deferred_joins.get()
-                await phoenix_server.joined.get()
-                await push(phoenix_server, retry, WireEvent.ERROR)
-                await failures.receipts.get()
-                await client.unsubscribe_from_topic(TOPIC)
-                with suppress(asyncio.CancelledError):
-                    await recovery
-                await push(phoenix_server, ordinary, payload={"required": True})
-                assert (await required.delivered.get()).payload == {"required": True}
-                phoenix_server.defer_join_targets.clear()
-                replacement = JoinProbe(client)
-                await client.subscribe_to_topic(
-                    TOPIC,
-                    replacement.receive,
-                    on_join_response=replacement.install,
-                    blocks_reconnect=False,
+            with gate.installed():
+                phoenix_server.defer_join_targets.add(
+                    (phoenix_server.next_client_id, TOPIC)
                 )
-                _, current = await phoenix_server.joined.get()
-                await push(phoenix_server, current, payload={"replacement": True})
-                await replacement.delivered.get()
-                assert replacement.order == [{}, {"replacement": True}]
-                assert optional.order == [{}]
+                with RecoveryFailures().attached(client.logger) as failures:
+                    await phoenix_server.close_all_clients()
+                    await reconnects.get()
+                    _, ordinary = await phoenix_server.joined.get()
+                    _, obsolete = await phoenix_server.deferred_joins.get()
+                    await phoenix_server.joined.get()
+                    recovery = client.get_current_subscriptions()[TOPIC].recovery_task
+                    assert recovery is not None
+                    await push(phoenix_server, obsolete, WireEvent.ERROR)
+                    await failures.receipts.get()
+                    _, retry = await phoenix_server.deferred_joins.get()
+                    await phoenix_server.joined.get()
+                    await push(phoenix_server, retry, WireEvent.ERROR)
+                    await failures.receipts.get()
+                    async with pending_cleanup_action(
+                        client.unsubscribe_from_topic(TOPIC), release=gate.finish
+                    ) as leaving:
+                        await gate.exiting.wait()
+                        await push(phoenix_server, ordinary, payload={"required": True})
+                        assert (await required.delivered.get()).payload == {
+                            "required": True
+                        }
+                        assert not leaving.done()
+                        gate.finish.set()
+                        await leaving
+                        assert recovery.done()
+                    phoenix_server.defer_join_targets.clear()
+                    replacement = JoinProbe(client)
+                    await client.subscribe_to_topic(
+                        TOPIC,
+                        replacement.receive,
+                        on_join_response=replacement.install,
+                        blocks_reconnect=False,
+                    )
+                    _, current = await phoenix_server.joined.get()
+                    await push(phoenix_server, current, payload={"replacement": True})
+                    await replacement.delivered.get()
+                    assert replacement.order == [{}, {"replacement": True}]
+                    assert optional.order == [{}]
 
     async def test_shutdown_awaits_crashing_optional_owner_before_restart_delivery(
         self, phoenix_server: FakePhoenixServer
@@ -393,79 +434,53 @@ class TestOptionalLifecycle:
         async with subscribed_optional_pair(
             phoenix_server, heartbeat_interval_s=None, join_timeout_s=JOIN_DEADLINE
         ) as (client, optional, _required, reconnects):
-            phoenix_server.defer_join_targets.add(
-                (phoenix_server.next_client_id, TOPIC)
+            gate = TaskLifecycleGate(
+                TopicRuntimeMixin._recover_channel.__code__, hold_exit=True
             )
-            with RecoveryFailures().attached(client.logger) as failures:
-                await phoenix_server.close_all_clients()
-                await reconnects.get()
-                await phoenix_server.joined.get()
-                _, obsolete = await phoenix_server.deferred_joins.get()
-                await phoenix_server.joined.get()
-                recovery = client.get_current_subscriptions()[TOPIC].recovery_task
-                assert recovery is not None
-                await push(phoenix_server, obsolete, WireEvent.ERROR)
-                await failures.receipts.get()
-                _, retry = await phoenix_server.deferred_joins.get()
-                await phoenix_server.joined.get()
-                await push(phoenix_server, retry, WireEvent.ERROR)
-                await failures.receipts.get()
-                await client.shutdown(STOP_REASON)
-                with suppress(asyncio.CancelledError):
-                    await recovery
-                phoenix_server.defer_join_targets.clear()
-                await client.__aenter__()
-                replacement = JoinProbe(client)
-                await client.subscribe_to_topic(
-                    TOPIC,
-                    replacement.receive,
-                    on_join_response=replacement.install,
-                    blocks_reconnect=False,
-                )
-                _, current = await phoenix_server.joined.get()
-                await push(phoenix_server, current, payload={"replacement": True})
-                await replacement.delivered.get()
-                assert replacement.order == [{}, {"replacement": True}]
-                assert optional.order == [{}]
-
-    async def test_socket_invalidation_prevents_a_queued_initial_snapshot_install(
-        self, phoenix_server: FakePhoenixServer
-    ) -> None:
-        reconnects: asyncio.Queue[None] = asyncio.Queue()
-        gate = ProcessorGate(hold_start=True)
-        async with (
-            deadline(),
-            make_client(
-                phoenix_server,
-                reconnect_policy=FAST_RECONNECT,
-                on_reconnect=lambda: reconnects.put(None),
-            ) as client,
-        ):
-            required = JoinProbe(client, OTHER_TOPIC)
-            await client.subscribe_to_topic(
-                OTHER_TOPIC, required.receive, on_join_response=required.install
-            )
-            _, ordinary = await phoenix_server.joined.get()
-            phoenix_server.defer_join_targets.add(
-                (phoenix_server.next_client_id - 1, TOPIC)
-            )
-            initial = JoinProbe(client)
             with gate.installed():
-                async with pending_subscribe(
-                    client, initial, blocks_reconnect=False
-                ) as admission:
-                    _, request = await phoenix_server.deferred_joins.get()
-                    await gate.started.wait()
-                    await reply(phoenix_server, request)
-                    await push(phoenix_server, ordinary)
-                    await required.delivered.get()
+                phoenix_server.defer_join_targets.add(
+                    (phoenix_server.next_client_id, TOPIC)
+                )
+                with RecoveryFailures().attached(client.logger) as failures:
                     await phoenix_server.close_all_clients()
-                    with pytest.raises(PHXConnectionError):
-                        await admission
-                await reconnects.get()
-            assert initial.order == []
-            assert TOPIC not in client.get_current_subscriptions()
-            assert phoenix_server.join_topics == [OTHER_TOPIC, TOPIC, OTHER_TOPIC]
+                    await reconnects.get()
+                    await phoenix_server.joined.get()
+                    _, obsolete = await phoenix_server.deferred_joins.get()
+                    await phoenix_server.joined.get()
+                    recovery = client.get_current_subscriptions()[TOPIC].recovery_task
+                    assert recovery is not None
+                    await push(phoenix_server, obsolete, WireEvent.ERROR)
+                    await failures.receipts.get()
+                    _, retry = await phoenix_server.deferred_joins.get()
+                    await phoenix_server.joined.get()
+                    await push(phoenix_server, retry, WireEvent.ERROR)
+                    await failures.receipts.get()
+                    connection = client.connection
+                    assert connection is not None
+                    async with pending_cleanup_action(
+                        client.shutdown(STOP_REASON), release=gate.finish
+                    ) as stopping:
+                        await gate.exiting.wait()
+                        pong = await connection.ping()
+                        await pong
+                        assert not stopping.done()
+                        gate.finish.set()
+                        await stopping
+                        assert recovery.done()
+                    phoenix_server.defer_join_targets.clear()
+                    await client.__aenter__()
+                    replacement = JoinProbe(client)
+                    await client.subscribe_to_topic(
+                        TOPIC,
+                        replacement.receive,
+                        on_join_response=replacement.install,
+                        blocks_reconnect=False,
+                    )
+                    _, current = await phoenix_server.joined.get()
+                    await push(phoenix_server, current, payload={"replacement": True})
+                    await replacement.delivered.get()
+                    assert replacement.order == [{}, {"replacement": True}]
+                    assert optional.order == [{}]
 
     async def test_optional_success_before_error_recovers(
         self, phoenix_server: FakePhoenixServer

@@ -10,7 +10,7 @@ from tests.join_support import JoinProbe, deadline
 from tests.support import FAST_RECONNECT, OTHER_TOPIC, TOPIC, make_client
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Coroutine
 
     from phoenix_channels_python_client.client import PHXChannelsClient
     from tests.fake_server import FakePhoenixServer
@@ -79,3 +79,17 @@ async def subscribed_optional_pair(
         await server.joined.get()
         await required.installed.get()
         yield client, optional, required, reconnects
+
+
+@asynccontextmanager
+async def pending_cleanup_action(
+    work: Coroutine[Any, Any, None], *, release: asyncio.Event
+) -> AsyncIterator[asyncio.Task[None]]:
+    task = asyncio.create_task(work)
+    try:
+        yield task
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
