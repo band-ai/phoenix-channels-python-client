@@ -16,6 +16,7 @@ from phoenix_channels_python_client.client_types import (
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
 from phoenix_channels_python_client.phx_messages import (
+    CLIENT_LIFECYCLE_EVENTS,
     ChannelEvent,
     ChannelMessage,
     PHXEvent,
@@ -54,6 +55,16 @@ async def _run_handlers(
         await message_handler(message)
     if event_handler is not None:
         await event_handler(message.payload)
+
+
+def _channel_failure(topic: TopicSubscription, event: ChannelEvent) -> Exception:
+    match event:
+        case PHXEvent.error:
+            return PHXConnectionError(f"Channel for topic {topic.name} crashed")
+        case PHXEvent.close:
+            return PHXTopicError(f"Channel for topic {topic.name} closed by the server")
+        case _:
+            raise ValueError("Expected a channel lifecycle event")
 
 
 class TopicRuntimeMixin:
@@ -172,14 +183,8 @@ class TopicRuntimeMixin:
             "Handling join response for topic %s: %s", topic.name, message
         )
 
-        if message.event in (PHXEvent.error, PHXEvent.close):
-            error = (
-                PHXConnectionError(f"Channel for topic {topic.name} crashed")
-                if message.event == PHXEvent.error
-                else PHXTopicError(
-                    f"Channel for topic {topic.name} closed by the server"
-                )
-            )
+        if message.event in CLIENT_LIFECYCLE_EVENTS:
+            error = _channel_failure(topic, message.event)
             self._set_future_exception(topic.current_join_ready, error)
             if topic.established:
                 if message.event == PHXEvent.error:
@@ -257,9 +262,7 @@ class TopicRuntimeMixin:
                 self._mark_channel_errored(topic)
                 self._start_channel_recovery(topic)
             case PHXEvent.close:
-                error = PHXTopicError(
-                    f"Channel for topic {topic.name} closed by the server"
-                )
+                error = _channel_failure(topic, PHXEvent.close)
                 # Synchronous, so a message already queued behind the close
                 # is not delivered.
                 self._fail_current_join(topic, error)
@@ -269,9 +272,7 @@ class TopicRuntimeMixin:
 
     def _mark_channel_errored(self, topic: TopicSubscription) -> None:
         # Readiness is lost before a queued event can be delivered.
-        self._fail_current_join(
-            topic, PHXConnectionError(f"Channel for topic {topic.name} crashed")
-        )
+        self._fail_current_join(topic, _channel_failure(topic, PHXEvent.error))
 
     def _fail_current_join(self, topic: TopicSubscription, error: Exception) -> None:
         # A new future: the successful join is already done, so failing it in
