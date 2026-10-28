@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.4.1...phoenix-channels-python-client-v0.4.2) (2026-10-28)
+
+
+### Features
+
+* **client:** install ordered join responses and own subscription cleanup ([#82](https://github.com/band-ai/phoenix-channels-python-client/issues/82)) ([b2544b7](https://github.com/band-ai/phoenix-channels-python-client/commit/b2544b7005fbce01005e3739f4c86dfc866adeed))
+* **client:** isolate optional subscriptions from reconnect completion ([#83](https://github.com/band-ai/phoenix-channels-python-client/issues/83)) ([26cfdae](https://github.com/band-ai/phoenix-channels-python-client/commit/26cfdaee81cd1e2348e57028b28316363aa9d2f8))
+
 ## [0.4.1](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.4.0...phoenix-channels-python-client-v0.4.1) (2026-10-21)
 
 
