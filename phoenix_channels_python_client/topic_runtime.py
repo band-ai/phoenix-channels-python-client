@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from asyncio import Queue
 from collections.abc import Awaitable, Callable, Coroutine
@@ -9,7 +10,10 @@ from typing import Any, Protocol, cast
 from websockets import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
-from phoenix_channels_python_client.client_types import ClientState
+from phoenix_channels_python_client.client_types import (
+    ClientState,
+    JoinResponseCallback,
+)
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
 from phoenix_channels_python_client.phx_messages import (
     ChannelEvent,
@@ -68,12 +72,14 @@ class TopicRuntimeMixin:
     callback_drain_timeout_s: float
     _on_topic_lost: Callable[[str, Exception], Awaitable[None]] | None
     _lifecycle_tasks: set[asyncio.Task[None]]
+    _cleanup_tasks: set[asyncio.Task[None]]
 
     @property
     def _runtime_deps(self) -> _TopicRuntimeDeps:
         return cast(_TopicRuntimeDeps, self)
 
     def _set_subscription_ready(self, topic_subscription: TopicSubscription) -> None:
+        topic_subscription.established = True
         if not topic_subscription.current_join_ready.done():
             topic_subscription.current_join_ready.set_result(None)
 
@@ -139,7 +145,7 @@ class TopicRuntimeMixin:
                 )
 
                 if current_state == TopicProcessingState.WAITING_FOR_JOIN:
-                    await self._handle_join_response_mode(topic, message)
+                    self._handle_join_response_mode(topic, message)
                     continue
 
                 if current_state == TopicProcessingState.PROCESSING_LEAVE:
@@ -159,20 +165,57 @@ class TopicRuntimeMixin:
             # on_topic_lost on this processor, which shutdown does not cancel.
             self._start_topic_loss(topic, exc)
 
-    async def _handle_join_response_mode(
+    def _handle_join_response_mode(
         self, topic: TopicSubscription, message: ChannelMessage
     ) -> None:
         self.logger.debug(
             "Handling join response for topic %s: %s", topic.name, message
         )
 
-        if message.event != PHXEvent.reply:
-            self.logger.debug(
-                "Ignoring non-reply message while waiting for join on %s", topic.name
+        if message.event in (PHXEvent.error, PHXEvent.close):
+            error = (
+                PHXConnectionError(f"Channel for topic {topic.name} crashed")
+                if message.event == PHXEvent.error
+                else PHXTopicError(
+                    f"Channel for topic {topic.name} closed by the server"
+                )
             )
+            self._set_future_exception(topic.current_join_ready, error)
+            if topic.established:
+                if message.event == PHXEvent.error:
+                    self._start_channel_recovery(topic)
+                else:
+                    self._start_topic_loss(topic, error)
+            return
+
+        if (
+            message.event != PHXEvent.reply
+            or message.ref != topic.join_ref
+            or topic.current_join_ready.done()
+            or not self._is_registered(topic)
+            or not self._is_on_current_connection(topic)
+            or topic.leave_requested.is_set()
+            or self._shutdown_event.is_set()
+        ):
             return
 
         if message.payload.get("status") == "ok":
+            if (
+                topic.on_join_response is not None
+                and topic.dropped_message_count != topic.join_drop_baseline
+            ):
+                self._set_future_exception(
+                    topic.current_join_ready,
+                    PHXConnectionError("Messages lost before join installation"),
+                )
+                return
+            try:
+                self._install_join_response(topic, message.payload.get("response"))
+            except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 - fail closed at the synchronous hook boundary
+                error = PHXTopicError("Join response installation failed")
+                error.__cause__ = exc
+                self._set_future_exception(topic.current_join_ready, error)
+                return
             self._set_subscription_ready(topic)
             self.logger.info("Successfully subscribed to topic %s", topic.name)
             return
@@ -190,9 +233,25 @@ class TopicRuntimeMixin:
             "Failed to subscribe to topic %s: %s", topic.name, error_message
         )
 
+    def _install_join_response(
+        self, topic: TopicSubscription, response: object
+    ) -> None:
+        if topic.on_join_response is None:
+            return
+        result = topic.on_join_response(response)
+        if (
+            inspect.iscoroutine(result)
+            and inspect.getcoroutinestate(result) == inspect.CORO_CREATED
+        ):
+            result.close()
+        if result is not None:
+            raise TypeError("on_join_response must return None")
+
     async def _dispatch_normal_message(
         self, topic: TopicSubscription, message: ChannelMessage
     ) -> None:
+        if message.event == PHXEvent.reply and message.ref == topic.join_ref:
+            return
         match message.event:
             case PHXEvent.error:
                 self._mark_channel_errored(topic)
@@ -209,15 +268,17 @@ class TopicRuntimeMixin:
                 await self._handle_normal_message_mode(topic, message)
 
     def _mark_channel_errored(self, topic: TopicSubscription) -> None:
-        # Waiting for a join again, the topic ignores repeated errors and runs
-        # no callback until the rejoin succeeds.
+        # Readiness is lost before a queued event can be delivered.
         self._fail_current_join(
-            topic, PHXTopicError(f"Channel for topic {topic.name} crashed")
+            topic, PHXConnectionError(f"Channel for topic {topic.name} crashed")
         )
 
     def _fail_current_join(self, topic: TopicSubscription, error: Exception) -> None:
         # A new future: the successful join is already done, so failing it in
         # place would leave the topic looking joined.
+        if not topic.current_join_ready.done():
+            self._set_future_exception(topic.current_join_ready, error)
+            return
         topic.current_join_ready = asyncio.get_running_loop().create_future()
         self._set_future_exception(topic.current_join_ready, error)
 
@@ -262,6 +323,9 @@ class TopicRuntimeMixin:
         topic.recovery_task = self._track_lifecycle_task(self._recover_channel(topic))
 
     def _start_topic_loss(self, topic: TopicSubscription, error: Exception) -> None:
+        if not topic.established:
+            self._set_future_exception(topic.current_join_ready, error)
+            return
         # A task of its own, so a slow on_topic_lost holds up nothing else; the
         # loss unregisters the topic, which also cancels its recovery.
         self._track_lifecycle_task(self._lose_topic(topic, error))
@@ -371,7 +435,7 @@ class TopicRuntimeMixin:
             "Processing message during leave for topic %s: %s", topic.name, message
         )
 
-        if message.event != PHXEvent.reply:
+        if message.event != PHXEvent.reply or message.ref != topic.leave_ref:
             self.logger.debug(
                 "Ignoring queued message for leaving topic %s", topic.name
             )
@@ -443,11 +507,28 @@ class TopicRuntimeMixin:
         )
         self._complete_pending_futures(topic_subscription, unregister_error)
 
-        # First, so the recovery can't restart the topic task stopped next.
-        await _cancel_unless_current(topic_subscription.recovery_task)
-        await self._stop_topic_task(topic_subscription)
+        cleanup = asyncio.create_task(
+            self._cleanup_subscription(topic_subscription, asyncio.current_task())
+        )
+        self._cleanup_tasks.add(cleanup)
+        cleanup.add_done_callback(self._finish_cleanup_task)
+        await asyncio.shield(cleanup)
         self.logger.info("Unregistered topic %s", topic_name)
         return topic_subscription
+
+    async def _cleanup_subscription(
+        self, topic: TopicSubscription, initiator: asyncio.Task[Any] | None
+    ) -> None:
+        # A recovery removing itself unwinds through its failed join, not a cycle.
+        if topic.recovery_task is not initiator:
+            await _cancel_unless_current(topic.recovery_task)
+        if topic.process_topic_messages_task is not initiator:
+            await self._stop_topic_task(topic)
+
+    def _finish_cleanup_task(self, task: asyncio.Task[None]) -> None:
+        self._cleanup_tasks.discard(task)
+        if not task.cancelled() and (error := task.exception()):
+            self.logger.error("Topic cleanup failed", exc_info=error)
 
     def get_current_subscriptions(self) -> dict[str, TopicSubscription]:
         return self._topic_subscriptions.copy()
@@ -499,17 +580,22 @@ class TopicRuntimeMixin:
             ref=topic_subscription.join_ref,
             join_ref=topic_subscription.join_ref,
         )
+        ready = topic_subscription.current_join_ready
         await self._send(connection, join_message)
-        await asyncio.wait_for(
-            topic_subscription.current_join_ready, timeout=self.join_timeout_s
-        )
+        await asyncio.wait_for(ready, timeout=self.join_timeout_s)
 
     async def subscribe_to_topic(
         self,
         topic: str,
         async_callback: Callable[[ChannelMessage], Awaitable[None]] | None = None,
+        *,
+        on_join_response: JoinResponseCallback | None = None,
     ) -> None:
         self._ensure_can_send("subscribe")
+        if inspect.iscoroutinefunction(on_join_response) or inspect.iscoroutinefunction(
+            on_join_response.__call__ if callable(on_join_response) else None
+        ):
+            raise PHXTopicError("on_join_response must be synchronous")
 
         topic_queue: Queue[ChannelMessage] = Queue(maxsize=self.max_topic_queue_size)
         join_ref = self._generate_ref()
@@ -521,9 +607,11 @@ class TopicRuntimeMixin:
             join_ref=join_ref,
             process_topic_messages_task=None,
             conn_generation=self._conn_generation,
+            on_join_response=on_join_response,
         )
 
         async with self._topics_lock:
+            self._ensure_can_send("subscribe")
             if topic in self._topic_subscriptions:
                 raise PHXTopicError(f"Topic {topic} already subscribed")
             self._topic_subscriptions[topic] = topic_subscription
@@ -538,10 +626,11 @@ class TopicRuntimeMixin:
             await self._unregister_topic(
                 topic,
                 error=PHXTopicError(f"Timed out waiting to subscribe to {topic}"),
+                only=topic_subscription,
             )
             raise PHXTopicError(f"Timed out waiting to subscribe to {topic}") from exc
-        except Exception:
-            await self._unregister_topic(topic)
+        except (Exception, asyncio.CancelledError):
+            await self._unregister_topic(topic, only=topic_subscription)
             raise
 
     async def unsubscribe_from_topic(
@@ -556,15 +645,20 @@ class TopicRuntimeMixin:
         if not _allow_disconnected:
             self._ensure_can_send("unsubscribe")
         connection = self.connection if self._state == ClientState.CONNECTED else None
-        # A crashed channel's leave reply can't be told from its rejoin's, so a
-        # leave during recovery completes without one, as Phoenix JS does.
-        complete_locally = connection is None or self._is_recovering(topic_subscription)
+        # Pending/recovering processors cannot dispatch a leave acknowledgement.
+        complete_locally = (
+            connection is None
+            or not self._is_current_join_ready(topic_subscription)
+            or self._is_recovering(topic_subscription)
+            or asyncio.current_task() is topic_subscription.current_callback_task
+        )
 
         topic_subscription.leave_requested.set()
 
         try:
             if connection is not None:
                 leave_ref = self._generate_ref()
+                topic_subscription.leave_ref = leave_ref
                 topic_leave_message = make_message(
                     topic=topic,
                     event=PHXEvent.leave,
@@ -585,7 +679,7 @@ class TopicRuntimeMixin:
                 f"Timed out waiting to unsubscribe from {topic}"
             ) from exc
         finally:
-            await self._unregister_topic(topic)
+            await self._unregister_topic(topic, only=topic_subscription)
 
     def add_event_handler(
         self,
@@ -717,6 +811,7 @@ class TopicRuntimeMixin:
     def _should_rejoin(self, topic_subscription: TopicSubscription) -> bool:
         return (
             self._is_registered(topic_subscription)
+            and topic_subscription.established
             and not topic_subscription.leave_requested.is_set()
         )
 
@@ -733,6 +828,7 @@ class TopicRuntimeMixin:
             asyncio.get_running_loop().create_future()
         )
         self._drain_topic_queue(topic_subscription)
+        topic_subscription.join_drop_baseline = topic_subscription.dropped_message_count
         topic_subscription.process_topic_messages_task = asyncio.create_task(
             self._process_topic_messages(topic_subscription.name)
         )

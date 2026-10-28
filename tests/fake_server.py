@@ -88,6 +88,9 @@ class FakePhoenixServer:
         )
         # Every topic a client asked to join, in order, answered or not.
         self.join_topics: list[str] = []
+        self.join_payloads: dict[str, Mapping[str, object]] = {}
+        self.joined: asyncio.Queue[tuple[ServerConnection, Frame]] = asyncio.Queue()
+        self.left: asyncio.Queue[tuple[ServerConnection, Frame]] = asyncio.Queue()
         # Joined channels, (client id, topic) -> the join frame's join_ref, as
         # Phoenix stores it: always None on v1, whose frames carry no join_ref.
         self.members: dict[tuple[int, str], str | None] = {}
@@ -232,6 +235,8 @@ class FakePhoenixServer:
     ) -> None:
         response = {"reason": reason} if reason else {}
         payload = {"status": status, "response": response}
+        if request.event == WireEvent.JOIN and status == ReplyStatus.OK:
+            payload = dict(self.join_payloads.get(request.topic, payload))
         reply = Frame(
             request.join_ref, request.ref, request.topic, WireEvent.REPLY, payload
         )
@@ -251,6 +256,7 @@ class FakePhoenixServer:
     async def _handle_join(self, websocket: ServerConnection, frame: Frame) -> None:
         client_id = self._client_ids.get(websocket)
         self.join_topics.append(frame.topic)
+        self.joined.put_nowait((websocket, frame))
         if (client_id, frame.topic) in self.defer_join_targets:
             self.deferred_joins.put_nowait((websocket, frame))
             return
@@ -289,6 +295,7 @@ class FakePhoenixServer:
         await self._answer_join(connection, frame)
 
     async def _handle_leave(self, websocket: ServerConnection, frame: Frame) -> None:
+        self.left.put_nowait((websocket, frame))
         # Phoenix answers a leave for a topic with no channel with an ok reply
         # alone; only a live channel also sends phx_close as it stops.
         await self._reply(websocket, frame, ReplyStatus.OK)

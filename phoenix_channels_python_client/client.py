@@ -198,6 +198,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._on_heartbeat_ack = on_heartbeat_ack
         self._on_topic_lost = on_topic_lost
         self._lifecycle_tasks: set[asyncio.Task[None]] = set()
+        self._cleanup_tasks: set[asyncio.Task[None]] = set()
         self._forced_close_pending = False
 
     def redact_diagnostic(self, text: str) -> str:
@@ -273,6 +274,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         await self._unsubscribe_all()
         # Includes on_topic_lost callbacks still running for topics already gone.
         await cancel_and_wait(*self._lifecycle_tasks)
+        if self._cleanup_tasks:
+            await asyncio.gather(*self._cleanup_tasks)
         await self._stop_supervisor()
         await self._cleanup_connection()
         self._connected_event.clear()

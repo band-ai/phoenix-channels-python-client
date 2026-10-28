@@ -13,6 +13,7 @@ from phoenix_channels_python_client.client import (
     ReconnectPolicy,
     TopicLostCallback,
 )
+from phoenix_channels_python_client.client_types import JoinResponseCallback
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
     PHXProtocolHandler,
@@ -25,6 +26,7 @@ __author__ = "Phoenix Channels Python Client"
 __all__ = [
     "DisconnectCallback",
     "HeartbeatAckCallback",
+    "JoinResponseCallback",
     "PHXChannelsClient",
     "PHXProtocolHandler",
     "PhoenixChannelsProtocolVersion",
