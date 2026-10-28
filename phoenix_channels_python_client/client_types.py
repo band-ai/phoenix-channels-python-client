@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Self
+from typing import Any, Self
 
 from pydantic import (
     BaseModel,
@@ -14,6 +15,8 @@ from pydantic import (
 )
 
 from phoenix_channels_python_client.exceptions import PHXConnectionError
+
+JoinResponseCallback = Callable[[Any], None]
 
 
 class ClientState(StrEnum):

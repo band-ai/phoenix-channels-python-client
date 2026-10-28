@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from phoenix_channels_python_client.client_types import JoinResponseCallback
 from phoenix_channels_python_client.phx_messages import (
     CLIENT_LIFECYCLE_EVENTS,
     ChannelEvent,
@@ -36,6 +37,10 @@ class TopicSubscription:
     event_handlers: dict[ChannelEvent, Callable[[dict[str, Any]], Awaitable[None]]] = (
         field(default_factory=dict)
     )
+    on_join_response: JoinResponseCallback | None = None
+    established: bool = False
+    join_drop_baseline: int = 0
+    leave_ref: str | None = None
     conn_generation: int = 0
     dropped_message_count: int = 0
     current_callback_task: Task[None] | None = None

@@ -386,3 +386,48 @@ headers, frame bodies, user/topic identities, and untrusted server error details
 Logs retain static lifecycle descriptions, native connection states,
 and exception types. Application data and caller-visible errors are not changed;
 applications remain responsible for logs outside this connection-owned boundary.
+
+### Ordered join responses
+
+Use the optional keyword-only `on_join_response` hook to install a snapshot from
+initial joins, socket rejoins and same-socket channel recovery:
+
+```python
+state = None
+
+def install_snapshot(response):
+    global state
+    state = validate_snapshot(response)
+
+await client.subscribe_to_topic(
+    "room:123", on_message, on_join_response=install_snapshot
+)
+```
+
+`JoinResponseCallback` is exported from the package. The hook receives the decoded
+successful `payload.response`; a missing response is `None`. The transport adds no
+application schema or empty snapshot. Installation runs synchronously before
+`is_topic_joined()` becomes true, subscribe completes, or later deltas deliver.
+Subscribe returns `None`. Success admits the subscription; a later disconnect or
+channel failure can already have changed its current readiness when the caller
+resumes.
+
+Hooks must be short, nonblocking and return `None`. Do not await, perform I/O,
+wait on locks, defer installation, or change task/client lifecycle inside them.
+Async callables, awaitable results and other non-`None` results fail admission.
+The join timeout bounds reply waiting and cannot preempt synchronous code. Hook
+exceptions (including directly raised `CancelledError`) fail with `PHXTopicError`
+and preserve their cause; arbitrary prior hook effects are not rolled back.
+Initial failure belongs to the caller. An established subscription whose installer
+fails is removed and reported once through `on_topic_lost`.
+
+Initial cancellation, timeout and leave remove the exact subscription. Physical
+cleanup remains owned if its waiter is canceled again, and shutdown awaits it.
+Never-established subscriptions are not adopted by automatic recovery. Recorded
+queue loss before a hook-enabled installation fails the attempt transiently;
+steady-state queues still drop their oldest message at capacity. There is no
+replay guarantee. A fresh client must install a fresh snapshot after process loss.
+
+Join replies match request refs on both protocols. V2 also filters stale channel
+generations by `join_ref`. V1 cannot reliably fence unsolicited events/lifecycle
+frames from older channels; it does not provide V2 event-generation isolation.

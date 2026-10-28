@@ -45,6 +45,8 @@ def make_subscription(
     name: str = TOPIC, join_ref: str = DEFAULT_JOIN_REF, **options: Any
 ) -> TopicSubscription:
     options.setdefault("queue", asyncio.Queue())
+    options.setdefault("established", True)
+    options.setdefault("conn_generation", 1)
     return TopicSubscription(
         name=name,
         async_callback=None,
@@ -134,6 +136,7 @@ class TopicRuntimeHarness(TopicRuntimeMixin):
         self.callback_drain_timeout_s = HARNESS_TIMEOUT_S
         self._on_topic_lost = on_topic_lost
         self._lifecycle_tasks: set[asyncio.Task[None]] = set()
+        self._cleanup_tasks: set[asyncio.Task[None]] = set()
         # The attempt each requested channel-rejoin backoff was for, in order.
         self.rejoin_backoff_attempts: list[int] = []
         self._waits_before_stop = waits_before_stop

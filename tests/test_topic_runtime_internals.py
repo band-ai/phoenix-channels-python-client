@@ -40,7 +40,7 @@ async def test_a_subscription_without_event_handlers_reports_none() -> None:
 async def test_a_non_reply_while_joining_leaves_the_join_pending() -> None:
     topic = make_subscription()
 
-    await TopicRuntimeHarness()._handle_join_response_mode(
+    TopicRuntimeHarness()._handle_join_response_mode(
         topic, make_message(USER_EVENT, TOPIC, payload={})
     )
 
@@ -48,14 +48,16 @@ async def test_a_non_reply_while_joining_leaves_the_join_pending() -> None:
 
 
 async def test_a_join_error_without_a_reason_fails_the_join() -> None:
-    topic = make_subscription()
+    runtime = TopicRuntimeHarness()
+    topic = runtime.register(make_subscription())
     reply = make_message(
         PHXEvent.reply,
         TOPIC,
         payload={"status": ReplyStatus.ERROR, "response": "not-a-dict"},
+        ref=topic.join_ref,
     )
 
-    await TopicRuntimeHarness()._handle_join_response_mode(topic, reply)
+    runtime._handle_join_response_mode(topic, reply)
 
     assert isinstance(topic.current_join_ready.exception(), PHXTopicError)
 
@@ -96,11 +98,10 @@ async def test_a_connection_lost_before_the_join_is_sent_fails_the_subscribe() -
         assert not subscribe.done()
         runtime.connection = None
 
-    with pytest.raises(
-        PHXConnectionError, match="Connection lost before join could be sent"
-    ):
+    with pytest.raises(PHXConnectionError, match="Cannot subscribe"):
         await asyncio.wait_for(subscribe, ASYNC_TIMEOUT_S)
     assert TOPIC not in runtime._topic_subscriptions
+    assert runtime.fake_handler.sent == []
 
 
 async def test_a_rejoin_without_a_connection_keeps_the_topic() -> None:

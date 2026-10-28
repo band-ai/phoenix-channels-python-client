@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
+import struct
+import sys
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from enum import StrEnum
@@ -28,6 +31,9 @@ SYSTEM_TOPIC = "phoenix"
 
 # What a refused handshake answers with unless the test picks a status.
 DEFAULT_REFUSAL_STATUS = HTTPStatus.SERVICE_UNAVAILABLE
+
+# Winsock's linger fields are unsigned shorts; POSIX uses ints.
+_ABORTIVE_LINGER = struct.pack("HH" if sys.platform == "win32" else "ii", 1, 0)
 
 
 # Wire names are spelled out here, not taken from the client, so the server
@@ -88,6 +94,10 @@ class FakePhoenixServer:
         )
         # Every topic a client asked to join, in order, answered or not.
         self.join_topics: list[str] = []
+        self.join_payloads: dict[str, Mapping[str, object]] = {}
+        self.join_events: dict[str, list[tuple[str, Mapping[str, object]]]] = {}
+        self.joined: asyncio.Queue[tuple[ServerConnection, Frame]] = asyncio.Queue()
+        self.left: asyncio.Queue[tuple[ServerConnection, Frame]] = asyncio.Queue()
         # Joined channels, (client id, topic) -> the join frame's join_ref, as
         # Phoenix stores it: always None on v1, whose frames carry no join_ref.
         self.members: dict[tuple[int, str], str | None] = {}
@@ -232,6 +242,8 @@ class FakePhoenixServer:
     ) -> None:
         response = {"reason": reason} if reason else {}
         payload = {"status": status, "response": response}
+        if request.event == WireEvent.JOIN and status == ReplyStatus.OK:
+            payload = dict(self.join_payloads.get(request.topic, payload))
         reply = Frame(
             request.join_ref, request.ref, request.topic, WireEvent.REPLY, payload
         )
@@ -251,6 +263,7 @@ class FakePhoenixServer:
     async def _handle_join(self, websocket: ServerConnection, frame: Frame) -> None:
         client_id = self._client_ids.get(websocket)
         self.join_topics.append(frame.topic)
+        self.joined.put_nowait((websocket, frame))
         if (client_id, frame.topic) in self.defer_join_targets:
             self.deferred_joins.put_nowait((websocket, frame))
             return
@@ -270,6 +283,10 @@ class FakePhoenixServer:
         if frame.topic in self.VALID_TOPICS:
             self.members[(self._client_ids[websocket], frame.topic)] = frame.join_ref
             await self._reply(websocket, frame, ReplyStatus.OK)
+            for event, payload in self.join_events.get(frame.topic, []):
+                await self._send(
+                    websocket, Frame(frame.join_ref, None, frame.topic, event, payload)
+                )
             if self.crashes_after_join:
                 self.crashes_after_join -= 1
                 await self._end_channel(websocket, frame.topic, WireEvent.ERROR)
@@ -289,6 +306,7 @@ class FakePhoenixServer:
         await self._answer_join(connection, frame)
 
     async def _handle_leave(self, websocket: ServerConnection, frame: Frame) -> None:
+        self.left.put_nowait((websocket, frame))
         # Phoenix answers a leave for a topic with no channel with an ok reply
         # alone; only a live channel also sends phx_close as it stops.
         await self._reply(websocket, frame, ReplyStatus.OK)
@@ -365,6 +383,19 @@ class FakePhoenixServer:
         finally:
             for transport in transports:
                 transport.resume_reading()
+
+    async def reset_all_clients(self) -> None:
+        """Inject an abrupt TCP reset rather than a WebSocket close handshake."""
+        connections = list(self._clients)
+        for connection in connections:
+            transport_socket = connection.transport.get_extra_info("socket")
+            if transport_socket is None:
+                raise RuntimeError("Expected a TCP connection")
+            transport_socket.setsockopt(
+                socket.SOL_SOCKET, socket.SO_LINGER, _ABORTIVE_LINGER
+            )
+            connection.transport.abort()
+        await asyncio.gather(*(connection.wait_closed() for connection in connections))
 
     async def close_all_clients(
         self,
