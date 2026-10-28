@@ -81,15 +81,15 @@ class TaskTimerObserver:
     @contextmanager
     def installed(self) -> Iterator[None]:
         loop = asyncio.get_running_loop()
-        schedule = loop.call_later
+        schedule = loop.call_at
 
-        def call_later(
-            delay: float,
+        def call_at(
+            when: float,
             callback: Callable[..., object],
             *args: object,
             context: Context | None = None,
         ) -> asyncio.TimerHandle:
-            handle = schedule(delay, callback, *args, context=context)
+            handle = schedule(when, callback, *args, context=context)
             task = asyncio.current_task()
             if (
                 task is not None
@@ -98,7 +98,7 @@ class TaskTimerObserver:
                 self.registered.put_nowait(task)
             return handle
 
-        with patch.object(loop, "call_later", call_later):
+        with patch.object(loop, "call_at", call_at):
             yield
 
 
