@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections.abc import Coroutine
 from typing import Any, cast
@@ -14,6 +15,7 @@ from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTop
 from phoenix_channels_python_client.phx_messages import ChannelMessage
 from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer, ReplyStatus
+from tests.join_hooks import AsyncInstaller
 from tests.join_support import (
     JoinProbe,
     ProcessorGate,
@@ -115,17 +117,37 @@ class TestJoinInstallation:
             del response
             ran.set()
 
-        def hook(response: object) -> Coroutine[Any, Any, None]:
-            return asynchronous(response)
+        result = asynchronous(None)
 
+        def hook(response: object) -> Coroutine[Any, Any, None]:
+            del response
+            return result
+
+        try:
+            async with deadline(), make_client(phoenix_server) as client:
+                with pytest.raises(PHXTopicError):
+                    await client.subscribe_to_topic(
+                        TOPIC, on_join_response=cast("JoinResponseCallback", hook)
+                    )
+                assert inspect.getcoroutinestate(result) == inspect.CORO_CLOSED
+                assert not ran.is_set()
+                assert not client.get_current_subscriptions()
+                assert len(phoenix_server.join_topics) == 1
+        finally:
+            result.close()
+
+    async def test_async_callable_instance_is_rejected_before_join(
+        self, phoenix_server: FakePhoenixServer
+    ) -> None:
+        hook = AsyncInstaller()
         async with deadline(), make_client(phoenix_server) as client:
             with pytest.raises(PHXTopicError):
                 await client.subscribe_to_topic(
                     TOPIC, on_join_response=cast("JoinResponseCallback", hook)
                 )
-            assert not ran.is_set()
+            assert not hook.ran.is_set()
             assert not client.get_current_subscriptions()
-            assert len(phoenix_server.join_topics) == 1
+            assert phoenix_server.join_topics == []
 
     async def test_invalid_return_fails_installation(
         self, phoenix_server: FakePhoenixServer
@@ -146,6 +168,32 @@ class TestJoinInstallation:
                 await client.subscribe_to_topic(TOPIC, on_join_response=hook)
             assert not future.cancelled()
             assert not client.get_current_subscriptions()
+
+    async def test_returned_task_remains_owned_until_its_owner_releases_it(
+        self, phoenix_server: FakePhoenixServer
+    ) -> None:
+        started, release = asyncio.Event(), asyncio.Event()
+        result = object()
+
+        async def external_work() -> object:
+            started.set()
+            await release.wait()
+            return result
+
+        task = asyncio.create_task(external_work())
+        hook = cast("JoinResponseCallback", lambda _: task)
+        try:
+            async with deadline(), make_client(phoenix_server) as client:
+                await started.wait()
+                with pytest.raises(PHXTopicError):
+                    await client.subscribe_to_topic(TOPIC, on_join_response=hook)
+                assert not task.done()
+                assert not client.get_current_subscriptions()
+                release.set()
+                assert await task is result
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def test_socket_rejoin_hook_failure_preserves_cause_and_loses_once(
         self, phoenix_server: FakePhoenixServer
