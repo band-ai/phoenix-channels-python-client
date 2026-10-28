@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
+
+from websockets import ClientConnection
 
 from phoenix_channels_python_client import PHXChannelsClient
 from phoenix_channels_python_client.phx_messages import ChannelMessage
@@ -87,3 +89,14 @@ class ProcessorGate(TaskLifecycleGate):
             hold_start=hold_start,
             hold_exit=hold_exit,
         )
+
+
+@contextmanager
+def paused_writes(connection: ClientConnection) -> Iterator[None]:
+    """Model transport flow control while real receive/router tasks keep running."""
+    connection.pause_writing()
+    try:
+        yield
+    finally:
+        if connection.paused:
+            connection.resume_writing()

@@ -585,7 +585,11 @@ class TopicRuntimeMixin:
             join_ref=topic_subscription.join_ref,
         )
         ready = topic_subscription.current_join_ready
-        await self._send(connection, join_message)
+        try:
+            await self._send(connection, join_message)
+        except PHXConnectionError as error:
+            # A reply may already have settled this attempt during send flow control.
+            self._set_future_exception(ready, error)
         await asyncio.wait_for(ready, timeout=self.join_timeout_s)
 
     async def subscribe_to_topic(

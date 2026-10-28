@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
+import struct
+import sys
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from enum import StrEnum
@@ -28,6 +31,9 @@ SYSTEM_TOPIC = "phoenix"
 
 # What a refused handshake answers with unless the test picks a status.
 DEFAULT_REFUSAL_STATUS = HTTPStatus.SERVICE_UNAVAILABLE
+
+# Winsock's linger fields are unsigned shorts; POSIX uses ints.
+_ABORTIVE_LINGER = struct.pack("HH" if sys.platform == "win32" else "ii", 1, 0)
 
 
 # Wire names are spelled out here, not taken from the client, so the server
@@ -377,6 +383,19 @@ class FakePhoenixServer:
         finally:
             for transport in transports:
                 transport.resume_reading()
+
+    async def reset_all_clients(self) -> None:
+        """Inject an abrupt TCP reset rather than a WebSocket close handshake."""
+        connections = list(self._clients)
+        for connection in connections:
+            transport_socket = connection.transport.get_extra_info("socket")
+            if transport_socket is None:
+                raise RuntimeError("Expected a TCP connection")
+            transport_socket.setsockopt(
+                socket.SOL_SOCKET, socket.SO_LINGER, _ABORTIVE_LINGER
+            )
+            connection.transport.abort()
+        await asyncio.gather(*(connection.wait_closed() for connection in connections))
 
     async def close_all_clients(
         self,
