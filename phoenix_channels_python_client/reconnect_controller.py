@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 from collections import deque
+from collections.abc import Callable
 from http import HTTPStatus
 
 from websockets import ClientConnection
@@ -11,7 +12,10 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client_types import (
+    ConnectFailed,
+    Disconnected,
     ReconnectDecision,
+    ReconnectEvent,
     ReconnectPolicy,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError
@@ -39,6 +43,30 @@ class ReconnectControllerMixin:
 
     reconnect_policy: ReconnectPolicy
     _rapid_disconnects: deque[float]
+    _reconnect_decider: Callable[[ReconnectEvent], ReconnectDecision] | None
+
+    def _resolve_decision(self, event: ReconnectEvent) -> ReconnectDecision:
+        """The consumer's decision when it owns the policy, else the built-in one."""
+        decider = self._reconnect_decider
+        if decider is None:
+            return self._builtin_decision(event)
+        try:
+            return decider(event)
+        except Exception as exc:
+            # Failing closed: the built-in policy must never decide in its place.
+            self.logger.exception("reconnect_decider failed; stopping the client")
+            error = PHXConnectionError("reconnect_decider failed")
+            error.__cause__ = exc
+            return ReconnectDecision(should_reconnect=False, terminal_error=error)
+
+    def _builtin_decision(self, event: ReconnectEvent) -> ReconnectDecision:
+        match event:
+            case Disconnected():
+                return self._classify_disconnect(event.close_code, event.close_reason)
+            case ConnectFailed():
+                return self._classify_connect_failure(event.error)
+            case _:  # Connecting: the built-in policy always attempts.
+                return ReconnectDecision(should_reconnect=True)
 
     def _prune_rapid_disconnects(self, now: float) -> None:
         while (
@@ -324,6 +352,8 @@ class ReconnectControllerMixin:
         computed_delay_s: float,
         decision: ReconnectDecision,
     ) -> float:
+        if decision.delay_s is not None:
+            return decision.delay_s
         if decision.min_delay_s is None:
             return computed_delay_s
 

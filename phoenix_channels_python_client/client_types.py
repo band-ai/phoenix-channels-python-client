@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -73,7 +74,45 @@ class ReconnectPolicy(BaseModel):
 
 @dataclass(frozen=True)
 class ReconnectDecision:
+    """Whether to connect again, and after how long.
+
+    ``delay_s`` is the exact wait and replaces the computed backoff;
+    ``min_delay_s``/``max_delay_s`` only raise it.
+    """
+
     should_reconnect: bool
     min_delay_s: float | None = None
     max_delay_s: float | None = None
     terminal_error: PHXConnectionError | None = None
+    delay_s: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.delay_s is None:
+            return
+        if not math.isfinite(self.delay_s) or self.delay_s < 0:
+            raise ValueError("delay_s must be finite and >= 0")
+        if self.min_delay_s is not None or self.max_delay_s is not None:
+            raise ValueError("delay_s excludes min_delay_s and max_delay_s")
+
+
+@dataclass(frozen=True)
+class Connecting:
+    """A connection attempt is about to start."""
+
+
+@dataclass(frozen=True)
+class Disconnected:
+    """The connection closed. ``close_code`` is ``None`` for a forced close."""
+
+    close_code: int | None
+    close_reason: str
+
+
+@dataclass(frozen=True)
+class ConnectFailed:
+    """A connection attempt failed with ``error``, e.g. a refused handshake."""
+
+    error: Exception
+
+
+ReconnectEvent = Connecting | Disconnected | ConnectFailed

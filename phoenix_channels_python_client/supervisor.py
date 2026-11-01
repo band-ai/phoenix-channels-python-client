@@ -14,7 +14,11 @@ from websockets.protocol import State
 
 from phoenix_channels_python_client.client_types import (
     ClientState,
+    ConnectFailed,
+    Connecting,
+    Disconnected,
     ReconnectDecision,
+    ReconnectEvent,
     ReconnectPolicy,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError
@@ -64,10 +68,7 @@ class _SupervisorRuntimeDeps(Protocol):
     def _extract_close_details(
         self, *, connection: ClientConnection, routing_error: Exception | None
     ) -> tuple[int | None, str]: ...
-    def _classify_disconnect(
-        self, close_code: int | None, close_reason: str
-    ) -> ReconnectDecision: ...
-    def _classify_connect_failure(self, error: Exception) -> ReconnectDecision: ...
+    def _resolve_decision(self, event: ReconnectEvent) -> ReconnectDecision: ...
     def _apply_disconnect_delay_override(
         self, computed_delay_s: float, decision: ReconnectDecision
     ) -> float: ...
@@ -103,6 +104,8 @@ class SupervisorMixin:
     _on_reconnect: Callable[[], Awaitable[None]] | None
     _on_disconnect: Callable[[Exception | None], Awaitable[None]] | None
     _on_heartbeat_ack: Callable[[], None] | None
+    _on_connected: Callable[[int], None] | None
+    _reconnect_decider: Callable[[ReconnectEvent], ReconnectDecision] | None
     _forced_close_pending: bool
 
     @property
@@ -242,12 +245,20 @@ class SupervisorMixin:
         attempt = 0
         try:
             while not self._shutdown_event.is_set():
+                if self.auto_reconnect and self._stops(
+                    self._deps._resolve_decision(Connecting())
+                ):
+                    break
                 try:
                     connection = await self._connect()
                 except Exception as exc:  # noqa: BLE001  # each failure is retried
-                    if not self._retry_after_connect_failure(exc):
+                    failure_decision = self._retry_after_connect_failure(exc)
+                    if failure_decision is None:
                         break
-                    delay = self._deps._compute_reconnect_delay(attempt=attempt)
+                    delay = self._deps._apply_disconnect_delay_override(
+                        self._deps._compute_reconnect_delay(attempt=attempt),
+                        failure_decision,
+                    )
                     attempt += 1
                     await self._wait_for_shutdown_or_timeout(delay)
                     continue
@@ -285,7 +296,8 @@ class SupervisorMixin:
             logger=self.logger,
         )
 
-    def _retry_after_connect_failure(self, exc: Exception) -> bool:
+    def _retry_after_connect_failure(self, exc: Exception) -> ReconnectDecision | None:
+        """The decision to retry after ``exc``, or ``None`` to stop."""
         if not self.auto_reconnect:
             self._settle_initial_connection(
                 PHXConnectionError(
@@ -296,21 +308,18 @@ class SupervisorMixin:
                 )
             )
             self.logger.error("Connection failed and auto_reconnect=False: %s", exc)
-            return False
+            return None
         # A requested stop outranks a refusal's terminal error.
         if self._shutdown_event.is_set():
             self.logger.debug(
                 "Ignoring a connect failure after shutdown began: %s", exc
             )
-            return False
-        decision = self._deps._classify_connect_failure(exc)
-        if decision.terminal_error is not None:
-            self._record_terminal_error(decision.terminal_error)
-            return False
-        if self._suppressed_after_disconnect(0.0):
-            return False
+            return None
+        decision = self._deps._resolve_decision(ConnectFailed(exc))
+        if self._stops(decision) or self._suppressed_after_disconnect(0.0):
+            return None
         self._deps._transition_state(ClientState.RECONNECTING)
-        return True
+        return decision
 
     def _adopt_connection(self, connection: ClientConnection) -> bool:
         self.connection = connection
@@ -327,7 +336,16 @@ class SupervisorMixin:
         self._conn_generation += 1
         self._connected_event.set()
         self._deps._transition_state(ClientState.CONNECTED)
+        self._notify_connected()
         return True
+
+    def _notify_connected(self) -> None:
+        if self._on_connected is None:
+            return
+        try:
+            self._on_connected(self._conn_generation)
+        except Exception:
+            self.logger.exception("Error in on_connected callback")
 
     async def _start_session(self, connection: ClientConnection) -> asyncio.Task[None]:
         generation = self._conn_generation
@@ -392,26 +410,29 @@ class SupervisorMixin:
         if self._shutdown_event.is_set() or not self.auto_reconnect:
             return None
 
-        if close.forced:
-            # websockets reports the close code it received, not the one we
-            # sent, so classifying a forced close would be unreliable.
-            decision = ReconnectDecision(should_reconnect=True)
-        else:
-            decision = self._deps._classify_disconnect(close.code, close.reason)
-        if decision.terminal_error is not None:
-            self._record_terminal_error(decision.terminal_error)
-            return None
-
-        if not decision.should_reconnect:
-            self.logger.info(
-                "Reconnect disabled for close code %s reason=%s",
-                close.code,
-                close.reason,
-            )
+        # websockets reports the close code it received, not the one we sent,
+        # so a forced close carries no code to decide on.
+        event = (
+            Disconnected(close_code=None, close_reason="")
+            if close.forced
+            else Disconnected(close_code=close.code, close_reason=close.reason)
+        )
+        decision = self._deps._resolve_decision(event)
+        if self._stops(decision):
             return None
         return decision
 
+    def _stops(self, decision: ReconnectDecision) -> bool:
+        """Whether ``decision`` stops the client, recording its terminal error."""
+        if decision.terminal_error is not None:
+            self._record_terminal_error(decision.terminal_error)
+            return True
+        return not decision.should_reconnect
+
     def _suppressed_after_disconnect(self, uptime_s: float) -> bool:
+        # A consumer's decider owns rapid-disconnect policy too.
+        if self._reconnect_decider is not None:
+            return False
         self._deps._record_disconnect(connection_uptime_s=uptime_s)
         if not self._deps._should_suppress_reconnect():
             return False

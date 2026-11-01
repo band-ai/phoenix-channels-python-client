@@ -16,7 +16,11 @@ from websockets import ClientConnection
 
 from phoenix_channels_python_client.client_types import (
     ClientState,
+    ConnectFailed,
+    Connecting,
+    Disconnected,
     ReconnectDecision,
+    ReconnectEvent,
     ReconnectPolicy,
 )
 from phoenix_channels_python_client.phx_messages import ChannelMessage
@@ -206,6 +210,8 @@ class SupervisorHarness(SupervisorMixin):
         self._on_reconnect = None
         self._on_disconnect = None
         self._on_heartbeat_ack = None
+        self._on_connected = None
+        self._reconnect_decider = None
         self._forced_close_pending = forced_close_pending
 
         self.connect_attempts = 0
@@ -215,6 +221,7 @@ class SupervisorHarness(SupervisorMixin):
         self.suppress_values: list[bool] = []
         self.disconnect_decision = ReconnectDecision(should_reconnect=True)
         self.connect_failure_decision = ReconnectDecision(should_reconnect=True)
+        self.decided_events: list[ReconnectEvent] = []
         self.rejoin_error: Exception | None = None
 
     async def _connect(self) -> ClientConnection:
@@ -253,15 +260,14 @@ class SupervisorHarness(SupervisorMixin):
         del connection, routing_error
         return None, ""
 
-    def _classify_disconnect(
-        self, close_code: int | None, close_reason: str
-    ) -> ReconnectDecision:
-        del close_code, close_reason
-        return self.disconnect_decision
-
-    def _classify_connect_failure(self, error: Exception) -> ReconnectDecision:
-        del error
-        return self.connect_failure_decision
+    def _resolve_decision(self, event: ReconnectEvent) -> ReconnectDecision:
+        self.decided_events.append(event)
+        decisions: dict[type[ReconnectEvent], ReconnectDecision] = {
+            Connecting: ReconnectDecision(should_reconnect=True),
+            Disconnected: self.disconnect_decision,
+            ConnectFailed: self.connect_failure_decision,
+        }
+        return decisions[type(event)]
 
     def _apply_disconnect_delay_override(
         self, computed_delay_s: float, decision: ReconnectDecision

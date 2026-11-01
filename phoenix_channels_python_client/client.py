@@ -19,7 +19,12 @@ from phoenix_channels_python_client.authentication import (
     select_authentication_header,
 )
 from phoenix_channels_python_client.client_state_machine import transition_client_state
-from phoenix_channels_python_client.client_types import ClientState, ReconnectPolicy
+from phoenix_channels_python_client.client_types import (
+    ClientState,
+    ReconnectDecision,
+    ReconnectEvent,
+    ReconnectPolicy,
+)
 from phoenix_channels_python_client.diagnostics import (
     ConnectionLogger,
     diagnostic_secrets,
@@ -45,6 +50,9 @@ DisconnectCallback = Callable[[Exception | None], Awaitable[None]]
 # sends and message routing for every connection.
 HeartbeatAckCallback = Callable[[], None]
 TopicLostCallback = Callable[[str, Exception], Awaitable[None]]
+# Synchronous, like HeartbeatAckCallback: both run inline on the supervisor task.
+ReconnectDecider = Callable[[ReconnectEvent], ReconnectDecision]
+ConnectedCallback = Callable[[int], None]
 
 
 def _build_channel_socket_urls(
@@ -114,7 +122,7 @@ def _validate_heartbeat_threshold(
 
 
 class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
-    def __init__(  # noqa: PLR0913  # the public options
+    def __init__(  # noqa: PLR0913, PLR0915  # the public options
         self,
         websocket_url: str,
         api_key: str,
@@ -133,6 +141,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         on_disconnect: DisconnectCallback | None = None,
         on_heartbeat_ack: HeartbeatAckCallback | None = None,
         on_topic_lost: TopicLostCallback | None = None,
+        on_connected: ConnectedCallback | None = None,
+        reconnect_decider: ReconnectDecider | None = None,
         additional_headers: dict[str, str] | None = None,
     ) -> None:
         self.additional_headers = normalize_headers(additional_headers)
@@ -197,6 +207,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._on_disconnect = on_disconnect
         self._on_heartbeat_ack = on_heartbeat_ack
         self._on_topic_lost = on_topic_lost
+        self._on_connected = on_connected
+        self._reconnect_decider = reconnect_decider
         self._lifecycle_tasks: set[asyncio.Task[None]] = set()
         self._cleanup_tasks: set[asyncio.Task[None]] = set()
         self._forced_close_pending = False

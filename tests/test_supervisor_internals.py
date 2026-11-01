@@ -8,6 +8,7 @@ import pytest
 
 from phoenix_channels_python_client.client_types import (
     ClientState,
+    Disconnected,
     ReconnectDecision,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError
@@ -99,14 +100,12 @@ async def test_a_connection_outliving_stable_reset_clears_the_rapid_history() ->
     assert not harness._rapid_disconnects
 
 
-async def test_a_forced_close_reconnects_without_classifying_the_disconnect() -> None:
+async def test_a_forced_close_is_decided_without_the_echoed_close_code() -> None:
     harness = SupervisorHarness(forced_close_pending=True)
-    # What the real _classify_disconnect would decide for whatever code the
-    # remote happened to echo back; the forced-close path must not consult it.
-    harness.disconnect_decision = ReconnectDecision(should_reconnect=False)
 
     await harness._supervisor_loop()
 
+    assert Disconnected(close_code=None, close_reason="") in harness.decided_events
     assert harness.wait_delays == [HARNESS_RECONNECT_DELAY_S]
     assert harness._forced_close_pending is False
 
