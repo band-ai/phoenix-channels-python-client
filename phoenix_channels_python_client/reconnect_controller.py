@@ -50,6 +50,8 @@ class ReconnectControllerMixin:
         except Exception as exc:
             self.logger.exception("reconnect_decider failed; stopping the client")
             return _decider_failure("reconnect_decider failed", exc)
+        if not isinstance(decision, ReconnectDecision):
+            return _decider_failure("reconnect_decider returned no ReconnectDecision")
         if decision.delay_s and isinstance(event, GATE_EVENTS):
             # No attempt follows a gate, so its delay would be silently dropped.
             return _decider_failure("reconnect_decider returned a delay for a gate")

@@ -54,6 +54,9 @@ LONG_DELAY_S = 10.0
 
 SUPPRESS_AFTER_DISCONNECTS = 3
 
+# A suppression threshold two entries with one rapid failure each would reach.
+RAPID_FAILURES_TO_STOP = 2
+
 # Connection attempts: the first socket, then the one reconnected after its close.
 RECONNECTED_ONCE = 2
 
@@ -285,6 +288,41 @@ async def test_a_failing_decider_stops_the_client_with_its_cause(
 
     assert raised.value.__cause__ is failure
     assert sum(isinstance(event, kind) for event in decider.seen) == 1
+
+
+@EACH_EVENT_KIND
+async def test_a_decider_returning_no_decision_stops_the_client(
+    phoenix_server: FakePhoenixServer, kind: type[ReconnectEvent]
+) -> None:
+    decider = RecordingDecider()
+
+    def forgetful(event: ReconnectEvent) -> ReconnectDecision:
+        decision = decider(event)
+        # A decider whose match falls through for this event returns None.
+        return None if isinstance(event, kind) else decision  # type: ignore[return-value]
+
+    client = make_client(phoenix_server, reconnect_decider=forgetful)
+
+    with pytest.raises(PHXConnectionError, match="no ReconnectDecision"):
+        await run_until_stopped(phoenix_server, client, kind)
+    await client.shutdown(STOP_REASON)
+
+
+async def test_each_entry_starts_the_built_in_policy_afresh(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    policy = derive_policy(
+        FAST_RECONNECT, rapid_suppress_disconnect_count=RAPID_FAILURES_TO_STOP
+    )
+    client = make_client(phoenix_server, reconnect_policy=policy)
+
+    # One rapid failure per entry; carried over, the second would stop the client.
+    for _ in range(RAPID_FAILURES_TO_STOP):
+        with phoenix_server.refusing(1):
+            async with client:
+                pass
+
+    assert phoenix_server.refused_handshakes == RAPID_FAILURES_TO_STOP
 
 
 async def test_a_decider_replaces_rapid_disconnect_suppression(

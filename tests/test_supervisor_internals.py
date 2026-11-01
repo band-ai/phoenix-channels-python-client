@@ -17,6 +17,7 @@ from phoenix_channels_python_client.phx_messages import (
     ChannelMessage,
     PHXEvent,
 )
+from phoenix_channels_python_client.supervisor import _FORCED_CLOSE_CODE
 from phoenix_channels_python_client.utils import make_message
 from tests.harness import (
     HARNESS_RECONNECT_DELAY_S,
@@ -75,7 +76,10 @@ async def test_a_rejoin_error_does_not_stop_the_supervisor() -> None:
 
 
 async def test_a_forced_close_is_decided_without_the_echoed_close_code() -> None:
-    harness = SupervisorHarness(forced_close_pending=True)
+    # The code websockets reports back for a forced close, which must not be decided on.
+    harness = SupervisorHarness(
+        forced_close_pending=True, close_code=_FORCED_CLOSE_CODE
+    )
 
     await harness._supervisor_loop()
 

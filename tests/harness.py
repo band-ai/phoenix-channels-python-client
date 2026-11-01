@@ -168,6 +168,7 @@ class SupervisorHarness(SupervisorMixin):
         *,
         pending_heartbeat_ref: str | None = None,
         forced_close_pending: bool = False,
+        close_code: int | None = None,
         connect_failures: int = 0,
         waits_before_stop: int = 1,
     ) -> None:
@@ -199,6 +200,7 @@ class SupervisorHarness(SupervisorMixin):
         self._on_disconnect = None
         self._on_heartbeat_ack = None
         self._forced_close_pending = forced_close_pending
+        self._close_code = close_code
 
         self.connect_attempts = 0
         self.wait_delays: list[float] = []
@@ -231,7 +233,7 @@ class SupervisorHarness(SupervisorMixin):
         self, *, connection: ClientConnection, routing_error: Exception | None
     ) -> tuple[int | None, str]:
         del connection, routing_error
-        return None, ""
+        return self._close_code, ""
 
     def _decide(self, event: ReconnectEvent) -> ReconnectDecision:
         self.decided_events.append(event)

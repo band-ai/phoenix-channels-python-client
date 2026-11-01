@@ -320,10 +320,10 @@ Pass `reconnect_decider` to make every reconnect decision yourself. While `auto_
 It returns a `ReconnectDecision`:
 
 - `ReconnectDecision(should_reconnect=True, delay_s=2.0)` after `Disconnected` or `ConnectFailed` waits exactly 2 s before the next attempt; `delay_s` defaults to `0`. `Connecting` and `Connected` only proceed or stop, and a delay there stops the client with `PHXConnectionError`.
-- `ReconnectDecision(should_reconnect=False)` stops; `run_forever()` returns `None`. A stop at `Connected` closes that socket before any rejoin.
-- `ReconnectDecision(should_reconnect=False, terminal_error=PHXConnectionError(...))` stops; `run_forever()` (or `async with`, before the first connection) raises the error.
+- `ReconnectDecision(should_reconnect=False)` stops; `run_forever()` returns `None`, and before the first connection `async with` raises `PHXConnectionError`. A stop at `Connected` closes that socket before any rejoin.
+- `ReconnectDecision(should_reconnect=False, terminal_error=PHXConnectionError(...))` stops; `run_forever()` (or `async with`, before the first connection) raises that error.
 
-The decider replaces the whole built-in policy above, rapid-disconnect suppression included; the built-in policy is itself a decider over the same events. It runs inline on the client's supervisor task, so keep it fast and never block. If it raises, the client stops with a `PHXConnectionError` whose `__cause__` is that exception. To end a live connection, call `close_connection()` and stop at the next decision.
+The decider replaces the whole built-in policy above, rapid-disconnect suppression included; the built-in policy is itself a decider over the same events. It runs inline on the client's supervisor task, so keep it fast and never block. The client calls the same decider on every `async with` entry, so reset any per-run state yourself; the built-in one is rebuilt each time. If it raises, the client stops with a `PHXConnectionError` whose `__cause__` is that exception; if it returns anything but a `ReconnectDecision`, the client stops with a `PHXConnectionError` too. To end a live connection, call `close_connection()` and stop at the next decision.
 
 ```python
 def decide(event: ReconnectEvent) -> ReconnectDecision:
