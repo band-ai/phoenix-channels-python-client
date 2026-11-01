@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
@@ -15,9 +14,14 @@ from typing import Any, cast
 from websockets import ClientConnection
 
 from phoenix_channels_python_client.client_types import (
+    PROCEED,
     ClientState,
+    Connected,
+    ConnectFailed,
+    Connecting,
+    Disconnected,
     ReconnectDecision,
-    ReconnectPolicy,
+    ReconnectEvent,
 )
 from phoenix_channels_python_client.phx_messages import ChannelMessage
 from phoenix_channels_python_client.protocol_handler import (
@@ -32,11 +36,11 @@ from tests.support import TOPIC
 # Short, so harness joins and leaves that get no reply time out promptly.
 HARNESS_TIMEOUT_S = 0.01
 
-# What the harness's stubbed reconnect delay returns.
+# The delay of every retry the harness decides.
 HARNESS_RECONNECT_DELAY_S = 0.001
-
-# A connection up at least this long counts as stable; short, to keep tests fast.
-HARNESS_STABLE_RESET_S = 0.01
+HARNESS_RETRY = ReconnectDecision(
+    should_reconnect=True, delay_s=HARNESS_RECONNECT_DELAY_S
+)
 
 DEFAULT_JOIN_REF = "1"
 
@@ -71,11 +75,7 @@ def fake_connection(socket: FakeSocket | None = None) -> ClientConnection:
 
 
 class FakeRoutingProtocolHandler:
-    """Keeps each connection up for ``uptime_s``, then ends it with ``error``."""
-
-    def __init__(self, error: Exception | None = None, uptime_s: float = 0.0) -> None:
-        self.error = error
-        self.uptime_s = uptime_s
+    """Ends each connection as soon as its routing starts."""
 
     async def process_websocket_messages(
         self,
@@ -85,9 +85,6 @@ class FakeRoutingProtocolHandler:
         **kwargs: Any,
     ) -> None:
         del connection, subscriptions, conn_generation, kwargs
-        await asyncio.sleep(self.uptime_s)
-        if self.error is not None:
-            raise self.error
 
 
 class FakeTopicProtocolHandler(PHXProtocolHandler):
@@ -171,7 +168,7 @@ class SupervisorHarness(SupervisorMixin):
         *,
         pending_heartbeat_ref: str | None = None,
         forced_close_pending: bool = False,
-        connection_uptime_s: float = 0.0,
+        close_code: int | None = None,
         connect_failures: int = 0,
         waits_before_stop: int = 1,
     ) -> None:
@@ -179,12 +176,9 @@ class SupervisorHarness(SupervisorMixin):
         self.channel_socket_url = "ws://unit-test/socket"
         self.channel_socket_url_redacted = "ws://unit-test/socket?api_key=***"
         self.auto_reconnect = True
-        self.reconnect_policy = ReconnectPolicy(stable_reset_s=HARNESS_STABLE_RESET_S)
         self.connection: ClientConnection | None = None
         self._topic_subscriptions: dict[str, TopicSubscription] = {}
-        self._protocol_handler: Any = FakeRoutingProtocolHandler(
-            uptime_s=connection_uptime_s
-        )
+        self._protocol_handler: Any = FakeRoutingProtocolHandler()
         self._shutdown_event = asyncio.Event()
         self._connected_event = asyncio.Event()
         self._conn_generation = 0
@@ -194,7 +188,6 @@ class SupervisorHarness(SupervisorMixin):
         self._initial_connection_future: asyncio.Future[None] | None = (
             asyncio.get_running_loop().create_future()
         )
-        self._rapid_disconnects = deque[float]()
         self._terminal_error: Exception | None = None
         self._heartbeat_dead_threshold_s: float | None = None
         self._heartbeat_deadline: float | None = None
@@ -207,14 +200,15 @@ class SupervisorHarness(SupervisorMixin):
         self._on_disconnect = None
         self._on_heartbeat_ack = None
         self._forced_close_pending = forced_close_pending
+        self._close_code = close_code
 
         self.connect_attempts = 0
         self.wait_delays: list[float] = []
         self._connect_failures = connect_failures
         self._waits_before_stop = waits_before_stop
-        self.suppress_values: list[bool] = []
-        self.disconnect_decision = ReconnectDecision(should_reconnect=True)
-        self.connect_failure_decision = ReconnectDecision(should_reconnect=True)
+        self.disconnect_decision = HARNESS_RETRY
+        self.connect_failure_decision = HARNESS_RETRY
+        self.decided_events: list[ReconnectEvent] = []
         self.rejoin_error: Exception | None = None
 
     async def _connect(self) -> ClientConnection:
@@ -235,39 +229,21 @@ class SupervisorHarness(SupervisorMixin):
     def _channel_recoveries(self) -> list[asyncio.Task[None]]:
         return []
 
-    def _record_disconnect(self, connection_uptime_s: float) -> None:
-        del connection_uptime_s
-
-    def _should_suppress_reconnect(self) -> bool:
-        if self.suppress_values:
-            return self.suppress_values.pop(0)
-        return False
-
-    def _compute_reconnect_delay(self, attempt: int) -> float:
-        del attempt
-        return HARNESS_RECONNECT_DELAY_S
-
     def _extract_close_details(
         self, *, connection: ClientConnection, routing_error: Exception | None
     ) -> tuple[int | None, str]:
         del connection, routing_error
-        return None, ""
+        return self._close_code, ""
 
-    def _classify_disconnect(
-        self, close_code: int | None, close_reason: str
-    ) -> ReconnectDecision:
-        del close_code, close_reason
-        return self.disconnect_decision
-
-    def _classify_connect_failure(self, error: Exception) -> ReconnectDecision:
-        del error
-        return self.connect_failure_decision
-
-    def _apply_disconnect_delay_override(
-        self, computed_delay_s: float, decision: ReconnectDecision
-    ) -> float:
-        del decision
-        return computed_delay_s
+    def _decide(self, event: ReconnectEvent) -> ReconnectDecision:
+        self.decided_events.append(event)
+        decisions: dict[type[ReconnectEvent], ReconnectDecision] = {
+            Connecting: PROCEED,
+            Connected: PROCEED,
+            Disconnected: self.disconnect_decision,
+            ConnectFailed: self.connect_failure_decision,
+        }
+        return decisions[type(event)]
 
     def _transition_state(self, new_state: ClientState) -> None:
         self._state = new_state

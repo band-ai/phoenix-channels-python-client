@@ -15,6 +15,15 @@ from websockets.http11 import Response
 from websockets.protocol import State
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
+from phoenix_channels_python_client.client_types import (
+    PROCEED,
+    Connected,
+    ConnectFailed,
+    Connecting,
+    Disconnected,
+    ReconnectDecision,
+    ReconnectEvent,
+)
 from phoenix_channels_python_client.exceptions import PHXTopicError
 from phoenix_channels_python_client.phx_messages import ChannelMessage
 from phoenix_channels_python_client.protocol_handler import (
@@ -181,6 +190,45 @@ class LostTopics:
 
 class CallbackError(Exception):
     pass
+
+
+# Answers a RecordingDecider can give.
+RECONNECT_NOW = ReconnectDecision(should_reconnect=True, delay_s=0.0)
+STOP = ReconnectDecision(should_reconnect=False)
+
+E = TypeVar("E", Connecting, Connected, Disconnected, ConnectFailed)
+
+
+class RecordingDecider:
+    """A ``reconnect_decider`` answering per event type, recording what it saw.
+
+    An answer that is an exception is raised instead of returned.
+    """
+
+    def __init__(self) -> None:
+        self.answers: dict[type[ReconnectEvent], ReconnectDecision | Exception] = {
+            Connecting: PROCEED,
+            Connected: PROCEED,
+            Disconnected: RECONNECT_NOW,
+            ConnectFailed: RECONNECT_NOW,
+        }
+        self.seen: list[ReconnectEvent] = []
+        self._decided: asyncio.Queue[tuple[ReconnectEvent, float]] = asyncio.Queue()
+
+    def __call__(self, event: ReconnectEvent) -> ReconnectDecision:
+        self.seen.append(event)
+        self._decided.put_nowait((event, asyncio.get_running_loop().time()))
+        answer = self.answers[type(event)]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    async def next_of(self, kind: type[E]) -> tuple[E, float]:
+        """The next decided event of ``kind`` and the loop time it was decided."""
+        while True:
+            event, at = await asyncio.wait_for(self._decided.get(), ASYNC_TIMEOUT_S)
+            if isinstance(event, kind):
+                return event, at
 
 
 class BusyCallback:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -71,9 +72,61 @@ class ReconnectPolicy(BaseModel):
         return self
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ReconnectDecision:
+    """Whether the client goes on, and how long it waits before the next attempt.
+
+    ``delay_s`` applies after ``Disconnected`` and ``ConnectFailed``; a gate
+    (``Connecting``, ``Connected``) only proceeds or stops. A stop with a
+    ``terminal_error`` ends the client with that error.
+    """
+
     should_reconnect: bool
-    min_delay_s: float | None = None
-    max_delay_s: float | None = None
+    delay_s: float = 0.0
     terminal_error: PHXConnectionError | None = None
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.delay_s) or self.delay_s < 0:
+            raise ValueError("delay_s must be finite and >= 0")
+        if not self.should_reconnect and self.delay_s:
+            raise ValueError("a stop has no delay_s")
+        if self.should_reconnect and self.terminal_error is not None:
+            raise ValueError("a terminal_error requires should_reconnect=False")
+
+
+PROCEED = ReconnectDecision(should_reconnect=True)
+
+
+@dataclass(frozen=True)
+class Connecting:
+    """A connection attempt is about to start."""
+
+
+@dataclass(frozen=True)
+class Connected:
+    """The socket for ``generation`` is up; topics rejoin only if this proceeds."""
+
+    generation: int
+
+
+@dataclass(frozen=True)
+class Disconnected:
+    """The connection closed. ``close_code`` is ``None`` for a forced close."""
+
+    close_code: int | None
+    close_reason: str
+
+
+@dataclass(frozen=True)
+class ConnectFailed:
+    """A connection attempt failed with ``error``, e.g. a refused handshake."""
+
+    error: Exception
+
+
+ReconnectEvent = Connecting | Connected | Disconnected | ConnectFailed
+
+# Decision points that only proceed or stop; no attempt follows them to delay.
+GATE_EVENTS = (Connecting, Connected)
+
+ReconnectDecider = Callable[[ReconnectEvent], ReconnectDecision]
