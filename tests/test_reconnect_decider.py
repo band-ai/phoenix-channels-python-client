@@ -1,4 +1,4 @@
-"""A consumer-owned reconnect policy: ``reconnect_decider`` and ``on_connected``."""
+"""A consumer-owned reconnect policy: ``reconnect_decider``."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.client_types import (
+    Connected,
     ConnectFailed,
     Connecting,
     Disconnected,
@@ -38,6 +39,7 @@ from tests.support import (
     joins,
     make_client,
     reconnect,
+    wait_for_condition,
 )
 
 SOCKET_PATH = FakePhoenixServer.SOCKET_PATH
@@ -52,10 +54,18 @@ LONG_DELAY_S = 10.0
 
 SUPPRESS_AFTER_DISCONNECTS = 3
 
+# Connection attempts: the first socket, then the one reconnected after its close.
+RECONNECTED_ONCE = 2
+
 # Every decision point the decider is asked at.
 EACH_EVENT_KIND = pytest.mark.parametrize(
-    "kind", [Connecting, Disconnected, ConnectFailed]
+    "kind", [Connecting, Connected, Disconnected, ConnectFailed]
 )
+
+# The decision points that only proceed or stop.
+EACH_GATE = pytest.mark.parametrize("gate", [Connecting, Connected])
+
+A_DELAY = ReconnectDecision(should_reconnect=True, delay_s=1.0)
 
 
 def terminal(reason: str = "decided terminal") -> ReconnectDecision:
@@ -77,8 +87,10 @@ async def test_every_attempt_is_announced_before_it_connects(
 
     assert [type(event) for event in decider.seen] == [
         Connecting,
+        Connected,
         Disconnected,
         Connecting,
+        Connected,
     ]
 
 
@@ -310,42 +322,97 @@ async def test_without_auto_reconnect_the_decider_is_not_asked(
 
 
 @pytest.mark.parametrize(
-    "fields",
+    ("fields", "problem"),
     [
-        {"delay_s": -1.0},
-        {"delay_s": math.nan},
-        {"delay_s": math.inf},
-        {"delay_s": 1.0, "min_delay_s": 1.0},
-        {"delay_s": 1.0, "max_delay_s": 2.0},
+        ({"should_reconnect": True, "delay_s": -1.0}, "finite"),
+        ({"should_reconnect": True, "delay_s": math.nan}, "finite"),
+        ({"should_reconnect": True, "delay_s": math.inf}, "finite"),
+        ({"should_reconnect": False, "delay_s": 1.0}, "no delay_s"),
+        (
+            {"should_reconnect": True, "terminal_error": PHXConnectionError()},
+            "terminal_error",
+        ),
     ],
 )
-def test_an_invalid_decision_is_rejected(fields: dict[str, Any]) -> None:
-    with pytest.raises(ValueError, match="delay_s"):
-        ReconnectDecision(should_reconnect=True, **fields)
+def test_an_invalid_decision_is_rejected(fields: dict[str, Any], problem: str) -> None:
+    with pytest.raises(ValueError, match=problem):
+        ReconnectDecision(**fields)
 
 
-@pytest.mark.parametrize("failing", [False, True])
-async def test_on_connected_reports_each_socket_before_its_rejoin(
-    phoenix_server: FakePhoenixServer, *, failing: bool
+@EACH_GATE
+async def test_a_delay_for_a_gate_stops_the_client(
+    phoenix_server: FakePhoenixServer, gate: type[ReconnectEvent]
 ) -> None:
-    connected: list[tuple[int, int, int]] = []
-    reconnects = ReconnectCounter()
+    decider = RecordingDecider()
+    decider.answers[gate] = A_DELAY
+    client = make_client(phoenix_server, reconnect_decider=decider)
 
-    def on_connected(generation: int) -> None:
-        connected.append((generation, joins(phoenix_server), reconnects.count))
-        if failing:
-            raise CallbackError
+    with pytest.raises(PHXConnectionError, match="delay for a gate"):
+        await asyncio.wait_for(client.__aenter__(), ASYNC_TIMEOUT_S)
+
+
+async def test_each_socket_is_decided_before_its_rejoin(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    decider = RecordingDecider()
+    reconnects = ReconnectCounter()
+    # Each entry: (generation, joins seen so far, on_reconnect calls so far).
+    connected: list[tuple[int, int, int]] = []
+
+    def deciding(event: ReconnectEvent) -> ReconnectDecision:
+        if isinstance(event, Connected):
+            connected.append(
+                (event.generation, joins(phoenix_server), reconnects.count)
+            )
+        return decider(event)
 
     async with make_client(
-        phoenix_server,
-        reconnect_policy=FAST_RECONNECT,
-        on_connected=on_connected,
-        on_reconnect=reconnects,
+        phoenix_server, reconnect_decider=deciding, on_reconnect=reconnects
     ) as client:
         await client.subscribe_to_topic(TOPIC)
         await reconnect(phoenix_server, client)
 
-    # Each entry: (generation, joins seen so far, on_reconnect calls so far).
     assert connected == [(1, 0, 0), (2, SUBSCRIBED, 0)]
     assert joins(phoenix_server) == REJOINED_ONCE
     assert reconnects.count == 1
+
+
+@pytest.mark.parametrize("stop_with_error", [False, True])
+async def test_a_refused_socket_is_closed_without_a_rejoin(
+    phoenix_server: FakePhoenixServer, *, stop_with_error: bool
+) -> None:
+    decider = RecordingDecider()
+    stop = terminal() if stop_with_error else STOP
+    async with make_client(phoenix_server, reconnect_decider=decider) as client:
+        await client.subscribe_to_topic(TOPIC)
+        # What a consumer does when the session ended during the handshake.
+        decider.answers[Connected] = stop
+        await phoenix_server.close_all_clients(code=CloseCode.GOING_AWAY)
+
+        run = client.run_forever(install_signal_handlers=False)
+        if stop_with_error:
+            with pytest.raises(PHXConnectionError) as raised:
+                await asyncio.wait_for(run, ASYNC_TIMEOUT_S)
+            assert raised.value is stop.terminal_error
+        else:
+            assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
+
+        assert await wait_for_condition(lambda: not phoenix_server.current_client_ids())
+
+    assert attempts(phoenix_server) == RECONNECTED_ONCE
+    assert joins(phoenix_server) == SUBSCRIBED
+
+
+async def test_a_refused_first_socket_fails_entry(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    decider = RecordingDecider()
+    stop = terminal()
+    decider.answers[Connected] = stop
+    client = make_client(phoenix_server, reconnect_decider=decider)
+
+    with pytest.raises(PHXConnectionError) as raised:
+        await asyncio.wait_for(client.__aenter__(), ASYNC_TIMEOUT_S)
+
+    assert raised.value is stop.terminal_error
+    assert await wait_for_condition(lambda: not phoenix_server.current_client_ids())

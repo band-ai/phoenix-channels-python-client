@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import deque
+import logging
 from collections.abc import Callable
 from http import HTTPStatus
 from itertools import pairwise
@@ -10,7 +10,18 @@ import pytest
 from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
+from phoenix_channels_python_client.client_types import (
+    Connected,
+    ConnectFailed,
+    Disconnected,
+    ReconnectDecision,
+)
+from phoenix_channels_python_client.default_decider import (
+    DefaultReconnectDecider,
+    exponential_delay,
+)
 from phoenix_channels_python_client.exceptions import PHXConnectionError
+from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     API_KEY,
@@ -43,6 +54,16 @@ RAPID_COUNTS = range(1, 10)
 JITTER_LOW_RATIO = 0.25
 JITTER_HIGH_RATIO = 0.75
 
+# No backoff of its own, so a close's delay is drawn only from its classified range.
+NO_BACKOFF = ReconnectPolicy(
+    base_delay_s=0.0, rapid_first_min_delay_s=0.0, rapid_second_min_delay_s=0.0
+)
+
+SUPPRESS_AFTER_DISCONNECTS = 3
+
+# A failed TCP connect: retried, with no status to classify.
+UNREACHABLE = ConnectionRefusedError
+
 
 @pytest.fixture
 def random_draw(monkeypatch: pytest.MonkeyPatch) -> Callable[[float], None]:
@@ -50,7 +71,7 @@ def random_draw(monkeypatch: pytest.MonkeyPatch) -> Callable[[float], None]:
 
     def draw(value: float) -> None:
         monkeypatch.setattr(
-            "phoenix_channels_python_client.reconnect_controller.random.random",
+            "phoenix_channels_python_client.default_decider.random.random",
             lambda: value,
         )
 
@@ -62,9 +83,22 @@ def _make_client(policy: ReconnectPolicy | None = None) -> PHXChannelsClient:
     return make_client(FakePhoenixServer(), reconnect_policy=policy)
 
 
-def _delay_after_rapid_disconnects(client: PHXChannelsClient, count: int) -> float:
-    client._rapid_disconnects = deque([0.0] * count)
-    return client._compute_reconnect_delay(attempt=0)
+def _decider(policy: ReconnectPolicy | None = None) -> DefaultReconnectDecider:
+    return DefaultReconnectDecider(policy or ReconnectPolicy(), logging.getLogger())
+
+
+def _close(decider: DefaultReconnectDecider, close_code: int) -> ReconnectDecision:
+    """The decision after a connection that closes with ``close_code`` at once."""
+    decider(Connected(generation=1))
+    return decider(Disconnected(close_code=close_code, close_reason=STOP_REASON))
+
+
+def _delay_after_rapid_disconnects(policy: ReconnectPolicy, count: int) -> float:
+    """The delay after ``count`` back-to-back failed connects, each a rapid one."""
+    decider = _decider(policy)
+    for _ in range(count - 1):
+        decider(ConnectFailed(UNREACHABLE()))
+    return decider(ConnectFailed(UNREACHABLE())).delay_s
 
 
 def _query(url: str) -> dict[str, list[str]]:
@@ -82,75 +116,114 @@ def test_the_logged_socket_url_masks_the_api_key() -> None:
 
 
 @each_normal_close_code
-def test_the_default_policy_reconnects_after_a_normal_close(
+async def test_the_default_policy_reconnects_after_a_normal_close(
     close_code: CloseCode,
 ) -> None:
-    decision = _make_client()._classify_disconnect(close_code, STOP_REASON)
+    decision = _close(_decider(), close_code)
 
     assert decision.should_reconnect is True
-    assert decision.terminal_error is None
 
 
 @each_normal_close_code
-def test_a_policy_not_reconnecting_on_a_normal_close_stops_without_an_error(
+async def test_a_policy_not_reconnecting_on_a_normal_close_stops_without_an_error(
     close_code: CloseCode,
 ) -> None:
-    client = _make_client(STOPS_ON_NORMAL_CLOSE)
-
-    decision = client._classify_disconnect(close_code, STOP_REASON)
+    decision = _close(_decider(STOPS_ON_NORMAL_CLOSE), close_code)
 
     assert decision.should_reconnect is False
     assert decision.terminal_error is None
 
 
-def test_close_codes_are_classified_by_the_policy() -> None:
-    policy = ReconnectPolicy()
-    client = _make_client(policy)
+async def test_a_policy_violation_close_is_terminal() -> None:
+    decision = _close(_decider(), CloseCode.POLICY_VIOLATION)
 
-    violation = client._classify_disconnect(CloseCode.POLICY_VIOLATION, STOP_REASON)
-    assert violation.should_reconnect is False
-    assert isinstance(violation.terminal_error, PHXConnectionError)
-
-    restart = client._classify_disconnect(CloseCode.SERVICE_RESTART, STOP_REASON)
-    assert restart.should_reconnect is True
-    assert restart.min_delay_s == policy.service_restart_min_delay_s
-    assert restart.max_delay_s == policy.service_restart_max_delay_s
-
-    busy = client._classify_disconnect(CloseCode.TRY_AGAIN_LATER, STOP_REASON)
-    assert busy.should_reconnect is True
-    assert busy.min_delay_s == policy.try_again_later_min_delay_s
-    assert busy.max_delay_s == policy.try_again_later_max_delay_s
+    assert decision.should_reconnect is False
+    assert isinstance(decision.terminal_error, PHXConnectionError)
 
 
-def test_a_forbidden_handshake_is_a_terminal_connect_failure() -> None:
-    decision = _make_client()._classify_connect_failure(refused(TERMINAL_REFUSAL))
+@pytest.mark.parametrize(
+    ("close_code", "low", "high"),
+    [
+        (
+            CloseCode.SERVICE_RESTART,
+            NO_BACKOFF.service_restart_min_delay_s,
+            NO_BACKOFF.service_restart_max_delay_s,
+        ),
+        (
+            CloseCode.TRY_AGAIN_LATER,
+            NO_BACKOFF.try_again_later_min_delay_s,
+            NO_BACKOFF.try_again_later_max_delay_s,
+        ),
+    ],
+)
+async def test_a_close_asking_for_a_pause_waits_within_its_range(
+    close_code: CloseCode, low: float, high: float
+) -> None:
+    decision = _close(_decider(NO_BACKOFF), close_code)
+
+    assert decision.should_reconnect is True
+    assert low <= decision.delay_s <= high
+
+
+async def test_a_forbidden_handshake_is_a_terminal_connect_failure() -> None:
+    decision = _decider()(ConnectFailed(refused(TERMINAL_REFUSAL)))
 
     assert decision.should_reconnect is False
     assert isinstance(decision.terminal_error, PHXConnectionError)
 
 
 @each_retried_refusal
-def test_a_refusal_other_than_forbidden_is_retried(refusal: HTTPStatus) -> None:
-    decision = _make_client()._classify_connect_failure(refused(refusal))
+async def test_a_refusal_other_than_forbidden_is_retried(refusal: HTTPStatus) -> None:
+    decision = _decider()(ConnectFailed(refused(refusal)))
 
     assert decision.should_reconnect is True
-    assert decision.terminal_error is None
 
 
-def test_a_failed_tcp_connect_is_retried() -> None:
-    decision = _make_client()._classify_connect_failure(ConnectionRefusedError())
+async def test_a_failed_tcp_connect_is_retried() -> None:
+    decision = _decider()(ConnectFailed(UNREACHABLE()))
 
     assert decision.should_reconnect is True
-    assert decision.terminal_error is None
 
 
-def test_the_rapid_cooldown_steps_from_its_base_up_to_its_cap() -> None:
-    client = _make_client(COOLDOWN_POLICY)
+async def test_repeated_rapid_disconnects_stop_with_a_terminal_error() -> None:
+    policy = derive_policy(
+        COOLDOWN_POLICY, rapid_suppress_disconnect_count=SUPPRESS_AFTER_DISCONNECTS
+    )
+    decider = _decider(policy)
+
+    decisions = [
+        decider(ConnectFailed(UNREACHABLE())) for _ in range(SUPPRESS_AFTER_DISCONNECTS)
+    ]
+
+    assert [decision.should_reconnect for decision in decisions] == [True, True, False]
+    assert isinstance(decisions[-1].terminal_error, PHXConnectionError)
+
+
+@pytest.mark.clock
+async def test_a_connection_outliving_stable_reset_restarts_the_backoff(
+    clock: Clock, random_draw: Callable[[float], None]
+) -> None:
+    random_draw(1.0)
+    decider = _decider(COOLDOWN_POLICY)
+    # Enough rapid failures to reach the cooldown.
+    for _ in RAPID_COUNTS:
+        decider(ConnectFailed(UNREACHABLE()))
+
+    decider(Connected(generation=1))
+    await clock.advance(COOLDOWN_POLICY.stable_reset_s)
+    decision = decider(Disconnected(close_code=None, close_reason=""))
+
+    assert decision.delay_s == pytest.approx(COOLDOWN_POLICY.base_delay_s)
+
+
+async def test_the_rapid_cooldown_steps_from_its_base_up_to_its_cap() -> None:
     base = COOLDOWN_POLICY.rapid_cooldown_base_s
     step = COOLDOWN_POLICY.rapid_cooldown_step_s
     cap = COOLDOWN_POLICY.rapid_cooldown_max_s
 
-    delays = [_delay_after_rapid_disconnects(client, count) for count in RAPID_COUNTS]
+    delays = [
+        _delay_after_rapid_disconnects(COOLDOWN_POLICY, count) for count in RAPID_COUNTS
+    ]
     cooldowns = [delay for delay in delays if delay >= base]
 
     assert cooldowns[0] == pytest.approx(base)
@@ -159,27 +232,25 @@ def test_the_rapid_cooldown_steps_from_its_base_up_to_its_cap() -> None:
     assert cooldowns[-1] == pytest.approx(cap)
 
 
-def test_a_reconnect_without_rapid_disconnects_waits_half_to_all_of_its_delay(
+async def test_a_reconnect_below_the_cooldown_waits_half_to_all_of_its_delay(
     random_draw: Callable[[float], None],
 ) -> None:
-    client = _make_client(COOLDOWN_POLICY)
-
     random_draw(0.0)
-    lowest = _delay_after_rapid_disconnects(client, 0)
+    lowest = _delay_after_rapid_disconnects(COOLDOWN_POLICY, 1)
     random_draw(1.0)
-    highest = _delay_after_rapid_disconnects(client, 0)
+    highest = _delay_after_rapid_disconnects(COOLDOWN_POLICY, 1)
 
     assert lowest == pytest.approx(COOLDOWN_POLICY.base_delay_s / 2)
     assert highest == pytest.approx(COOLDOWN_POLICY.base_delay_s)
 
 
-def test_a_zero_base_delay_reconnects_immediately() -> None:
-    client = _make_client(derive_policy(COOLDOWN_POLICY, base_delay_s=0.0))
+async def test_a_zero_base_delay_reconnects_immediately() -> None:
+    policy = derive_policy(COOLDOWN_POLICY, base_delay_s=0.0)
 
-    assert _delay_after_rapid_disconnects(client, 0) == 0.0
+    assert _delay_after_rapid_disconnects(policy, 1) == 0.0
 
 
-def test_the_hold_down_jitter_spans_the_configured_ratios_of_the_cooldown(
+async def test_the_hold_down_jitter_spans_the_configured_ratios_of_the_cooldown(
     random_draw: Callable[[float], None],
 ) -> None:
     policy = derive_policy(
@@ -187,37 +258,35 @@ def test_the_hold_down_jitter_spans_the_configured_ratios_of_the_cooldown(
         rapid_hold_down_jitter_low_ratio=JITTER_LOW_RATIO,
         rapid_hold_down_jitter_high_ratio=JITTER_HIGH_RATIO,
     )
-    client = _make_client(policy)
     # Past the cap, so the cooldown floor is the cap.
     floor = policy.rapid_cooldown_max_s
 
     random_draw(0.0)
-    lowest = _delay_after_rapid_disconnects(client, RAPID_COUNTS[-1])
+    lowest = _delay_after_rapid_disconnects(policy, RAPID_COUNTS[-1])
     random_draw(1.0)
-    highest = _delay_after_rapid_disconnects(client, RAPID_COUNTS[-1])
+    highest = _delay_after_rapid_disconnects(policy, RAPID_COUNTS[-1])
 
     assert lowest == pytest.approx(floor * JITTER_LOW_RATIO)
     assert highest == pytest.approx(floor * JITTER_HIGH_RATIO)
 
 
 def test_the_exponential_delay_doubles_up_to_its_cap() -> None:
-    client = _make_client(COOLDOWN_POLICY)
     # COOLDOWN_POLICY's base, doubled by the default factor, then held at its cap.
     expected = [0.01, 0.02, 0.04, 0.08, 0.1, 0.1]
 
-    delays = [client._exponential_delay(attempt) for attempt in range(len(expected))]
+    delays = [
+        exponential_delay(COOLDOWN_POLICY, attempt) for attempt in range(len(expected))
+    ]
 
     assert delays == pytest.approx(expected)
 
 
-def test_a_channel_rejoin_waits_half_to_all_of_its_backoff_without_rapid_floors(
+def test_a_channel_rejoin_waits_half_to_all_of_its_backoff(
     random_draw: Callable[[float], None],
 ) -> None:
     client = _make_client(COOLDOWN_POLICY)
-    # A socket reconnect here would wait at least the cooldown cap.
-    client._rapid_disconnects = deque([0.0] * RAPID_COUNTS[-1])
     attempt = 1
-    backoff = client._exponential_delay(attempt)
+    backoff = exponential_delay(COOLDOWN_POLICY, attempt)
 
     random_draw(0.0)
     lowest = client._channel_rejoin_delay(attempt)

@@ -6,20 +6,20 @@ A Python client library for connecting to Phoenix Channels.
 from __future__ import annotations
 
 from phoenix_channels_python_client.client import (
-    ConnectedCallback,
     DisconnectCallback,
     HeartbeatAckCallback,
     PHXChannelsClient,
     ReconnectCallback,
-    ReconnectDecider,
     ReconnectPolicy,
     TopicLostCallback,
 )
 from phoenix_channels_python_client.client_types import (
+    Connected,
     ConnectFailed,
     Connecting,
     Disconnected,
     JoinResponseCallback,
+    ReconnectDecider,
     ReconnectDecision,
     ReconnectEvent,
 )
@@ -34,7 +34,7 @@ __author__ = "Phoenix Channels Python Client"
 
 __all__ = [
     "ConnectFailed",
-    "ConnectedCallback",
+    "Connected",
     "Connecting",
     "DisconnectCallback",
     "Disconnected",

@@ -16,6 +16,8 @@ from websockets.protocol import State
 
 from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
 from phoenix_channels_python_client.client_types import (
+    PROCEED,
+    Connected,
     ConnectFailed,
     Connecting,
     Disconnected,
@@ -194,7 +196,7 @@ class CallbackError(Exception):
 RECONNECT_NOW = ReconnectDecision(should_reconnect=True, delay_s=0.0)
 STOP = ReconnectDecision(should_reconnect=False)
 
-E = TypeVar("E", Connecting, Disconnected, ConnectFailed)
+E = TypeVar("E", Connecting, Connected, Disconnected, ConnectFailed)
 
 
 class RecordingDecider:
@@ -205,7 +207,8 @@ class RecordingDecider:
 
     def __init__(self) -> None:
         self.answers: dict[type[ReconnectEvent], ReconnectDecision | Exception] = {
-            Connecting: RECONNECT_NOW,
+            Connecting: PROCEED,
+            Connected: PROCEED,
             Disconnected: RECONNECT_NOW,
             ConnectFailed: RECONNECT_NOW,
         }

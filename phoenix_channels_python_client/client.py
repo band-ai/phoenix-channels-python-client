@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections import deque
 from collections.abc import Awaitable, Callable
 from types import TracebackType
 from typing import Self, cast
@@ -21,8 +20,7 @@ from phoenix_channels_python_client.authentication import (
 from phoenix_channels_python_client.client_state_machine import transition_client_state
 from phoenix_channels_python_client.client_types import (
     ClientState,
-    ReconnectDecision,
-    ReconnectEvent,
+    ReconnectDecider,
     ReconnectPolicy,
 )
 from phoenix_channels_python_client.diagnostics import (
@@ -50,9 +48,6 @@ DisconnectCallback = Callable[[Exception | None], Awaitable[None]]
 # sends and message routing for every connection.
 HeartbeatAckCallback = Callable[[], None]
 TopicLostCallback = Callable[[str, Exception], Awaitable[None]]
-# Synchronous, like HeartbeatAckCallback: both run inline on the supervisor task.
-ReconnectDecider = Callable[[ReconnectEvent], ReconnectDecision]
-ConnectedCallback = Callable[[int], None]
 
 
 def _build_channel_socket_urls(
@@ -141,7 +136,6 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         on_disconnect: DisconnectCallback | None = None,
         on_heartbeat_ack: HeartbeatAckCallback | None = None,
         on_topic_lost: TopicLostCallback | None = None,
-        on_connected: ConnectedCallback | None = None,
         reconnect_decider: ReconnectDecider | None = None,
         additional_headers: dict[str, str] | None = None,
     ) -> None:
@@ -195,7 +189,6 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._shutdown_task: asyncio.Task[None] | None = None
         self._message_routing_task: asyncio.Task[None] | None = None
         self._initial_connection_future: asyncio.Future[None] | None = None
-        self._rapid_disconnects: deque[float] = deque()
         self._terminal_error: Exception | None = None
         self._heartbeat_dead_threshold_s = heartbeat_dead_threshold_s
         self._heartbeat_deadline: float | None = None
@@ -207,8 +200,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self._on_disconnect = on_disconnect
         self._on_heartbeat_ack = on_heartbeat_ack
         self._on_topic_lost = on_topic_lost
-        self._on_connected = on_connected
         self._reconnect_decider = reconnect_decider
+        self._decider = self._new_decider()
         self._lifecycle_tasks: set[asyncio.Task[None]] = set()
         self._cleanup_tasks: set[asyncio.Task[None]] = set()
         self._forced_close_pending = False
@@ -238,7 +231,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
 
         self._shutdown_event.clear()
         self._connected_event.clear()
-        self._rapid_disconnects.clear()
+        self._decider = self._new_decider()
         self._terminal_error = None
         self._conn_generation = 0
         self._initial_connection_future = asyncio.get_running_loop().create_future()

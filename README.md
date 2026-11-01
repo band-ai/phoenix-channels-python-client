@@ -274,7 +274,6 @@ Everything after `api_key` is keyword-only:
 | `on_disconnect` | `None` | `async (error: Exception \| None) -> None`; `None` on a clean close |
 | `on_heartbeat_ack` | `None` | Synchronous `() -> None`; runs on the message path, so keep it fast |
 | `on_topic_lost` | `None` | `async (topic: str, error: Exception) -> None`, called when the client drops a topic you didn't unsubscribe |
-| `on_connected` | `None` | Synchronous `(generation: int) -> None`, called for every adopted socket, the first included, before topics rejoin |
 | `reconnect_decider` | `None` | Synchronous `(event: ReconnectEvent) -> ReconnectDecision`; replaces the built-in reconnect policy (see [Owning the reconnect policy](#owning-the-reconnect-policy)) |
 | `additional_headers` | `None` | Extra handshake headers sent on every (re)connect |
 
@@ -314,24 +313,27 @@ policy = ReconnectPolicy.model_validate(base.model_dump() | {"max_delay_s": 10.0
 Pass `reconnect_decider` to make every reconnect decision yourself. While `auto_reconnect` is on, the client calls it with:
 
 - `Connecting()` before every connection attempt, the first included;
+- `Connected(generation)` when a socket is up, before any topic rejoins on it;
 - `Disconnected(close_code, close_reason)` after every close. A forced close (heartbeat expiry, `close_connection()`) has `close_code=None`, since the received code is unreliable then;
 - `ConnectFailed(error)` after every failed attempt, with the raw exception (a refused handshake is a `websockets` `InvalidStatus` carrying the response).
 
 It returns a `ReconnectDecision`:
 
-- `ReconnectDecision(should_reconnect=True, delay_s=2.0)` waits exactly 2 s, replacing the backoff; without `delay_s` the backoff above applies. `Connecting()` reads only `should_reconnect` and `terminal_error`.
-- `ReconnectDecision(should_reconnect=False)` stops; `run_forever()` returns `None`.
+- `ReconnectDecision(should_reconnect=True, delay_s=2.0)` after `Disconnected` or `ConnectFailed` waits exactly 2 s before the next attempt; `delay_s` defaults to `0`. `Connecting` and `Connected` only proceed or stop, and a delay there stops the client with `PHXConnectionError`.
+- `ReconnectDecision(should_reconnect=False)` stops; `run_forever()` returns `None`. A stop at `Connected` closes that socket before any rejoin.
 - `ReconnectDecision(should_reconnect=False, terminal_error=PHXConnectionError(...))` stops; `run_forever()` (or `async with`, before the first connection) raises the error.
 
-The decider replaces the whole built-in policy, rapid-disconnect suppression included. It runs inline on the client's supervisor task, so keep it fast and never block. If it raises, the client stops with a `PHXConnectionError` whose `__cause__` is that exception. To end a live connection, call `close_connection()` and stop at the next decision.
+The decider replaces the whole built-in policy above, rapid-disconnect suppression included; the built-in policy is itself a decider over the same events. It runs inline on the client's supervisor task, so keep it fast and never block. If it raises, the client stops with a `PHXConnectionError` whose `__cause__` is that exception. To end a live connection, call `close_connection()` and stop at the next decision.
 
 ```python
 def decide(event: ReconnectEvent) -> ReconnectDecision:
     match event:
         case ConnectFailed(error=InvalidStatus(response=response)) if response.status_code == 403:
             return ReconnectDecision(should_reconnect=False, terminal_error=PHXConnectionError("refused"))
-        case _:
+        case Disconnected() | ConnectFailed():
             return ReconnectDecision(should_reconnect=True, delay_s=1.0)
+        case _:
+            return ReconnectDecision(should_reconnect=True)
 ```
 
 ### Channel recovery

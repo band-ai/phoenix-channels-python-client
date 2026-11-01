@@ -20,7 +20,6 @@ from phoenix_channels_python_client.phx_messages import (
 from phoenix_channels_python_client.utils import make_message
 from tests.harness import (
     HARNESS_RECONNECT_DELAY_S,
-    HARNESS_STABLE_RESET_S,
     FakeSocket,
     SupervisorHarness,
     fake_connection,
@@ -29,23 +28,9 @@ from tests.support import wait_forever
 
 HEARTBEAT_REF = "5"
 
-# Past the harness's stable reset, with margin for the loop clock's resolution.
-STABLE_UPTIME_S = 2 * HARNESS_STABLE_RESET_S
-
 
 def heartbeat_reply(ref: str) -> ChannelMessage:
     return make_message(topic=PHOENIX_TOPIC, event=PHXEvent.reply, payload={}, ref=ref)
-
-
-async def test_a_suppressed_reconnect_after_a_failed_connect_is_terminal() -> None:
-    harness = SupervisorHarness(connect_failures=1)
-    harness.suppress_values = [True]
-
-    await harness._supervisor_loop()
-
-    assert isinstance(harness._terminal_error, PHXConnectionError)
-    assert harness._initial_connection_future is not None
-    assert harness._initial_connection_future.exception() is harness._terminal_error
 
 
 async def test_a_terminal_connect_failure_ends_the_loop_with_its_error() -> None:
@@ -54,8 +39,6 @@ async def test_a_terminal_connect_failure_ends_the_loop_with_its_error() -> None
     harness.connect_failure_decision = ReconnectDecision(
         should_reconnect=False, terminal_error=terminal
     )
-    # Consulted first, it would replace the terminal error with its own.
-    harness.suppress_values = [True]
 
     await harness._supervisor_loop()
 
@@ -89,15 +72,6 @@ async def test_a_rejoin_error_does_not_stop_the_supervisor() -> None:
     assert harness._initial_connection_future is not None
     assert harness._initial_connection_future.result() is None
     assert harness.wait_delays == [HARNESS_RECONNECT_DELAY_S]
-
-
-async def test_a_connection_outliving_stable_reset_clears_the_rapid_history() -> None:
-    harness = SupervisorHarness(connection_uptime_s=STABLE_UPTIME_S)
-    harness._rapid_disconnects.extend([1.0, 2.0])
-
-    await harness._supervisor_loop()
-
-    assert not harness._rapid_disconnects
 
 
 async def test_a_forced_close_is_decided_without_the_echoed_close_code() -> None:
