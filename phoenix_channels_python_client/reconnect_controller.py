@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 
 from websockets import ClientConnection
@@ -50,6 +51,9 @@ class ReconnectControllerMixin:
         except Exception as exc:
             self.logger.exception("reconnect_decider failed; stopping the client")
             return _decider_failure("reconnect_decider failed", exc)
+        if inspect.iscoroutine(decision):
+            decision.close()  # Never awaited; closed so it raises no warning.
+            return _decider_failure("reconnect_decider must be synchronous")
         if not isinstance(decision, ReconnectDecision):
             return _decider_failure("reconnect_decider returned no ReconnectDecision")
         if decision.delay_s and isinstance(event, GATE_EVENTS):

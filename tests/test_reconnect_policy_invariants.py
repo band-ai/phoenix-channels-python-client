@@ -61,6 +61,14 @@ NO_BACKOFF = ReconnectPolicy(
 
 SUPPRESS_AFTER_DISCONNECTS = 3
 
+# A backoff above every close's pause range, so the range can only raise it.
+SLOW_BACKOFF = ReconnectPolicy(base_delay_s=100.0, max_delay_s=100.0)
+
+# Rapid history outlives the stable reset, so only the reset can clear it.
+OUTLASTING_RAPID_HISTORY = derive_policy(
+    COOLDOWN_POLICY, rapid_window_s=2 * COOLDOWN_POLICY.stable_reset_s
+)
+
 # A failed TCP connect: retried, with no status to classify.
 UNREACHABLE = ConnectionRefusedError
 
@@ -165,6 +173,19 @@ async def test_a_close_asking_for_a_pause_waits_within_its_range(
     assert low <= decision.delay_s <= high
 
 
+@pytest.mark.parametrize(
+    "close_code", [CloseCode.SERVICE_RESTART, CloseCode.TRY_AGAIN_LATER]
+)
+async def test_a_pause_range_never_shortens_the_backoff(
+    close_code: CloseCode, random_draw: Callable[[float], None]
+) -> None:
+    random_draw(1.0)
+
+    decision = _close(_decider(SLOW_BACKOFF), close_code)
+
+    assert decision.delay_s == pytest.approx(SLOW_BACKOFF.max_delay_s)
+
+
 async def test_a_forbidden_handshake_is_a_terminal_connect_failure() -> None:
     decision = _decider()(ConnectFailed(refused(TERMINAL_REFUSAL)))
 
@@ -203,17 +224,18 @@ async def test_repeated_rapid_disconnects_stop_with_a_terminal_error() -> None:
 async def test_a_connection_outliving_stable_reset_restarts_the_backoff(
     clock: Clock, random_draw: Callable[[float], None]
 ) -> None:
+    policy = OUTLASTING_RAPID_HISTORY
     random_draw(1.0)
-    decider = _decider(COOLDOWN_POLICY)
+    decider = _decider(policy)
     # Enough rapid failures to reach the cooldown.
     for _ in RAPID_COUNTS:
         decider(ConnectFailed(UNREACHABLE()))
 
     decider(Connected(generation=1))
-    await clock.advance(COOLDOWN_POLICY.stable_reset_s)
+    await clock.advance(policy.stable_reset_s)
     decision = decider(Disconnected(close_code=None, close_reason=""))
 
-    assert decision.delay_s == pytest.approx(COOLDOWN_POLICY.base_delay_s)
+    assert decision.delay_s == pytest.approx(policy.base_delay_s)
 
 
 async def test_the_rapid_cooldown_steps_from_its_base_up_to_its_cap() -> None:

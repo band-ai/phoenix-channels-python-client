@@ -308,6 +308,52 @@ async def test_a_decider_returning_no_decision_stops_the_client(
     await client.shutdown(STOP_REASON)
 
 
+@EACH_EVENT_KIND
+async def test_an_async_decider_stops_the_client(
+    phoenix_server: FakePhoenixServer, kind: type[ReconnectEvent]
+) -> None:
+    decider = RecordingDecider()
+
+    def mistaken(event: ReconnectEvent) -> ReconnectDecision:
+        decision = decider(event)
+        if not isinstance(event, kind):
+            return decision
+
+        async def deciding() -> ReconnectDecision:
+            return decision
+
+        return deciding()  # type: ignore[return-value]
+
+    client = make_client(phoenix_server, reconnect_decider=mistaken)
+
+    with pytest.raises(PHXConnectionError, match="must be synchronous"):
+        await run_until_stopped(phoenix_server, client, kind)
+    await client.shutdown(STOP_REASON)
+
+
+async def test_a_close_after_shutdown_began_is_not_decided(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    decider = RecordingDecider()
+    stopping: list[asyncio.Task[None]] = []
+
+    async def on_disconnect(error: Exception | None) -> None:
+        del error
+        stopping.append(asyncio.create_task(client.shutdown(STOP_REASON)))
+        # Lets the shutdown request land before the close is decided.
+        await asyncio.sleep(0)
+
+    client = make_client(
+        phoenix_server, reconnect_decider=decider, on_disconnect=on_disconnect
+    )
+    async with client:
+        await phoenix_server.close_all_clients(code=CloseCode.GOING_AWAY)
+        assert await wait_for_condition(lambda: bool(stopping))
+        await asyncio.wait_for(stopping[0], ASYNC_TIMEOUT_S)
+
+    assert not any(isinstance(event, Disconnected) for event in decider.seen)
+
+
 async def test_each_entry_starts_the_built_in_policy_afresh(
     phoenix_server: FakePhoenixServer,
 ) -> None:
