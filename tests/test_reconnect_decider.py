@@ -56,6 +56,7 @@ SUPPRESS_AFTER_DISCONNECTS = 3
 
 # A suppression threshold two entries with one rapid failure each would reach.
 RAPID_FAILURES_TO_STOP = 2
+RAPID_HISTORY_WINDOW_S = 60.0
 
 # Connection attempts: the first socket, then the one reconnected after its close.
 RECONNECTED_ONCE = 2
@@ -357,8 +358,11 @@ async def test_a_close_after_shutdown_began_is_not_decided(
 async def test_each_entry_starts_the_built_in_policy_afresh(
     phoenix_server: FakePhoenixServer,
 ) -> None:
+    # A window no test run outlasts, so only a fresh decider forgets a failure.
     policy = derive_policy(
-        FAST_RECONNECT, rapid_suppress_disconnect_count=RAPID_FAILURES_TO_STOP
+        FAST_RECONNECT,
+        rapid_suppress_disconnect_count=RAPID_FAILURES_TO_STOP,
+        rapid_window_s=RAPID_HISTORY_WINDOW_S,
     )
     client = make_client(phoenix_server, reconnect_policy=policy)
 
