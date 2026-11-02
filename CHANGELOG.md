@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.4.3...phoenix-channels-python-client-v0.4.4) (2026-11-02)
+
+
+### Bug Fixes
+
+* **client:** shut the supervisor down when entering is cancelled ([#88](https://github.com/band-ai/phoenix-channels-python-client/issues/88)) ([c4faeb6](https://github.com/band-ai/phoenix-channels-python-client/commit/c4faeb6f5da60d9f0914fa4cf758e4d454802ab2))
+
 ## [0.4.3](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.4.2...phoenix-channels-python-client-v0.4.3) (2026-11-01)
 
 
