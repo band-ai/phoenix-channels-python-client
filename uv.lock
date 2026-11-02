@@ -452,8 +452,8 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "commitizen", marker = "extra == 'dev'", specifier = ">=3.13.0" },
-    { name = "looptime", marker = "extra == 'dev'", specifier = ">=0.7,<0.8" },
-    { name = "looptime", marker = "extra == 'test'", specifier = ">=0.7,<0.8" },
+    { name = "looptime", marker = "extra == 'dev'", specifier = ">=0.7,<0.10" },
+    { name = "looptime", marker = "extra == 'test'", specifier = ">=0.7,<0.10" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.0.0" },
     { name = "pydantic", specifier = ">=2.8" },
     { name = "pyrefly", marker = "extra == 'dev'" },
