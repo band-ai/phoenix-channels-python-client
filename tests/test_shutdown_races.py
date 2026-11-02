@@ -26,6 +26,7 @@ from tests.support import (
     TOPIC,
     UNPARSEABLE_FRAME,
     ReconnectCounter,
+    RecordingDecider,
     crash_with_rejoin_in_flight,
     deliver,
     derive_policy,
@@ -46,6 +47,9 @@ HELD_BACKOFF_S = 4 * ASYNC_TIMEOUT_S
 HELD_BACKOFF = derive_policy(
     FAST_RECONNECT, base_delay_s=HELD_BACKOFF_S, max_delay_s=HELD_BACKOFF_S
 )
+
+# More refusals than any test reaches, so only the client's own stop ends them.
+REFUSE_EVERY_HANDSHAKE = 1_000_000
 
 
 class HeldCallback:
@@ -378,3 +382,102 @@ async def test_shutdown_during_a_close_still_closes_the_socket(
             await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
 
             assert socket.state is State.CLOSED
+
+
+def retrying_client(server: FakePhoenixServer) -> PHXChannelsClient:
+    """A client whose decider retries every refusal at once."""
+    return make_client(server, reconnect_decider=RecordingDecider())
+
+
+async def a_handshake_was_refused(server: FakePhoenixServer) -> None:
+    assert await wait_for_condition(lambda: server.refused_handshakes >= 1)
+
+
+async def expire_on_first_refusal(
+    server: FakePhoenixServer, client: PHXChannelsClient, deadline: asyncio.Timeout
+) -> asyncio.Task[None] | None:
+    """Expire ``deadline`` once a handshake was refused; return entry's supervisor."""
+    await a_handshake_was_refused(server)
+    supervisor = client._supervisor_task
+    deadline.reschedule(asyncio.get_running_loop().time())
+    return supervisor
+
+
+async def time_out_entry_on_first_refusal(
+    server: FakePhoenixServer, client: PHXChannelsClient
+) -> asyncio.Task[None] | None:
+    """Enter under a deadline that expires on the first refused handshake.
+
+    Returns the supervisor entry started; fails unless the deadline ended entry.
+    """
+    expiry: asyncio.Task[asyncio.Task[None] | None] | None = None
+    try:
+        async with asyncio.timeout(None) as deadline:
+            expiry = asyncio.create_task(
+                expire_on_first_refusal(server, client, deadline)
+            )
+            await client.__aenter__()
+    except TimeoutError:
+        assert expiry is not None
+        return expiry.result()
+    pytest.fail("entry ended before its deadline")
+
+
+async def test_a_timed_out_entry_stops_connecting(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    client = retrying_client(phoenix_server)
+    try:
+        with phoenix_server.refusing(REFUSE_EVERY_HANDSHAKE):
+            supervisor = await time_out_entry_on_first_refusal(phoenix_server, client)
+
+            assert supervisor is not None
+            assert supervisor.done()
+            assert client._state is ClientState.CLOSED
+
+        async with client:  # the stopped client enters again once the server accepts
+            assert client.connection is not None
+    finally:
+        await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
+
+
+async def test_a_second_cancel_during_entry_cleanup_still_stops_connecting(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    client = retrying_client(phoenix_server)
+    try:
+        with phoenix_server.refusing(REFUSE_EVERY_HANDSHAKE):
+            entering = asyncio.create_task(client.__aenter__())
+            await a_handshake_was_refused(phoenix_server)
+            supervisor = client._supervisor_task
+            assert supervisor is not None
+
+            entering.cancel()
+            await asyncio.sleep(0)  # the cancelled entry starts its cleanup shutdown
+            assert client._state is ClientState.SHUTTING_DOWN
+            cleanup = client._active_shutdown
+            assert cleanup is not None
+
+            entering.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(entering, ASYNC_TIMEOUT_S)
+
+            await asyncio.wait_for(cleanup, ASYNC_TIMEOUT_S)
+            assert supervisor.done()
+            assert client._is_fully_closed
+    finally:
+        await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
+
+
+async def test_closing_a_pending_entry_is_silent(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    client = make_client(phoenix_server)
+    phoenix_server.handshake_gate.clear()
+    entry = client.__aenter__()
+    try:
+        entry.send(None)  # suspends at the initial-connection await
+        entry.close()  # raises if entry awaits while handling GeneratorExit
+    finally:
+        phoenix_server.handshake_gate.set()
+        await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)

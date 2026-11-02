@@ -241,7 +241,9 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
 
         try:
             await self._initial_connection_future
-        except Exception:
+        # Not BaseException: awaiting while the coroutine is closed (GeneratorExit)
+        # raises RuntimeError.
+        except (Exception, asyncio.CancelledError):
             await self.shutdown("Initial connection failed")
             raise
 
