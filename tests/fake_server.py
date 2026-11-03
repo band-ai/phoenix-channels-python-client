@@ -5,9 +5,9 @@ import json
 import socket
 import struct
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from http import HTTPStatus
 from typing import NamedTuple, Self
 from urllib.parse import parse_qs, urlparse
@@ -60,12 +60,55 @@ class Frame(NamedTuple):
     payload: Mapping[str, object]
 
 
+class BinaryPush(NamedTuple):
+    join_ref: str | None
+    ref: str | None
+    topic: str
+    event: str
+    data: bytes
+
+
+class BinaryKind(IntEnum):
+    PUSH = 0
+    REPLY = 1
+    BROADCAST = 2
+
+
+def encode_binary_frame(
+    kind: BinaryKind, header_fields: Sequence[str], data: bytes
+) -> bytes:
+    """A V2 binary frame: kind byte, one size byte per field, the fields, the data."""
+    encoded = [field.encode() for field in header_fields]
+    sizes = bytes(len(field) for field in encoded)
+    return bytes([kind]) + sizes + b"".join(encoded) + data
+
+
+# A client push header: join_ref, ref, topic, event.
+_CLIENT_PUSH_FIELD_COUNT = 4
+
+
+def decode_binary_push(raw: bytes) -> BinaryPush | None:
+    """A client's V2 binary push, or None for any other binary frame."""
+    if raw[:1] != bytes([BinaryKind.PUSH]):
+        return None
+    sizes = raw[1 : 1 + _CLIENT_PUSH_FIELD_COUNT]
+    fields: list[str] = []
+    offset = 1 + _CLIENT_PUSH_FIELD_COUNT
+    for size in sizes:
+        fields.append(raw[offset : offset + size].decode())
+        offset += size
+    join_ref, ref, topic, event = fields
+    return BinaryPush(join_ref or None, ref or None, topic, event, raw[offset:])
+
+
 class FakePhoenixServer:
     SOCKET_PATH = "/socket/websocket"
     TOPIC = "test-topic"
     OTHER_TOPIC = "test-topic-b"
     REJECTED_TOPIC = "invalid-topic"
-    VALID_TOPICS = frozenset({TOPIC, OTHER_TOPIC})
+    # Multi-byte UTF-8, to check header sizes count bytes.
+    UNICODE_TOPIC = "room:é日本"
+    VALID_TOPICS = frozenset({TOPIC, OTHER_TOPIC, UNICODE_TOPIC})
 
     def __init__(
         self,
@@ -87,6 +130,8 @@ class FakePhoenixServer:
         self.unanswered_join_ids: set[int] = set()
         # Clear to leave heartbeats unanswered, like an unresponsive server.
         self.answer_heartbeats = True
+        # Clear to leave client pushes unanswered, like a channel that never replies.
+        self.answer_pushes = True
         self.heartbeats: asyncio.Queue[tuple[ServerConnection, Frame]] = asyncio.Queue()
         self.defer_join_targets: set[tuple[int, str]] = set()
         self.deferred_joins: asyncio.Queue[tuple[ServerConnection, Frame]] = (
@@ -95,7 +140,16 @@ class FakePhoenixServer:
         # Every topic a client asked to join, in order, answered or not.
         self.join_topics: list[str] = []
         self.join_payloads: dict[str, Mapping[str, object]] = {}
+        # Every join's topic and payload as received, in order: a JSON object
+        # from a text join, bytes from a binary one.
+        self.received_join_payloads: list[tuple[str, Mapping[str, object] | bytes]] = []
+        # V2 only: a topic's join reply goes out as a binary reply frame.
+        self.binary_join_responses: dict[str, bytes] = {}
         self.join_events: dict[str, list[tuple[str, Mapping[str, object]]]] = {}
+        # Binary pushes from clients; each gets an ok binary reply echoing its data.
+        self.binary_pushes: asyncio.Queue[tuple[ServerConnection, BinaryPush]] = (
+            asyncio.Queue()
+        )
         self.joined: asyncio.Queue[tuple[ServerConnection, Frame]] = asyncio.Queue()
         self.left: asyncio.Queue[tuple[ServerConnection, Frame]] = asyncio.Queue()
         # Joined channels, (client id, topic) -> the join frame's join_ref, as
@@ -139,7 +193,11 @@ class FakePhoenixServer:
                     ]
                 )
 
-    def _decode(self, raw: str | bytes) -> Frame | None:
+    def _decode(self, raw: str | bytes) -> Frame | BinaryPush | None:
+        if self.protocol == PhoenixChannelsProtocolVersion.V2 and isinstance(
+            raw, bytes
+        ):
+            return decode_binary_push(raw)
         data = json.loads(raw)
         match self.protocol, data:
             case PhoenixChannelsProtocolVersion.V1, {"topic": str(topic)}:
@@ -219,9 +277,16 @@ class FakePhoenixServer:
 
         try:
             async for message in websocket:
-                frame = self._decode(message)
-                if frame is not None:
-                    await self.handle_frame(websocket, frame)
+                match self._decode(message):
+                    case BinaryPush(event=WireEvent.JOIN) as join:
+                        frame = Frame(
+                            join.join_ref, join.ref, join.topic, join.event, {}
+                        )
+                        await self._handle_join(websocket, frame, join.data)
+                    case BinaryPush() as push:
+                        await self._echo_binary_push(websocket, push)
+                    case Frame() as frame:
+                        await self.handle_frame(websocket, frame)
         except ConnectionClosed:
             pass
         finally:
@@ -239,15 +304,47 @@ class FakePhoenixServer:
         request: Frame,
         status: ReplyStatus,
         reason: str = "",
+        echo: Mapping[str, object] | None = None,
     ) -> None:
-        response = {"reason": reason} if reason else {}
+        response = {"reason": reason} if reason else dict(echo or {})
         payload = {"status": status, "response": response}
         if request.event == WireEvent.JOIN and status == ReplyStatus.OK:
             payload = dict(self.join_payloads.get(request.topic, payload))
+        if (
+            request.event == WireEvent.JOIN
+            and status == ReplyStatus.OK
+            and request.topic in self.binary_join_responses
+        ):
+            await self._binary_reply(
+                websocket, request, status, self.binary_join_responses[request.topic]
+            )
+            return
         reply = Frame(
             request.join_ref, request.ref, request.topic, WireEvent.REPLY, payload
         )
         await self._send(websocket, reply)
+
+    @staticmethod
+    async def _binary_reply(
+        websocket: ServerConnection,
+        request: Frame | BinaryPush,
+        status: ReplyStatus,
+        data: bytes,
+    ) -> None:
+        await websocket.send(
+            encode_binary_frame(
+                BinaryKind.REPLY,
+                [request.join_ref or "", request.ref or "", request.topic, status],
+                data,
+            )
+        )
+
+    async def _echo_binary_push(
+        self, websocket: ServerConnection, push: BinaryPush
+    ) -> None:
+        self.binary_pushes.put_nowait((websocket, push))
+        if self.answer_pushes:
+            await self._binary_reply(websocket, push, ReplyStatus.OK, push.data)
 
     async def handle_frame(self, websocket: ServerConnection, frame: Frame) -> None:
         match frame.event:
@@ -259,10 +356,21 @@ class FakePhoenixServer:
                 await self._handle_join(websocket, frame)
             case WireEvent.LEAVE:
                 await self._handle_leave(websocket, frame)
+            case _ if self.answer_pushes and frame.topic != SYSTEM_TOPIC:
+                # A channel's reply to a push: ok, echoing the payload.
+                await self._reply(websocket, frame, ReplyStatus.OK, echo=frame.payload)
 
-    async def _handle_join(self, websocket: ServerConnection, frame: Frame) -> None:
+    async def _handle_join(
+        self,
+        websocket: ServerConnection,
+        frame: Frame,
+        binary_payload: bytes | None = None,
+    ) -> None:
         client_id = self._client_ids.get(websocket)
         self.join_topics.append(frame.topic)
+        self.received_join_payloads.append(
+            (frame.topic, frame.payload if binary_payload is None else binary_payload)
+        )
         self.joined.put_nowait((websocket, frame))
         if (client_id, frame.topic) in self.defer_join_targets:
             self.deferred_joins.put_nowait((websocket, frame))
@@ -365,10 +473,13 @@ class FakePhoenixServer:
         join_ref = self.members.pop(member)
         await self._send(websocket, Frame(join_ref, join_ref, topic, event, {}))
 
-    async def send_raw(self, text: str) -> None:
-        """Send ``text`` as-is to every client, valid frame or not."""
+    async def send_raw(self, data: str | bytes) -> None:
+        """Send ``data`` as-is to every client, valid frame or not.
+
+        ``bytes`` go out as a binary frame, ``str`` as a text frame.
+        """
         for websocket in list(self._clients):
-            await websocket.send(text)
+            await websocket.send(data)
 
     @contextmanager
     def refusing(

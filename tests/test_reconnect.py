@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from enum import StrEnum
 from http import HTTPStatus
-from typing import Any
 
 import pytest
 from websockets import ClientConnection
@@ -12,7 +11,12 @@ from websockets.frames import CloseCode
 
 from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from phoenix_channels_python_client.phx_messages import ChannelMessage, Event, PHXEvent
+from phoenix_channels_python_client.phx_messages import (
+    ChannelMessage,
+    Event,
+    Payload,
+    PHXEvent,
+)
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     API_KEY,
@@ -36,6 +40,7 @@ from tests.support import (
     each_protocol,
     each_retried_refusal,
     expect_message,
+    json_object,
     make_client,
     reconnect,
     reconnect_after,
@@ -82,15 +87,15 @@ class HeldMessageHandlers:
         self.finished_events: list[object] = []
 
     async def on_message(self, message: ChannelMessage) -> None:
-        self.started.append(message.payload["id"])
+        self.started.append(json_object(message.payload)["id"])
         if not self.running.is_set():
             self.running.set()
             await self.release.wait()
 
-    async def on_event(self, payload: dict[str, Any]) -> None:
+    async def on_event(self, payload: Payload) -> None:
         # Yields first, so a cancel cuts the handler off before it records.
         await asyncio.sleep(0)
-        self.finished_events.append(payload["id"])
+        self.finished_events.append(json_object(payload)["id"])
 
 
 async def reconnect_while_draining(
@@ -200,7 +205,7 @@ async def test_messages_queued_before_a_reconnect_are_dropped(
     first_started = asyncio.Event()
 
     async def stuck_on_the_first_message(message: ChannelMessage) -> None:
-        handled.append(message.payload["id"])
+        handled.append(json_object(message.payload)["id"])
         if not first_started.is_set():
             first_started.set()
             await wait_forever()

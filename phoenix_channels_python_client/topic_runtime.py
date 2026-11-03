@@ -11,7 +11,9 @@ from websockets import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
 from phoenix_channels_python_client.client_types import (
+    DEFAULT_REPLY_TIMEOUT_S,
     ClientState,
+    EventHandler,
     JoinResponseCallback,
 )
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
@@ -19,7 +21,11 @@ from phoenix_channels_python_client.phx_messages import (
     CLIENT_LIFECYCLE_EVENTS,
     ChannelEvent,
     ChannelMessage,
+    Event,
+    OutgoingPayload,
     PHXEvent,
+    PushReply,
+    validate_payload,
 )
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.topic_subscription import (
@@ -46,7 +52,7 @@ async def _cancel_unless_current(task: asyncio.Task[None] | None) -> None:
 async def _run_handlers(
     message: ChannelMessage,
     message_handler: Callable[[ChannelMessage], Awaitable[None]] | None,
-    event_handler: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    event_handler: EventHandler | None,
 ) -> None:
     if message_handler is not None:
         await message_handler(message)
@@ -197,7 +203,7 @@ class TopicRuntimeMixin:
         ):
             return
 
-        if message.payload.get("status") == "ok":
+        if message.reply_status == "ok":
             if (
                 topic.on_join_response is not None
                 and topic.dropped_message_count != topic.join_drop_baseline
@@ -208,7 +214,7 @@ class TopicRuntimeMixin:
                 )
                 return
             try:
-                self._install_join_response(topic, message.payload.get("response"))
+                self._install_join_response(topic, message.reply_response)
             except (Exception, asyncio.CancelledError) as exc:
                 error = PHXTopicError("Join response installation failed")
                 self.logger.exception(str(error))
@@ -219,7 +225,7 @@ class TopicRuntimeMixin:
             self.logger.info("Successfully subscribed to topic %s", topic.name)
             return
 
-        response = message.payload.get("response", {})
+        response = message.reply_response
         error_message = (
             response.get("reason", "invalid topic")
             if isinstance(response, dict)
@@ -269,6 +275,8 @@ class TopicRuntimeMixin:
         self._fail_current_join(topic, _channel_failure(topic, PHXEvent.error))
 
     def _fail_current_join(self, topic: TopicSubscription, error: Exception) -> None:
+        # The channel is gone, so no reply to an in-flight push will come.
+        self._fail_pending_pushes(topic, error)
         # A new future: the successful join is already done, so failing it in
         # place would leave the topic looking joined.
         if not topic.current_join_ready.done():
@@ -417,7 +425,7 @@ class TopicRuntimeMixin:
         self, topic: TopicSubscription, message: ChannelMessage
     ) -> tuple[
         Callable[[ChannelMessage], Awaitable[None]] | None,
-        Callable[[dict[str, Any]], Awaitable[None]] | None,
+        EventHandler | None,
     ]:
         message_handler = topic.async_callback
         event_handler = topic.get_event_handler(message.event)
@@ -462,7 +470,7 @@ class TopicRuntimeMixin:
             )
             return
 
-        is_leave_success = message.payload.get("status") == "ok"
+        is_leave_success = message.reply_status == "ok"
 
         if is_leave_success:
             self.logger.info("Successfully unsubscribed from topic %s", topic.name)
@@ -486,6 +494,7 @@ class TopicRuntimeMixin:
         error: Exception,
     ) -> None:
         self._set_future_exception(topic_subscription.current_join_ready, error)
+        self._fail_pending_pushes(topic_subscription, error)
 
         if topic_subscription.leave_requested.is_set():
             self._set_future_exception(topic_subscription.unsubscribe_completed, error)
@@ -493,10 +502,15 @@ class TopicRuntimeMixin:
     def _fail_pending_joins(self, error: Exception) -> None:
         for topic_subscription in self._topic_subscriptions.values():
             self._set_future_exception(topic_subscription.current_join_ready, error)
+            self._fail_pending_pushes(topic_subscription, error)
+
+    def _fail_pending_pushes(self, topic: TopicSubscription, error: Exception) -> None:
+        for pending in topic.pending_pushes.values():
+            self._set_future_exception(pending, error)
 
     def _set_future_exception(
         self,
-        future: asyncio.Future[None],
+        future: asyncio.Future[Any],
         error: Exception,
     ) -> None:
         if future.done():
@@ -597,7 +611,7 @@ class TopicRuntimeMixin:
         join_message = make_message(
             topic=topic_subscription.name,
             event=PHXEvent.join,
-            payload={},
+            payload=topic_subscription.join_payload,
             ref=topic_subscription.join_ref,
             join_ref=topic_subscription.join_ref,
         )
@@ -616,8 +630,15 @@ class TopicRuntimeMixin:
         *,
         on_join_response: JoinResponseCallback | None = None,
         blocks_reconnect: bool = True,
+        join_payload: OutgoingPayload | None = None,
     ) -> None:
+        """Join ``topic``, sending ``join_payload`` (``{}`` if None) with every join.
+
+        A ``bytes`` payload goes out as a binary frame, which only V2 supports.
+        """
         self._ensure_can_send("subscribe")
+        join_payload = validate_payload({} if join_payload is None else join_payload)
+        self._protocol_handler.ensure_sendable(join_payload)
         if inspect.iscoroutinefunction(on_join_response) or inspect.iscoroutinefunction(
             on_join_response.__call__ if callable(on_join_response) else None
         ):
@@ -635,6 +656,7 @@ class TopicRuntimeMixin:
             conn_generation=self._conn_generation,
             on_join_response=on_join_response,
             blocks_reconnect=blocks_reconnect,
+            join_payload=join_payload,
         )
 
         async with self._topics_lock:
@@ -659,6 +681,90 @@ class TopicRuntimeMixin:
         except (Exception, asyncio.CancelledError):
             await self._unregister_topic(topic, only=topic_subscription)
             raise
+
+    def _joined_channel(
+        self, operation: str, topic: str
+    ) -> tuple[ClientConnection, TopicSubscription]:
+        self._ensure_can_send(operation)
+        connection = self.connection
+        subscription = self._topic_subscriptions.get(topic)
+        if (
+            connection is None
+            or subscription is None
+            or not self.is_topic_joined(topic)
+        ):
+            raise PHXTopicError(f"Topic {topic} is not joined")
+        return connection, subscription
+
+    def _push_message(
+        self,
+        subscription: TopicSubscription,
+        event: str,
+        payload: OutgoingPayload,
+        ref: str,
+    ) -> ChannelMessage:
+        """The push on the topic's current join, checked to be sendable."""
+        message = make_message(
+            topic=subscription.name,
+            event=Event(event),
+            payload=payload,
+            ref=ref,
+            join_ref=subscription.join_ref,
+        )
+        self._protocol_handler.ensure_sendable(message.payload)
+        return message
+
+    async def push(
+        self,
+        topic: str,
+        event: str,
+        payload: OutgoingPayload,
+        *,
+        timeout_s: float = DEFAULT_REPLY_TIMEOUT_S,
+    ) -> PushReply:
+        """Push ``event`` to a joined ``topic`` and return the server's reply.
+
+        A ``bytes`` payload goes out as a binary frame, which only V2 supports.
+        Use ``push_nowait`` for an event the server never replies to.
+
+        Raises:
+            PHXConnectionError: Not connected, or the connection or channel was
+                lost before the reply came.
+            PHXTopicError: ``topic`` is not joined, or no reply came in time.
+            TypeError: The payload can't be sent in this protocol version.
+            ValueError: ``timeout_s`` is not positive, the payload isn't a dict
+                or bytes, or a binary frame's header field is empty, too long or
+                not valid text.
+        """
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be > 0")
+        connection, subscription = self._joined_channel("push", topic)
+        ref = self._generate_ref()
+        message = self._push_message(subscription, event, payload, ref)
+        reply: asyncio.Future[PushReply] = asyncio.get_running_loop().create_future()
+        subscription.pending_pushes[ref] = reply
+        try:
+            await self._send(connection, message)
+            return await asyncio.wait_for(reply, timeout=timeout_s)
+        except TimeoutError as exc:
+            raise PHXTopicError(
+                f"Timed out waiting for the reply to {event} on {topic}"
+            ) from exc
+        finally:
+            del subscription.pending_pushes[ref]
+
+    async def push_nowait(
+        self, topic: str, event: str, payload: OutgoingPayload
+    ) -> None:
+        """Push ``event`` to a joined ``topic`` without waiting for a reply.
+
+        For a channel that answers ``{:noreply, socket}``. A reply that does
+        arrive reaches the topic's handlers as an ordinary ``phx_reply``.
+        Raises like ``push``, except for the reply and the timeout.
+        """
+        connection, subscription = self._joined_channel("push_nowait", topic)
+        message = self._push_message(subscription, event, payload, self._generate_ref())
+        await self._send(connection, message)
 
     async def unsubscribe_from_topic(
         self, topic: str, *, _allow_disconnected: bool = False
@@ -712,7 +818,7 @@ class TopicRuntimeMixin:
         self,
         topic: str,
         event: ChannelEvent,
-        handler: Callable[[dict[str, Any]], Awaitable[None]],
+        handler: EventHandler,
     ) -> None:
         if topic not in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} not subscribed")
@@ -729,9 +835,7 @@ class TopicRuntimeMixin:
         topic_subscription.remove_event_handler(event)
         self.logger.debug("Removed event handler for %s on topic %s", event, topic)
 
-    def get_event_handler(
-        self, topic: str, event: ChannelEvent
-    ) -> Callable[[dict[str, Any]], Awaitable[None]] | None:
+    def get_event_handler(self, topic: str, event: ChannelEvent) -> EventHandler | None:
         if topic not in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} not subscribed")
 
@@ -745,9 +849,7 @@ class TopicRuntimeMixin:
         topic_subscription = self._topic_subscriptions[topic]
         return topic_subscription.has_event_handler(event)
 
-    def list_event_handlers(
-        self, topic: str
-    ) -> dict[ChannelEvent, Callable[[dict[str, Any]], Awaitable[None]]]:
+    def list_event_handlers(self, topic: str) -> dict[ChannelEvent, EventHandler]:
         if topic not in self._topic_subscriptions:
             raise PHXTopicError(f"Topic {topic} not subscribed")
 

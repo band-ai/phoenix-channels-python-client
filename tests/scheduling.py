@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Callable, Coroutine, Generator, Iterator
+from collections.abc import Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from contextvars import Context, copy_context
 from types import CodeType
@@ -127,7 +127,7 @@ class TaskLifecycleGate:
 
         def factory(
             loop: asyncio.AbstractEventLoop,
-            work: Coroutine[Any, Any, Any] | Generator[Any, None, Any],
+            work: Coroutine[Any, Any, Any],
             /,
             *,
             context: Context | None = None,

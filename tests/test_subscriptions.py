@@ -8,11 +8,17 @@ from collections.abc import Callable
 import pytest
 
 from phoenix_channels_python_client.client import PHXChannelsClient
+from phoenix_channels_python_client.client_types import DEFAULT_MAX_MESSAGE_SIZE
 from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
+from phoenix_channels_python_client.phx_messages import (
+    ChannelMessage,
+    Event,
+    Payload,
+)
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     ASYNC_TIMEOUT_S,
+    BINARY_PAYLOAD,
     EVENT,
     FAST_RECONNECT,
     JOIN_TIMEOUT_S,
@@ -21,8 +27,10 @@ from tests.support import (
     TOPIC,
     TopicRecorder,
     deliver,
+    deliver_binary,
     each_protocol,
     expect_message,
+    json_object,
     make_client,
     only_client_id,
     start_server_close,
@@ -207,6 +215,33 @@ async def test_a_v2_channel_push_uses_each_members_join_ref(
             assert await expect_message(recorder.event_payloads) == payload
 
 
+async def test_an_event_handler_receives_a_binary_push_as_bytes(
+    phoenix_server: FakePhoenixServer, client: PHXChannelsClient
+) -> None:
+    handled_payloads: asyncio.Queue[object] = asyncio.Queue()
+    await client.subscribe_to_topic(TOPIC)
+    client.add_event_handler(TOPIC, Event(EVENT), handled_payloads.put)
+
+    await deliver_binary(phoenix_server, client, BINARY_PAYLOAD)
+
+    assert await expect_message(handled_payloads) == BINARY_PAYLOAD
+
+
+@pytest.mark.parametrize("max_message_size", [2 * DEFAULT_MAX_MESSAGE_SIZE, None])
+async def test_a_message_over_the_default_size_limit_is_received_when_it_is_raised(
+    phoenix_server: FakePhoenixServer, max_message_size: int | None
+) -> None:
+    oversized = bytes(DEFAULT_MAX_MESSAGE_SIZE + 1)
+    handled_payloads: asyncio.Queue[object] = asyncio.Queue()
+    async with make_client(phoenix_server, max_message_size=max_message_size) as client:
+        await client.subscribe_to_topic(TOPIC)
+        client.add_event_handler(TOPIC, Event(EVENT), handled_payloads.put)
+
+        await deliver_binary(phoenix_server, client, oversized)
+
+        assert await expect_message(handled_payloads) == oversized
+
+
 @each_protocol
 async def test_unsubscribing_lets_the_running_callback_finish_and_drops_queued_events(
     phoenix_server: FakePhoenixServer, client: PHXChannelsClient
@@ -217,7 +252,7 @@ async def test_unsubscribing_lets_the_running_callback_finish_and_drops_queued_e
     release_callback = asyncio.Event()
 
     async def blocking_callback(message: ChannelMessage) -> None:
-        handled.append(message.payload["event_id"])
+        handled.append(json_object(message.payload)["event_id"])
         callback_started.set()
         await release_callback.wait()
 
@@ -273,7 +308,8 @@ async def test_messages_are_delivered_in_order(
         await deliver(phoenix_server, client, payload={"sequence_id": sequence_id})
 
     assert [
-        (await expect_message(received)).payload["sequence_id"] for _ in sequence
+        json_object((await expect_message(received)).payload)["sequence_id"]
+        for _ in sequence
     ] == sequence
 
 
@@ -297,7 +333,7 @@ async def test_an_event_handler_runs_alongside_the_topic_callback_until_removed(
     received: asyncio.Queue[ChannelMessage],
 ) -> None:
     event = Event(EVENT)
-    handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    handled_payloads: asyncio.Queue[Payload] = asyncio.Queue()
     await client.subscribe_to_topic(TOPIC, received.put)
 
     await deliver(phoenix_server, client, event=event)
@@ -315,7 +351,7 @@ async def test_an_event_handler_runs_alongside_the_topic_callback_until_removed(
     assert handled_payloads.empty()
 
 
-async def handle_payload(payload: dict[str, object]) -> None:
+async def handle_payload(payload: Payload) -> None:
     pass
 
 
@@ -414,10 +450,10 @@ async def test_a_failing_callback_skips_its_event_handler_and_later_messages_arr
     client: PHXChannelsClient,
     received: asyncio.Queue[ChannelMessage],
 ) -> None:
-    handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    handled_payloads: asyncio.Queue[Payload] = asyncio.Queue()
 
     async def fail_on_the_first_message(message: ChannelMessage) -> None:
-        if message.payload["n"] == 0:
+        if json_object(message.payload)["n"] == 0:
             raise RuntimeError("callback boom")
         await received.put(message)
 
@@ -435,7 +471,7 @@ async def test_a_failing_callback_skips_its_event_handler_and_later_messages_arr
 async def test_an_event_handler_runs_without_a_topic_callback(
     phoenix_server: FakePhoenixServer, client: PHXChannelsClient
 ) -> None:
-    handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    handled_payloads: asyncio.Queue[Payload] = asyncio.Queue()
     await client.subscribe_to_topic(TOPIC)
     client.add_event_handler(TOPIC, Event(EVENT), handled_payloads.put)
 
@@ -453,7 +489,7 @@ async def test_a_full_topic_queue_drops_its_oldest_message(
     release_first = asyncio.Event()
 
     async def held_on_the_first_message(message: ChannelMessage) -> None:
-        handled.append(message.payload["id"])
+        handled.append(json_object(message.payload)["id"])
         if not first_started.is_set():
             first_started.set()
             await release_first.wait()

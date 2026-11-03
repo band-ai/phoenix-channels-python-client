@@ -33,6 +33,19 @@ from tests.support import (
 )
 
 
+async def test_a_binary_join_reply_installs_its_bytes(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    response = b"\x00\xffjoined"
+    phoenix_server.binary_join_responses[TOPIC] = response
+    installed: list[object] = []
+
+    async with make_client(phoenix_server) as client:
+        await client.subscribe_to_topic(TOPIC, on_join_response=installed.append)
+
+    assert installed == [response]
+
+
 def throwing_hook(error: BaseException) -> JoinResponseCallback:
     def install(response: object) -> None:
         del response

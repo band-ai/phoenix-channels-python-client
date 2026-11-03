@@ -5,9 +5,11 @@ from typing import Any
 from phoenix_channels_python_client.phx_messages import (
     ChannelEvent,
     ChannelMessage,
+    OutgoingPayload,
     PHXEvent,
     PHXEventMessage,
     PHXMessage,
+    validate_payload,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,11 +26,10 @@ def make_message(
     event: ChannelEvent,
     topic: str,
     ref: str | None = None,
-    payload: dict[str, Any] | None = None,
+    payload: OutgoingPayload | None = None,
     join_ref: str | None = None,
 ) -> ChannelMessage:
-    if payload is None:
-        payload = {}
+    payload = validate_payload({} if payload is None else payload)
 
     processed_event = parse_event(event)
     if isinstance(processed_event, PHXEvent):

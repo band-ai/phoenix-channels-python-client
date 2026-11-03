@@ -19,6 +19,8 @@ from phoenix_channels_python_client.authentication import (
 )
 from phoenix_channels_python_client.client_state_machine import transition_client_state
 from phoenix_channels_python_client.client_types import (
+    DEFAULT_MAX_MESSAGE_SIZE,
+    DEFAULT_REPLY_TIMEOUT_S,
     ClientState,
     ReconnectDecider,
     ReconnectPolicy,
@@ -128,7 +130,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         | str = DEFAULT_PROTOCOL_VERSION,
         auto_reconnect: bool = True,
         reconnect_policy: ReconnectPolicy | None = None,
-        join_timeout_s: float = 10.0,
+        join_timeout_s: float = DEFAULT_REPLY_TIMEOUT_S,
         leave_timeout_s: float = 5.0,
         max_topic_queue_size: int = 1000,
         callback_drain_timeout_s: float = 2.0,
@@ -140,6 +142,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         on_topic_lost: TopicLostCallback | None = None,
         reconnect_decider: ReconnectDecider | None = None,
         additional_headers: dict[str, str] | None = None,
+        max_message_size: int | None = DEFAULT_MAX_MESSAGE_SIZE,
     ) -> None:
         if api_key == "":
             raise ValueError("api_key must be nonempty or None")
@@ -161,6 +164,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
             raise ValueError("max_topic_queue_size must be > 0")
         if callback_drain_timeout_s <= 0:
             raise ValueError("callback_drain_timeout_s must be > 0")
+        if max_message_size is not None and max_message_size <= 0:
+            raise ValueError("max_message_size must be > 0 or None for no limit")
 
         self._protocol_handler = PHXProtocolHandler(
             protocol_version, diagnostic_logger=self.logger
@@ -180,6 +185,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self.leave_timeout_s = leave_timeout_s
         self.max_topic_queue_size = max_topic_queue_size
         self.callback_drain_timeout_s = callback_drain_timeout_s
+        self.max_message_size = max_message_size
 
         self.connection: ClientConnection | None = None
         self._topic_subscriptions: dict[str, TopicSubscription] = {}

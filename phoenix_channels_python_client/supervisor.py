@@ -73,6 +73,7 @@ class SupervisorMixin:
     channel_socket_url: str
     channel_socket_url_redacted: str
     additional_headers: dict[str, str]
+    max_message_size: int | None
     auto_reconnect: bool
     connection: ClientConnection | None
     _topic_subscriptions: dict[str, TopicSubscription]
@@ -260,6 +261,7 @@ class SupervisorMixin:
         return await connect(
             self.channel_socket_url,
             additional_headers=self.additional_headers,
+            max_size=self.max_message_size,
             logger=self.logger,
         )
 

@@ -383,6 +383,11 @@ async def test_shutdown_during_a_close_still_closes_the_socket(
             assert socket.state is State.CLOSED
 
 
+def state_of(client: PHXChannelsClient) -> ClientState:
+    """Read the state afresh; an earlier ``assert`` narrowing is stale after awaits."""
+    return client._state
+
+
 async def a_handshake_was_refused(server: FakePhoenixServer) -> None:
     assert await wait_for_condition(lambda: server.refused_handshakes >= 1)
 
@@ -462,7 +467,7 @@ async def test_a_second_cancel_during_entry_cleanup_still_stops_connecting(
             # Joins the cleanup the entry started; it was not abandoned.
             await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
             assert supervisor.done()
-            assert client._state is ClientState.CLOSED
+            assert state_of(client) is ClientState.CLOSED
             assert client.connection is None
     finally:
         await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Self
@@ -16,8 +16,15 @@ from pydantic import (
 )
 
 from phoenix_channels_python_client.exceptions import PHXConnectionError
+from phoenix_channels_python_client.phx_messages import Payload
 
 JoinResponseCallback = Callable[[Any], None]
+EventHandler = Callable[[Payload], Awaitable[None]]
+
+# How long to wait for the reply to a join or a push.
+DEFAULT_REPLY_TIMEOUT_S = 10.0
+# The websockets default: the largest incoming message the client accepts.
+DEFAULT_MAX_MESSAGE_SIZE = 1 << 20
 
 
 class ClientState(StrEnum):

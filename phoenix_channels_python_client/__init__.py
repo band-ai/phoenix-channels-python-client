@@ -18,10 +18,16 @@ from phoenix_channels_python_client.client_types import (
     ConnectFailed,
     Connecting,
     Disconnected,
+    EventHandler,
     JoinResponseCallback,
     ReconnectDecider,
     ReconnectDecision,
     ReconnectEvent,
+)
+from phoenix_channels_python_client.phx_messages import (
+    OutgoingPayload,
+    Payload,
+    PushReply,
 )
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
@@ -38,11 +44,15 @@ __all__ = [
     "Connecting",
     "DisconnectCallback",
     "Disconnected",
+    "EventHandler",
     "HeartbeatAckCallback",
     "JoinResponseCallback",
+    "OutgoingPayload",
     "PHXChannelsClient",
     "PHXProtocolHandler",
+    "Payload",
     "PhoenixChannelsProtocolVersion",
+    "PushReply",
     "ReconnectCallback",
     "ReconnectDecider",
     "ReconnectDecision",

@@ -149,6 +149,49 @@ async with PHXChannelsClient(
 
 The client adds `vsn=2.0.0` (V2) or `vsn=1.0.0` (V1) to the socket URL.
 
+### Binary frames (V2 only)
+
+The payload type picks the frame: a `bytes` payload (`bytearray` and `memoryview` are copied to `bytes`) is sent as a binary frame, a `dict` as JSON text.
+A message is one or the other, never both. Any other payload type, `str` included, raises `ValueError`.
+V1 has no binary frames.
+Event handlers receive a binary server push as `bytes`, and a binary reply's `response` is `bytes`.
+Leave and heartbeat always go out as JSON text.
+
+A binary frame's `join_ref`, `ref`, `topic` and `event` are length-prefixed UTF-8.
+A `None` `join_ref` or `ref` is encoded as an empty field and read back as `None`.
+
+Errors when sending:
+
+| Exception | Cause |
+|---|---|
+| `TypeError` | The payload can't be serialized: `bytes` on V1, or a `dict` that isn't JSON-serializable |
+| `ValueError` | A value is invalid: an unsupported payload type, an empty or non-UTF-8 `topic` or `event`, or a binary header field over 255 UTF-8 bytes |
+
+`subscribe_to_topic(..., join_payload=...)` sets the payload of the join (default `{}`).
+The client sends it with the first join and with every rejoin after a reconnect or channel crash.
+
+`push(topic, event, payload, *, timeout_s=10.0)` sends an event on a joined topic and returns the matching `phx_reply` as a `PushReply(status, response)`.
+The reply is returned to the caller and is not passed to the topic's handlers.
+It raises `PHXTopicError` if the topic is not joined or no reply arrives within `timeout_s`, and `PHXConnectionError` if the client is not connected or the connection or channel is lost before the reply.
+
+`push_nowait(topic, event, payload)` sends the same push without waiting for a reply, for a channel that answers `{:noreply, socket}`.
+It registers no pending reply, so a `phx_reply` that does arrive reaches the topic's handlers like any other message.
+It raises the same errors as `push`, apart from the reply timeout.
+
+Sending is not thread-safe: call `push`, `push_nowait` and `subscribe_to_topic` from the event loop the client runs on.
+
+```python
+from phoenix_channels_python_client import PHXChannelsClient
+
+async with PHXChannelsClient("ws://localhost:4000/socket/websocket") as client:
+    await client.subscribe_to_topic("robot:1", join_payload=b"\x01hello")
+
+    reply = await client.push("robot:1", "frame", b"\x00\x01\x02", timeout_s=5.0)
+    print(reply.status, reply.response)  # "ok", b"..."
+
+    await client.push_nowait("robot:1", "telemetry", b"\x03")
+```
+
 ## Usage Examples
 
 ### Basic Topic Subscription
@@ -293,6 +336,7 @@ Everything after `api_key` is keyword-only:
 | `on_topic_lost` | `None` | `async (topic: str, error: Exception) -> None`, called when the client drops a topic you didn't unsubscribe |
 | `reconnect_decider` | `None` | Synchronous `(event: ReconnectEvent) -> ReconnectDecision`; replaces the built-in reconnect policy (see [Owning the reconnect policy](#owning-the-reconnect-policy)) |
 | `additional_headers` | `None` | Extra handshake headers sent on every (re)connect |
+| `max_message_size` | `1048576` (1 MiB) | Largest incoming message in bytes, text or binary; a larger one closes the connection with code 1009. `None` removes the limit |
 
 Exceptions raised in ordinary message and lifecycle callbacks are logged, not raised.
 Join-response installation failures instead fail the join (see below).

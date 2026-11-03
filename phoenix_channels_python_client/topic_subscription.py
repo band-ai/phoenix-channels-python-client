@@ -5,13 +5,18 @@ from asyncio import Future, Queue, Task
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
 
-from phoenix_channels_python_client.client_types import JoinResponseCallback
+from phoenix_channels_python_client.client_types import (
+    EventHandler,
+    JoinResponseCallback,
+)
 from phoenix_channels_python_client.phx_messages import (
     CLIENT_LIFECYCLE_EVENTS,
     ChannelEvent,
     ChannelMessage,
+    Payload,
+    PHXEvent,
+    PushReply,
 )
 from phoenix_channels_python_client.utils import parse_event
 
@@ -34,11 +39,13 @@ class TopicSubscription:
     current_join_ready: Future[None] = field(default_factory=asyncio.Future)
     unsubscribe_completed: Future[None] = field(default_factory=asyncio.Future)
     leave_requested: asyncio.Event = field(default_factory=asyncio.Event)
-    event_handlers: dict[ChannelEvent, Callable[[dict[str, Any]], Awaitable[None]]] = (
-        field(default_factory=dict)
-    )
+    event_handlers: dict[ChannelEvent, EventHandler] = field(default_factory=dict)
     on_join_response: JoinResponseCallback | None = None
     blocks_reconnect: bool = True
+    # Sent with every join of this topic, the first and each rejoin.
+    join_payload: Payload = field(default_factory=dict)
+    # In-flight pushes by ref, each settled by its phx_reply.
+    pending_pushes: dict[str, Future[PushReply]] = field(default_factory=dict)
     established: bool = False
     join_drop_baseline: int = 0
     leave_ref: str | None = None
@@ -50,9 +57,26 @@ class TopicSubscription:
     # Rejoins the channel after a crash, while the socket stays up.
     recovery_task: Task[None] | None = None
 
-    def add_event_handler(
-        self, event: ChannelEvent, handler: Callable[[dict[str, Any]], Awaitable[None]]
-    ) -> None:
+    def resolve_push(self, message: ChannelMessage) -> bool:
+        """Settle the push ``message`` replies to; False if it replies to none."""
+        if message.event != PHXEvent.reply or message.ref is None:
+            return False
+        pending = self.pending_pushes.get(message.ref)
+        if pending is None:
+            return False
+        status = message.reply_status
+        if not pending.done():
+            pending.set_result(
+                PushReply(
+                    status=status if isinstance(status, str) else None,
+                    response=message.reply_response
+                    if message.reply_response is not None
+                    else {},
+                )
+            )
+        return True
+
+    def add_event_handler(self, event: ChannelEvent, handler: EventHandler) -> None:
         # PHXEvent is not a StrEnum, so the wire strings "phx_error" and
         # "phx_close" are not members of CLIENT_LIFECYCLE_EVENTS.
         if parse_event(event) in CLIENT_LIFECYCLE_EVENTS:
@@ -65,9 +89,7 @@ class TopicSubscription:
     def remove_event_handler(self, event: ChannelEvent) -> None:
         self.event_handlers.pop(event, None)
 
-    def get_event_handler(
-        self, event: ChannelEvent
-    ) -> Callable[[dict[str, Any]], Awaitable[None]] | None:
+    def get_event_handler(self, event: ChannelEvent) -> EventHandler | None:
         return self.event_handlers.get(event)
 
     def has_event_handler(self, event: ChannelEvent) -> bool:

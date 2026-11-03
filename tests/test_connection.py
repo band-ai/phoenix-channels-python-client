@@ -410,6 +410,7 @@ async def test_raising_lifecycle_callbacks_do_not_stop_reconnecting(
         ({"leave_timeout_s": 0}, "leave_timeout_s must be > 0"),
         ({"max_topic_queue_size": 0}, "max_topic_queue_size must be > 0"),
         ({"callback_drain_timeout_s": 0}, "callback_drain_timeout_s must be > 0"),
+        ({"max_message_size": 0}, "max_message_size must be > 0"),
     ],
 )
 def test_an_out_of_range_client_option_is_rejected(

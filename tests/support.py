@@ -26,20 +26,27 @@ from phoenix_channels_python_client.client_types import (
     ReconnectEvent,
 )
 from phoenix_channels_python_client.exceptions import PHXTopicError
-from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
+from phoenix_channels_python_client.phx_messages import ChannelMessage, Event, Payload
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
-from tests.fake_server import FakePhoenixServer
+from tests.fake_server import BinaryKind, FakePhoenixServer, encode_binary_frame
 
 API_KEY = "test_key"
 
 TOPIC = FakePhoenixServer.TOPIC
 OTHER_TOPIC = FakePhoenixServer.OTHER_TOPIC
 REJECTED_TOPIC = FakePhoenixServer.REJECTED_TOPIC
+UNICODE_TOPIC = FakePhoenixServer.UNICODE_TOPIC
 
 # A custom (non-phx_) event for tests that only need some server push.
 EVENT = "test_event"
+
+# Not valid UTF-8 text, so only a binary frame can carry it.
+BINARY_PAYLOAD = b"\x00\xff\x10binary"
+
+# One byte holds each binary header field's size.
+MAX_BINARY_FIELD_SIZE = 255
 
 # Not a Phoenix frame in either protocol, so the client can't parse it.
 UNPARSEABLE_FRAME = "not a phoenix frame"
@@ -196,8 +203,8 @@ class TopicRecorder:
         self.client = client
         self.topic = topic
         self.messages: asyncio.Queue[ChannelMessage] = asyncio.Queue()
-        self.event_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-        self.deliveries: list[tuple[dict[str, object], bool]] = []
+        self.event_payloads: asyncio.Queue[Payload] = asyncio.Queue()
+        self.deliveries: list[tuple[Payload, bool]] = []
 
     async def receive(self, message: ChannelMessage) -> None:
         self.deliveries.append(
@@ -324,6 +331,27 @@ async def deliver(
     """Broadcast one server event without a join_ref."""
     del client
     await server.simulate_server_event(topic, event, payload or {})
+
+
+async def deliver_binary(
+    server: FakePhoenixServer,
+    client: PHXChannelsClient,
+    data: bytes,
+    topic: str = TOPIC,
+    event: str = EVENT,
+) -> None:
+    """Push one binary server push on the client's current join of ``topic``."""
+    join_ref = client.get_current_subscriptions()[topic].join_ref
+    await server.send_raw(
+        encode_binary_frame(BinaryKind.PUSH, [join_ref, topic, event], data)
+    )
+
+
+def json_object(payload: Payload) -> dict[str, Any]:
+    """``payload`` as the JSON object a text frame carries; bytes are a failure."""
+    if not isinstance(payload, dict):
+        raise TypeError(f"Expected a JSON object payload, got {type(payload).__name__}")
+    return payload
 
 
 async def expect_message(received: asyncio.Queue[T]) -> T:

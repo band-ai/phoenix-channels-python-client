@@ -8,6 +8,7 @@ import pytest
 from phoenix_channels_python_client.client import PHXChannelsClient
 from phoenix_channels_python_client.phx_messages import (
     ChannelMessage,
+    Payload,
     PHXEvent,
     UserEvent,
 )
@@ -365,7 +366,7 @@ async def test_resubscribing_from_on_topic_lost_works(
 async def test_lifecycle_event_handlers_are_rejected(
     client: PHXChannelsClient, event: PHXEvent | UserEvent
 ) -> None:
-    async def handler(payload: dict[str, object]) -> None:
+    async def handler(payload: Payload) -> None:
         del payload
 
     await client.subscribe_to_topic(TOPIC)
