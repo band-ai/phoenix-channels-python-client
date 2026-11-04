@@ -32,3 +32,10 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+
+      - id: mypy
+        name: mypy
+        entry: uv run --extra dev mypy phoenix_channels_python_client
+        language: system
+        types: [python]
+        pass_filenames: false

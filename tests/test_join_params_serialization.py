@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Never
 
 import pytest
 
@@ -22,37 +22,35 @@ from tests.support import (
     make_client,
 )
 
-JSON_RECURSION_DEPTH = 20_000
+
+class RecursiveItems(dict[str, Any]):
+    """Fail through the real JSON encoder's mapping hooks."""
+
+    def items(self) -> Never:
+        return self.items()
 
 
 @pytest.fixture
-def deep_params() -> dict[str, Any]:
-    params: dict[str, Any] = {}
-    nested = params
-    # C JSON encoder limits differ from Python's interpreter recursion limit.
-    for _ in range(JSON_RECURSION_DEPTH):
-        child: dict[str, Any] = {}
-        nested["child"] = child
-        nested = child
-    return params
+def recursive_params() -> dict[str, Any]:
+    return {"nested": RecursiveItems({"value": None})}
 
 
 @pytest.mark.parametrize("protocol", list(ProtocolVersion))
-def test_deep_json_payload_preserves_the_serialization_failure(
-    deep_params: dict[str, Any], protocol: ProtocolVersion
+def test_json_recursion_preserves_the_serialization_failure(
+    recursive_params: dict[str, Any], protocol: ProtocolVersion
 ) -> None:
-    message = make_message(event=EVENT, topic=TOPIC, payload=deep_params)
+    message = make_message(event=EVENT, topic=TOPIC, payload=recursive_params)
     with pytest.raises(TypeError, match="Cannot serialize message as JSON") as caught:
         encode_message(message, protocol)
     assert isinstance(caught.value.__cause__, RecursionError)
 
 
 @each_protocol
-async def test_deep_initial_params_raise_channel_error_and_retire_the_handle(
-    phoenix_server: FakePhoenixServer, deep_params: dict[str, Any]
+async def test_initial_params_recursion_raises_channel_error_and_retires_the_handle(
+    phoenix_server: FakePhoenixServer, recursive_params: dict[str, Any]
 ) -> None:
     async with deadline(), make_client(phoenix_server) as client:
-        channel = client.channel(TOPIC, params=deep_params)
+        channel = client.channel(TOPIC, params=recursive_params)
         with pytest.raises(ChannelError, match="Join params encoding failed") as caught:
             await channel.join()
         encoding_error = caught.value.__cause__
@@ -67,8 +65,8 @@ async def test_deep_initial_params_raise_channel_error_and_retire_the_handle(
 
 
 @each_protocol
-async def test_deep_recovery_params_lose_only_the_affected_channel(
-    phoenix_server: FakePhoenixServer, deep_params: dict[str, Any]
+async def test_recovery_params_recursion_loses_only_the_affected_channel(
+    phoenix_server: FakePhoenixServer, recursive_params: dict[str, Any]
 ) -> None:
     attempts = 0
     lost: asyncio.Queue[tuple[str, Exception]] = asyncio.Queue()
@@ -76,7 +74,7 @@ async def test_deep_recovery_params_lose_only_the_affected_channel(
     def params() -> dict[str, Any]:
         nonlocal attempts
         attempts += 1
-        return {"token": "initial"} if attempts == 1 else deep_params
+        return {"token": "initial"} if attempts == 1 else recursive_params
 
     async def on_lost(topic: str, error: Exception) -> None:
         lost.put_nowait((topic, error))
