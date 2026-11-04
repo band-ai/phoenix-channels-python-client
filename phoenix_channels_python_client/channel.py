@@ -6,6 +6,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Self, TypeVar, overload
 
 from phoenix_channels_python_client.messages import ChannelEvent, Message
+from phoenix_channels_python_client.replies import DEFAULT_PUSH_TIMEOUT_S, Reply
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 
 if TYPE_CHECKING:
@@ -62,6 +63,17 @@ class Channel:
 
     async def join(self) -> None:
         await self.client._join_channel(self.subscription)
+
+    async def push(
+        self,
+        event: ChannelEvent,
+        payload: dict[str, Any],
+        *,
+        timeout_s: float = DEFAULT_PUSH_TIMEOUT_S,
+    ) -> Reply:
+        return await self.client._push_channel(
+            self.subscription, event, payload, timeout_s=timeout_s
+        )
 
     async def leave(self) -> None:
         await self.client._leave_channel(self.subscription)

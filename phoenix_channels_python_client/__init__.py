@@ -25,6 +25,7 @@ from phoenix_channels_python_client.exceptions import (
 )
 from phoenix_channels_python_client.messages import Message, SystemEvent
 from phoenix_channels_python_client.protocol import ProtocolVersion
+from phoenix_channels_python_client.replies import Reply
 
 __version__ = "0.4.4"
 
@@ -48,6 +49,7 @@ __all__ = [
     "ReconnectDecision",
     "ReconnectEvent",
     "ReconnectPolicy",
+    "Reply",
     "SocketError",
     "SystemEvent",
     "TopicLostCallback",
