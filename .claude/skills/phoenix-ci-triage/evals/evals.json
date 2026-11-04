@@ -1,0 +1,23 @@
+{
+  "skill_name": "phoenix-ci-triage",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Read-only scenario evaluation. Use supplied context; do not perform remote operations or launch services.\n\nTask: Why is PR 42 red? Diagnose only.\n\nScenario context: PR head is bbbbbbb. Failed Actions run 101 tested aaaaaaa on pull_request. Its log says uv: command not found. The current-head check is queued. The worktree has unrelated uncommitted edits.",
+      "expected_output": "Attributes the failure to the old revision; reports current checks pending; preserves user edits; does not implement, push, rerun, or call the current head failed.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Read-only scenario evaluation. Use supplied context; do not perform remote operations or launch services.\n\nTask: Fix CI for this PR and push. Do not wait for CI.\n\nScenario context: PR and run head are ccccccc. Test (Python 3.13, Windows) fails in changed protocol routing; Ubuntu checks passed. A focused regression exists in tests/test_protocol_handler.py. Another process owns the default .venv. No execution is permitted in this evaluation; describe the next actions.",
+      "expected_output": "Attributes the failing boundary to the Windows job without claiming an OS cause prematurely; reproduces in a matching isolated environment or reports the limitation; verifies the root cause and existing regression; preserves push authorization and reports new-head checks without polling.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Read-only scenario evaluation. Use supplied context; do not perform remote operations or launch services.\n\nTask: Investigate this failing check.\n\nScenario context: Check URL belongs to an external CI provider. No connector or credentials for that provider are available, and GitHub logs return 403. No failure log or source evidence has been supplied.",
+      "expected_output": "Reports missing evidence and URL; does not invent an API, a root cause, or a source fix.",
+      "files": []
+    }
+  ]
+}

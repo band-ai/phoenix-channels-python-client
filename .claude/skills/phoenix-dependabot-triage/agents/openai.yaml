@@ -1,0 +1,4 @@
+interface:
+  display_name: "Phoenix Dependabot Triage"
+  short_description: "Assess dependency updates and validate requested changes"
+  default_prompt: "Use $phoenix-dependabot-triage for this request."

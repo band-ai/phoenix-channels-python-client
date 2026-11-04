@@ -1,0 +1,4 @@
+interface:
+  display_name: "Phoenix Ticket Branch"
+  short_description: "Create or preview a branch for a Linear ticket"
+  default_prompt: "Use $phoenix-linear-create-branch for this request."
