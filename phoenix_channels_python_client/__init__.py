@@ -27,7 +27,7 @@ from phoenix_channels_python_client.messages import Message, Payload, SystemEven
 from phoenix_channels_python_client.protocol import ProtocolVersion
 from phoenix_channels_python_client.replies import Reply
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = [
     "Channel",

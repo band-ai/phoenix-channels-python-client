@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.5.0...phoenix-channels-python-client-v0.5.1) (2026-11-04)
+
+
+### Documentation
+
+* fix README for 0.5.0 ([#100](https://github.com/band-ai/phoenix-channels-python-client/issues/100)) ([fdb55c4](https://github.com/band-ai/phoenix-channels-python-client/commit/fdb55c409026a150348edec5f9d8a66c16242dbe))
+
+
+### Miscellaneous Chores
+
+* release 0.5.1 to publish the README fixes on PyPI ([#102](https://github.com/band-ai/phoenix-channels-python-client/issues/102)) ([f90d2a8](https://github.com/band-ai/phoenix-channels-python-client/commit/f90d2a8210cb9de6fb8de2931b56c8c97e9d84cf))
+
 ## [0.5.0](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.4.4...phoenix-channels-python-client-v0.5.0) (2026-11-04)
 
 
