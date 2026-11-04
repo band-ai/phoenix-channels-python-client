@@ -266,14 +266,30 @@ def test_v1_rejects_all_binary_frames_including_utf8_json(raw: bytes) -> None:
 
 @pytest.mark.parametrize(
     ("topic", "event"),
-    [(TOPIC, SystemEvent.join), (TOPIC, SystemEvent.leave), ("phoenix", "heartbeat")],
+    [(TOPIC, SystemEvent.leave), ("phoenix", "heartbeat")],
 )
 def test_binary_payload_is_rejected_for_json_control_frames(
     topic: str, event: str
 ) -> None:
     message = make_message(event=event, topic=topic, payload=OPAQUE)
-    with pytest.raises(TypeError, match="control frames"):
+    with pytest.raises(TypeError, match="Leave and heartbeat"):
         encode_message(message, V2)
+
+
+def test_binary_join_encodes_as_a_v2_binary_push() -> None:
+    message = make_message(
+        event=SystemEvent.join, topic="room", join_ref="1", ref="1", payload=OPAQUE
+    )
+    assert (
+        encode_message(message, V2)
+        == b"\x00\x01\x01\x04\x08" + b"1" + b"1" + b"room" + b"phx_join" + OPAQUE
+    )
+
+
+def test_binary_join_requires_v2() -> None:
+    message = make_message(event=SystemEvent.join, topic=TOPIC, payload=OPAQUE)
+    with pytest.raises(TypeError, match="V2"):
+        encode_message(message, V1)
 
 
 def test_heartbeat_named_application_event_can_have_a_binary_payload() -> None:

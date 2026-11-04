@@ -331,17 +331,22 @@ for that topic then raises `ChannelError`; unrelated channels remain usable.
 
 ### Join parameters
 
-`params` follows Phoenix's name for the join payload. Pass a dict, `None` for `{}`,
-or a synchronous callable returning a dict:
+`params` follows Phoenix's name for the join payload. Pass a dict, `bytes`, `None` for `{}`,
+or a synchronous callable returning a dict or `bytes`:
 
 ```python
 room = client.channel("room:lobby", params={"locale": "en"})
 room = client.channel("room:private", params=lambda: {"token": fresh_token()})
+room = client.channel("room:proto", params=join_request.SerializeToString())
 ```
+
+A dict is sent as a JSON `phx_join` frame. `bytes` are sent as a V2 binary push
+frame with event `phx_join`; the same bytes are resent on every rejoin. Bytes
+params require protocol V2 and otherwise raise `ChannelError`.
 
 The callable is evaluated once for each actual initial join or rejoin, allowing
 fresh credentials after reconnect. Creation alone does not call it or send a
-frame. Providers must be nonblocking and return a JSON-serializable dict;
+frame. Providers must be nonblocking and return a JSON-serializable dict or `bytes`;
 provider/encoding failure raises `ChannelError` with its cause. A provider failure
 during recovery permanently loses only that channel instead of retrying forever.
 
@@ -449,7 +454,8 @@ checks.
 V2 supports `bytes` for pushes, replies, server events and broadcasts. Dicts use
 JSON text frames in both protocols. Passing bytes on V1 raises `TypeError` before
 submission; the client does not encode, decode or select an application format
-for you. Join parameters and lifecycle control frames remain JSON dicts.
+for you. Join parameters may be bytes (a binary `phx_join` push); leave and
+heartbeat frames remain JSON dicts.
 
 For example, the [protobuf wire format](https://protobuf.dev/programming-guides/encoding/)
 for `message Update { string body = 1; }` serializes `body="hello"` to the bytes below. With generated protobuf classes,

@@ -32,6 +32,10 @@ SYSTEM_TOPIC = "phoenix"
 # What a refused handshake answers with unless the test picks a status.
 DEFAULT_REFUSAL_STATUS = HTTPStatus.SERVICE_UNAVAILABLE
 
+# Phoenix V2 binary push: kind byte, then four one-byte header field sizes.
+BINARY_PUSH_KIND = 0
+BINARY_PUSH_HEADER_BYTES = 5
+
 # Winsock's linger fields are unsigned shorts; POSIX uses ints.
 ABORTIVE_LINGER = struct.pack("HH" if sys.platform == "win32" else "ii", 1, 0)
 
@@ -57,7 +61,13 @@ class Frame(NamedTuple):
     ref: str | None
     topic: str
     event: str
-    payload: Mapping[str, object]
+    payload: Mapping[str, object] | bytes
+
+    def json_payload(self) -> dict[str, object]:
+        """Return the payload of a frame that is sent as JSON."""
+        if isinstance(self.payload, bytes):
+            raise TypeError("Binary payloads have no JSON form")
+        return dict(self.payload)
 
 
 class FakePhoenixServer:
@@ -125,7 +135,7 @@ class FakePhoenixServer:
                         "topic": frame.topic,
                         "event": frame.event,
                         "ref": frame.ref,
-                        "payload": dict(frame.payload),
+                        "payload": frame.json_payload(),
                     }
                 )
             case ProtocolVersion.V2:
@@ -135,11 +145,27 @@ class FakePhoenixServer:
                         frame.ref,
                         frame.topic,
                         frame.event,
-                        dict(frame.payload),
+                        frame.json_payload(),
                     ]
                 )
 
+    @staticmethod
+    def _decode_binary_push(raw: bytes) -> Frame | None:
+        """Decode a client binary push: kind 0, four header sizes, then payload."""
+        if len(raw) < BINARY_PUSH_HEADER_BYTES or raw[0] != BINARY_PUSH_KIND:
+            return None
+        sizes = raw[1:5]
+        offset = 5
+        fields: list[str] = []
+        for size in sizes:
+            fields.append(raw[offset : offset + size].decode())
+            offset += size
+        join_ref, ref, topic, event = fields
+        return Frame(join_ref or None, ref or None, topic, event, raw[offset:])
+
     def _decode(self, raw: str | bytes) -> Frame | None:
+        if isinstance(raw, bytes):
+            return self._decode_binary_push(raw)
         data = json.loads(raw)
         match self.protocol, data:
             case ProtocolVersion.V1, {"topic": str(topic)}:
