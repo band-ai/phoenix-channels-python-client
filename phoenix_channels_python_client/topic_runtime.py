@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
 from asyncio import Queue
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypeVar, cast
 
 from websockets import ClientConnection
 from websockets.exceptions import ConnectionClosed
@@ -15,14 +16,21 @@ from phoenix_channels_python_client.client_types import (
     ClientState,
     JoinResponseCallback,
 )
-from phoenix_channels_python_client.exceptions import ChannelError, SocketError
+from phoenix_channels_python_client.exceptions import (
+    ChannelError,
+    PushTimeoutError,
+    SocketError,
+)
 from phoenix_channels_python_client.messages import (
     CLIENT_LIFECYCLE_EVENTS,
+    HEARTBEAT_EVENT,
+    PHOENIX_TOPIC,
     ChannelEvent,
     Message,
     SystemEvent,
 )
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
+from phoenix_channels_python_client.replies import Reply, reply_from_message
 from phoenix_channels_python_client.send_session import SessionSends
 from phoenix_channels_python_client.topic_subscription import (
     ChannelCause,
@@ -31,6 +39,8 @@ from phoenix_channels_python_client.topic_subscription import (
     TopicSubscription,
 )
 from phoenix_channels_python_client.utils import cancel_and_wait, make_message
+
+T = TypeVar("T")
 
 
 class TopicRuntimeDeps(Protocol):
@@ -154,7 +164,11 @@ class TopicRuntimeMixin:
         )
         if topic.state == ChannelState.LEFT:
             topic.leave_requested.set()
-        self._fail_current_join(topic, error or ChannelError("Channel is not joined"))
+        failure = error or ChannelError("Channel is not joined")
+        self._fail_current_join(topic, failure)
+        for outcome in topic.pending_pushes.values():
+            self._set_future_exception(outcome, failure)
+        topic.pending_pushes.clear()
 
     def _set_subscription_ready(self, topic_subscription: TopicSubscription) -> None:
         self._transition_channel(topic_subscription, ChannelCause.ACCEPTED)
@@ -224,7 +238,23 @@ class TopicRuntimeMixin:
         if message.ref == topic.join_ref:
             self._handle_join_response_mode(topic, message)
             return True
-        return topic.state != ChannelState.JOINED
+        return (
+            self._resolve_push_reply(topic, message)
+            or topic.state != ChannelState.JOINED
+        )
+
+    def _resolve_push_reply(self, topic: TopicSubscription, message: Message) -> bool:
+        outcome = topic.pending_pushes.pop(message.ref, None) if message.ref else None
+        if outcome is None:
+            return False
+        if not outcome.done():
+            try:
+                outcome.set_result(reply_from_message(message))
+            except (TypeError, ValueError) as exc:
+                error = ChannelError("Malformed push reply")
+                error.__cause__ = exc
+                self._set_future_exception(outcome, error)
+        return True
 
     def _handle_channel_lifecycle(
         self, topic: TopicSubscription, message: Message
@@ -559,7 +589,7 @@ class TopicRuntimeMixin:
 
     def _set_future_exception(
         self,
-        future: asyncio.Future[None],
+        future: asyncio.Future[Any],
         error: Exception,
     ) -> None:
         if future.done():
@@ -680,13 +710,14 @@ class TopicRuntimeMixin:
         self,
         topic: TopicSubscription,
         message: Message,
-        outcome: asyncio.Future[None],
+        outcome: asyncio.Future[T],
         *,
         timeout_s: float,
         timeout_error: Callable[[], Exception],
-    ) -> None:
+    ) -> T:
         connection = topic.connection
         leaving = message.event == SystemEvent.leave
+        joining = message.event == SystemEvent.join
         if connection is None or connection is not self.connection:
             raise SocketError("Connection lost before channel operation")
         captured_connection: ClientConnection = connection
@@ -707,7 +738,8 @@ class TopicRuntimeMixin:
                 and (
                     leaving
                     or (
-                        topic.state != ChannelState.LEFT
+                        (joining or self._channel_joined(topic))
+                        and topic.state != ChannelState.LEFT
                         and not self.shutdown_event.is_set()
                     )
                 )
@@ -715,14 +747,14 @@ class TopicRuntimeMixin:
             )
 
         async def send() -> None:
-            if not leaving:
+            if joining:
                 topic.join_submitted = True
             try:
                 await captured_connection.send(frame)
             except ConnectionClosed as exc:
                 raise SocketError("Connection lost during channel send") from exc
 
-        await session.send_and_wait(
+        return await session.send_and_wait(
             send,
             outcome,
             timeout_s=timeout_s,
@@ -732,6 +764,46 @@ class TopicRuntimeMixin:
                 "Channel operation no longer current"
             ),
         )
+
+    async def _push_channel(
+        self,
+        topic: TopicSubscription,
+        event: ChannelEvent,
+        payload: dict[str, Any],
+        *,
+        timeout_s: float,
+    ) -> Reply:
+        if not self._channel_joined(topic):
+            raise ChannelError("Channel is not joined")
+        if not math.isfinite(timeout_s) or timeout_s <= 0:
+            raise ValueError("timeout_s must be finite and > 0")
+        if not isinstance(payload, dict):
+            raise TypeError("Push payload must be a map")
+        if event in {*SystemEvent} or (
+            event == HEARTBEAT_EVENT and topic.name == PHOENIX_TOPIC
+        ):
+            raise ValueError("push requires an application event")
+        ref = self._generate_ref()
+        message = make_message(
+            event=event,
+            topic=topic.name,
+            ref=ref,
+            join_ref=topic.join_ref,
+            payload=payload,
+        )
+        outcome: asyncio.Future[Reply] = asyncio.get_running_loop().create_future()
+        topic.pending_pushes[ref] = outcome
+        try:
+            return await self._send_channel_operation(
+                topic,
+                message,
+                outcome,
+                timeout_s=timeout_s,
+                timeout_error=lambda: PushTimeoutError("Push reply deadline expired"),
+            )
+        finally:
+            if topic.pending_pushes.get(ref) is outcome:
+                topic.pending_pushes.pop(ref)
 
     def _resolve_join_params(self, topic: TopicSubscription) -> dict[str, Any]:
         provider = topic.params
@@ -925,6 +997,12 @@ class TopicRuntimeMixin:
         if not self._should_rejoin(topic_subscription):
             return
 
+        if topic_subscription.state == ChannelState.JOINED:
+            self._transition_channel(
+                topic_subscription,
+                ChannelCause.TRANSPORT,
+                SocketError("Connection replaced before channel rejoin"),
+            )
         topic_subscription.restart_requested = True
         await self._drain_callback(topic_subscription)
         await self._stop_topic_task(topic_subscription)

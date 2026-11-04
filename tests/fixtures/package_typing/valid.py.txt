@@ -1,6 +1,6 @@
-from typing import assert_type
+from typing import Any, assert_type
 from phoenix_channels_python_client import (
-    Channel, Client, Message, ProtocolVersion,
+    Channel, Client, Message, ProtocolVersion, Reply,
 )
 client = Client('ws://localhost/socket', api_key=None, protocol_version=ProtocolVersion.V2)
 assert_type(client, Client)
@@ -11,7 +11,10 @@ async def on_event(payload: dict[str, object]) -> None:
     pass
 async def scoped() -> None:
     async with room:
-        pass
+        reply = await room.push('event', {'value': 1}, timeout_s=5.0)
+        assert_type(reply, Reply)
+        assert_type(reply.status, str)
+        assert_type(reply.response, dict[str, Any])
 assert_type(client.channel_socket_url, str)
 assert_type(ProtocolVersion.V2.vsn, str)
 def receive(message: Message) -> str:

@@ -15,6 +15,7 @@ from phoenix_channels_python_client.messages import (
     ChannelEvent,
     Message,
 )
+from phoenix_channels_python_client.replies import Reply
 from phoenix_channels_python_client.send_session import SessionSends
 
 
@@ -59,7 +60,8 @@ class TopicSubscription:
     join_submitted: bool = False
     terminal_received: asyncio.Event = field(default_factory=asyncio.Event)
     leave_task: Task[None] | None = None
-    send_outcomes: set[Future[None]] = field(default_factory=set)
+    pending_pushes: dict[str, Future[Reply]] = field(default_factory=dict)
+    send_outcomes: set[Future[Any]] = field(default_factory=set)
     send_session: SessionSends | None = None
     cleanup_done: bool = False
     loss_reported: bool = False

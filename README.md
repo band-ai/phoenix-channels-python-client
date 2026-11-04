@@ -334,6 +334,62 @@ frame. Providers must be nonblocking and return a JSON-serializable dict;
 provider/encoding failure raises `ChannelError` with its cause. A provider failure
 during recovery permanently loses only that channel instead of retrying forever.
 
+## Pushing Events
+
+Use `await channel.push(event, payload, timeout_s=10.0)` to send an application
+event and wait for its matching reply. The payload is a JSON-serializable dict;
+`timeout_s` must be finite and greater than zero. The default is 10 seconds.
+
+```python
+import asyncio
+
+from phoenix_channels_python_client import Client, Reply
+
+async def main() -> None:
+    async with Client("ws://localhost:4000/socket/websocket", api_key="api-key") as client:
+        room = client.channel("room:lobby")
+        async with room:
+            reply: Reply = await room.push("new_msg", {"body": "Hello"}, timeout_s=5.0)
+            if reply.status == "ok":
+                print(reply.response)
+            else:
+                print(f"Server replied {reply.status}: {reply.response}")
+
+asyncio.run(main())
+```
+
+`Reply` is a frozen Pydantic model with `status: str` and
+`response: dict[str, Any]`. Status values are server-defined: an `"error"` reply
+is returned as a `Reply`, without raising `ChannelError`.
+
+| Situation | Result |
+| --- | --- |
+| Channel is not joined, including while rejoining | `ChannelError` immediately, even if the socket is also unavailable |
+| Connection is lost after joined admission, before or during send/wait | `SocketError` |
+| Deadline expires without a reply | `PushTimeoutError` (a `ChannelError` subclass) |
+| Channel crashes, closes, is explicitly left, or has a local processing failure | `ChannelError` |
+| Client is explicitly shut down while a push is pending | `ChannelError` |
+| Server returns an error status | `Reply` with that status and response |
+| Caller is cancelled | `asyncio.CancelledError` |
+
+A malformed matching reply raises `ChannelError` with the validation cause.
+Invalid payload encoding raises its validation or encoding exception before
+submission. A timeout after a completed send affects only that push. If a write
+remains stalled at its deadline, the client closes that socket; other pending
+pushes fail with `SocketError` and normal reconnect policy applies. An already
+settled reply or failure keeps its outcome.
+
+Pushes are never buffered or replayed after recovery. A timeout or cancellation
+does not establish whether the server executed the request; choose retries at
+the application level.
+
+Replies are resolved independently of topic handlers. A handler may await a
+push on its own channel. `push()` does not wait for earlier messages to finish
+handling, so its completion does not imply that earlier callbacks completed.
+Only a reply matching a pending push is consumed by that caller; an unmatched
+or late reply can reach the normal handlers, subject to current membership
+checks.
+
 ## Configuration
 
 `api_key` is keyword-only and defaults to `None`. Without an

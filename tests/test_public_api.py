@@ -29,6 +29,7 @@ def test_wildcard_imports_expose_only_the_public_api() -> None:
         "ReconnectDecision",
         "ReconnectEvent",
         "ReconnectPolicy",
+        "Reply",
         "SocketError",
         "SystemEvent",
         "TopicLostCallback",
