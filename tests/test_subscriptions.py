@@ -19,12 +19,14 @@ from tests.support import (
     OTHER_TOPIC,
     REJECTED_TOPIC,
     TOPIC,
+    TopicRecorder,
     deliver,
     each_protocol,
     expect_message,
     make_client,
     only_client_id,
     start_server_close,
+    subscribe_with_handlers,
     wait_for_condition,
 )
 
@@ -147,39 +149,31 @@ async def test_a_subscribed_topic_receives_server_events(
 
 async def test_a_v2_broadcast_without_join_ref_reaches_handlers(
     phoenix_server: FakePhoenixServer,
-    client: PHXChannelsClient,
-    received: asyncio.Queue[ChannelMessage],
+    subscribed_handlers: TopicRecorder,
 ) -> None:
     payload = {"message": "broadcast"}
-    handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-    await client.subscribe_to_topic(TOPIC, received.put)
-    client.add_event_handler(TOPIC, Event(EVENT), handled_payloads.put)
 
     await phoenix_server.simulate_server_event(TOPIC, EVENT, payload)
 
-    message = await expect_message(received)
+    message = await expect_message(subscribed_handlers.messages)
     assert message.topic == TOPIC
     assert message.event == EVENT
     assert message.payload == payload
     assert message.join_ref is None
     assert message.ref is None
-    assert await expect_message(handled_payloads) == payload
+    assert await expect_message(subscribed_handlers.event_payloads) == payload
 
 
 @each_protocol
 async def test_a_channel_push_with_current_join_ref_reaches_handlers(
     phoenix_server: FakePhoenixServer,
-    client: PHXChannelsClient,
-    received: asyncio.Queue[ChannelMessage],
+    subscribed_handlers: TopicRecorder,
 ) -> None:
     payload = {"message": "channel push"}
-    handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-    await client.subscribe_to_topic(TOPIC, received.put)
-    client.add_event_handler(TOPIC, Event(EVENT), handled_payloads.put)
 
     await phoenix_server.simulate_channel_push(TOPIC, EVENT, payload)
 
-    message = await expect_message(received)
+    message = await expect_message(subscribed_handlers.messages)
     assert message.topic == TOPIC
     assert message.event == EVENT
     assert message.payload == payload
@@ -188,7 +182,29 @@ async def test_a_channel_push_with_current_join_ref_reaches_handlers(
         == phoenix_server.members[(only_client_id(phoenix_server), TOPIC)]
     )
     assert message.ref is None
-    assert await expect_message(handled_payloads) == payload
+    assert await expect_message(subscribed_handlers.event_payloads) == payload
+
+
+async def test_a_v2_channel_push_uses_each_members_join_ref(
+    phoenix_server: FakePhoenixServer,
+    subscribed_handlers: TopicRecorder,
+) -> None:
+    payload = {"message": "one push to two members"}
+    async with make_client(phoenix_server) as other_client:
+        # Different join histories expose accidental reuse of another member's ref.
+        await other_client.subscribe_to_topic(OTHER_TOPIC)
+        other_handlers = await subscribe_with_handlers(other_client)
+
+        await phoenix_server.simulate_channel_push(TOPIC, EVENT, payload)
+
+        for recorder in (subscribed_handlers, other_handlers):
+            message = await expect_message(recorder.messages)
+            assert message.payload == payload
+            assert (
+                message.join_ref
+                == recorder.client.get_current_subscriptions()[TOPIC].join_ref
+            )
+            assert await expect_message(recorder.event_payloads) == payload
 
 
 @each_protocol
@@ -462,17 +478,20 @@ async def test_a_full_topic_queue_drops_its_oldest_message(
 
 async def test_a_message_from_an_older_join_is_not_delivered(
     phoenix_server: FakePhoenixServer,
-    client: PHXChannelsClient,
-    received: asyncio.Queue[ChannelMessage],
+    subscribed_handlers: TopicRecorder,
 ) -> None:
-    await client.subscribe_to_topic(TOPIC, received.put)
-
     await phoenix_server.simulate_server_event(
         TOPIC, EVENT, {"join": "older"}, join_ref="older-join"
     )
     await phoenix_server.simulate_channel_push(TOPIC, EVENT, {"join": "current"})
 
-    assert (await expect_message(received)).payload == {"join": "current"}
+    assert (await expect_message(subscribed_handlers.messages)).payload == {
+        "join": "current"
+    }
+    assert await expect_message(subscribed_handlers.event_payloads) == {
+        "join": "current"
+    }
+    assert subscribed_handlers.deliveries == [({"join": "current"}, True)]
 
 
 async def test_a_message_without_handlers_is_skipped_and_later_ones_still_arrive(

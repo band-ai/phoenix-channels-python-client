@@ -30,6 +30,7 @@ from tests.support import (
     LostTopics,
     ReconnectCounter,
     crash_with_rejoin_in_flight,
+    deferred_channel_rejoin,
     deliver,
     derive_policy,
     each_protocol,
@@ -39,6 +40,7 @@ from tests.support import (
     only_client_id,
     reconnect,
     rejoin_settled,
+    subscribe_with_handlers,
     wait_for_condition,
 )
 
@@ -97,31 +99,22 @@ async def test_a_crashed_channel_rejoins_on_the_live_socket(
 async def test_a_broadcast_during_rejoin_is_not_delivered(
     phoenix_server: FakePhoenixServer,
 ) -> None:
-    handled: list[tuple[dict[str, object], bool]] = []
     sentinel = {"phase": "joined"}
-    completed = asyncio.Event()
-
-    async def record(message: ChannelMessage) -> None:
-        handled.append((message.payload, client.is_topic_joined(TOPIC)))
-        if message.payload == sentinel:
-            completed.set()
 
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
-        await client.subscribe_to_topic(TOPIC, record)
-        phoenix_server.defer_join_targets.add((only_client_id(phoenix_server), TOPIC))
-        await phoenix_server.crash_channel(TOPIC)
-        connection, request = await asyncio.wait_for(
-            phoenix_server.deferred_joins.get(), ASYNC_TIMEOUT_S
-        )
-        assert not client.is_topic_joined(TOPIC)
+        recorder = await subscribe_with_handlers(client)
+        async with deferred_channel_rejoin(phoenix_server):
+            assert not client.is_topic_joined(TOPIC)
+            await phoenix_server.simulate_server_event(
+                TOPIC, EVENT, {"phase": "rejoining"}
+            )
 
-        await phoenix_server.simulate_server_event(TOPIC, EVENT, {"phase": "rejoining"})
-        await phoenix_server.release_join(connection, request)
         await phoenix_server.simulate_server_event(TOPIC, EVENT, sentinel)
-        await asyncio.wait_for(completed.wait(), ASYNC_TIMEOUT_S)
 
         # The sentinel follows the pending event and join reply on the same socket.
-        assert handled == [(sentinel, True)]
+        assert (await expect_message(recorder.messages)).payload == sentinel
+        assert await expect_message(recorder.event_payloads) == sentinel
+        assert recorder.deliveries == [(sentinel, True)]
 
 
 @each_protocol

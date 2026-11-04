@@ -12,7 +12,7 @@ from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
 from tests.fake_server import FakePhoenixServer
-from tests.support import make_client
+from tests.support import TopicRecorder, make_client, subscribe_with_handlers
 
 pytest_plugins = ("tests.clock",)
 
@@ -42,3 +42,8 @@ async def client(phoenix_server: FakePhoenixServer) -> AsyncIterator[PHXChannels
 def received() -> asyncio.Queue[ChannelMessage]:
     """Messages delivered to a topic subscribed with ``received.put``."""
     return asyncio.Queue()
+
+
+@pytest_asyncio.fixture
+async def subscribed_handlers(client: PHXChannelsClient) -> TopicRecorder:
+    return await subscribe_with_handlers(client)
