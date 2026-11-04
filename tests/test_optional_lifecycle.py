@@ -31,7 +31,10 @@ from tests.support import (
     OTHER_TOPIC,
     STOP_REASON,
     TOPIC,
+    channel_for,
     each_protocol,
+    is_joined,
+    join_channel,
     make_client,
 )
 
@@ -51,7 +54,7 @@ class TestOptionalLifecycle:
             ) as admission:
                 connection, request = await phoenix_server.deferred_joins.get()
                 assert not admission.done()
-                assert not client.is_topic_joined(TOPIC)
+                assert not is_joined(client, TOPIC)
                 await phoenix_server.release_join(connection, request)
                 await admission
                 await push(phoenix_server, request)
@@ -78,10 +81,10 @@ class TestOptionalLifecycle:
                 _, ordinary = await phoenix_server.joined.get()
                 _, obsolete = await phoenix_server.deferred_joins.get()
                 await phoenix_server.joined.get()
-                recovery = client.get_current_subscriptions()[TOPIC].recovery_task
+                recovery = client.topic_subscriptions.copy()[TOPIC].recovery_task
                 assert recovery is not None
                 async with pending_cleanup_action(
-                    client.unsubscribe_from_topic(TOPIC), release=gate.finish
+                    channel_for(client, TOPIC).leave(), release=gate.finish
                 ) as leaving:
                     await gate.exiting.wait()
                     await push(phoenix_server, ordinary, payload={"required": True})
@@ -94,7 +97,16 @@ class TestOptionalLifecycle:
                     assert recovery.done()
                 await phoenix_server.left.get()
                 assert not client.cleanup_tasks
+                assert not is_joined(client, TOPIC)
+                with pytest.raises(ChannelError):
+                    await client.channel(TOPIC).join()
                 phoenix_server.defer_join_targets.clear()
+                await phoenix_server.close_all_clients()
+                await reconnects.get()
+                _, ordinary = await phoenix_server.joined.get()
+                assert ordinary.topic == OTHER_TOPIC
+                await push(phoenix_server, ordinary, payload={"turned_over": True})
+                assert (await required.delivered.get()).payload == {"turned_over": True}
                 fresh = JoinProbe(client)
                 phoenix_server.defer_join_targets.add(
                     (phoenix_server.next_client_id - 1, TOPIC)
@@ -137,7 +149,7 @@ class TestOptionalLifecycle:
                 await phoenix_server.joined.get()
                 _, obsolete = await phoenix_server.deferred_joins.get()
                 await phoenix_server.joined.get()
-                recovery = client.get_current_subscriptions()[TOPIC].recovery_task
+                recovery = client.topic_subscriptions.copy()[TOPIC].recovery_task
                 assert recovery is not None
                 connection = client.connection
                 assert connection is not None
@@ -145,8 +157,7 @@ class TestOptionalLifecycle:
                     client.shutdown(STOP_REASON), release=gate.finish
                 ) as stopping:
                     await gate.exiting.wait()
-                    pong = await connection.ping()
-                    await pong
+                    await connection.wait_closed()
                     assert not stopping.done()
                     gate.finish.set()
                     await stopping
@@ -187,7 +198,8 @@ class TestOptionalLifecycle:
             ) as client,
         ):
             probe = JoinProbe(client)
-            await client.subscribe_to_topic(
+            await join_channel(
+                client,
                 TOPIC,
                 probe.receive,
                 on_join_response=probe.install,
@@ -201,7 +213,7 @@ class TestOptionalLifecycle:
             await phoenix_server.close_all_clients()
             await reconnects.get()
             _, obsolete = await phoenix_server.deferred_joins.get()
-            old_owner = client.get_current_subscriptions()[TOPIC].recovery_task
+            old_owner = client.topic_subscriptions.copy()[TOPIC].recovery_task
             assert old_owner is not None
             phoenix_server.defer_join_targets.add(
                 (phoenix_server.next_client_id, TOPIC)
@@ -213,7 +225,7 @@ class TestOptionalLifecycle:
                 await old_owner
             assert old_owner.done()
             assert (
-                client.get_current_subscriptions()[TOPIC].recovery_task is not old_owner
+                client.topic_subscriptions.copy()[TOPIC].recovery_task is not old_owner
             )
             await reply(phoenix_server, obsolete)
             await reply(phoenix_server, obsolete, status=ReplyStatus.ERROR)
@@ -238,10 +250,11 @@ class TestOptionalLifecycle:
 
         async def on_lost(topic: str, error: Exception) -> None:
             assert topic == TOPIC
-            assert topic not in client.get_current_subscriptions()
+            assert topic not in client.topic_subscriptions.copy()
             losses.append(error)
             phoenix_server.fail_join_targets.clear()
-            await client.subscribe_to_topic(
+            await join_channel(
+                client,
                 topic,
                 replacement.receive,
                 on_join_response=replacement.install,
@@ -261,11 +274,11 @@ class TestOptionalLifecycle:
             original = JoinProbe(client)
             replacement = JoinProbe(client)
             required = JoinProbe(client, OTHER_TOPIC)
-            await client.subscribe_to_topic(
-                TOPIC, on_join_response=original.install, blocks_reconnect=False
+            await join_channel(
+                client, TOPIC, on_join_response=original.install, blocks_reconnect=False
             )
-            await client.subscribe_to_topic(
-                OTHER_TOPIC, required.receive, on_join_response=required.install
+            await join_channel(
+                client, OTHER_TOPIC, required.receive, on_join_response=required.install
             )
             await phoenix_server.joined.get()
             await phoenix_server.joined.get()
@@ -277,8 +290,8 @@ class TestOptionalLifecycle:
             _, ordinary = await phoenix_server.joined.get()
             connection, rejected = await phoenix_server.deferred_joins.get()
             await phoenix_server.joined.get()
-            assert TOPIC in client.get_current_subscriptions()
-            assert not client.is_topic_joined(TOPIC)
+            assert TOPIC in client.topic_subscriptions.copy()
+            assert not is_joined(client, TOPIC)
             await push(phoenix_server, ordinary)
             await required.delivered.get()
             await phoenix_server.release_join(connection, rejected)
@@ -307,14 +320,15 @@ class TestOptionalLifecycle:
         ) as client:
             optional = JoinProbe(client)
             required = JoinProbe(client, OTHER_TOPIC)
-            await client.subscribe_to_topic(
+            await join_channel(
+                client,
                 TOPIC,
                 optional.receive,
                 on_join_response=optional.install,
                 blocks_reconnect=False,
             )
-            await client.subscribe_to_topic(
-                OTHER_TOPIC, required.receive, on_join_response=required.install
+            await join_channel(
+                client, OTHER_TOPIC, required.receive, on_join_response=required.install
             )
             await asyncio.gather(
                 clocked_peer.joined.get(),
@@ -331,9 +345,9 @@ class TestOptionalLifecycle:
                 _, obsolete = await clocked_peer.deferred_joins.get()
                 await clock.advance(join_deadline)
                 await failures.receipts.get()
-                recovery = client.get_current_subscriptions()[TOPIC].recovery_task
+                recovery = client.topic_subscriptions.copy()[TOPIC].recovery_task
                 assert recovery is not None
-                assert not client.is_topic_joined(TOPIC)
+                assert not is_joined(client, TOPIC)
                 await push(clocked_peer, ordinary, payload={"required": True})
                 assert (await required.delivered.get()).payload == {"required": True}
                 await clock.advance(FAST_RECONNECT.max_delay_s)
@@ -362,7 +376,7 @@ class TestOptionalLifecycle:
                 await phoenix_server.joined.get()
                 connection, obsolete = await phoenix_server.deferred_joins.get()
                 await phoenix_server.joined.get()
-                recovery = client.get_current_subscriptions()[TOPIC].recovery_task
+                recovery = client.topic_subscriptions.copy()[TOPIC].recovery_task
                 assert recovery is not None
                 crashes = 2
                 for _ in range(crashes):
@@ -396,7 +410,7 @@ class TestOptionalLifecycle:
                     _, ordinary = await phoenix_server.joined.get()
                     _, obsolete = await phoenix_server.deferred_joins.get()
                     await phoenix_server.joined.get()
-                    recovery = client.get_current_subscriptions()[TOPIC].recovery_task
+                    recovery = client.topic_subscriptions.copy()[TOPIC].recovery_task
                     assert recovery is not None
                     await push(phoenix_server, obsolete, WireEvent.ERROR)
                     await failures.receipts.get()
@@ -405,7 +419,7 @@ class TestOptionalLifecycle:
                     await push(phoenix_server, retry, WireEvent.ERROR)
                     await failures.receipts.get()
                     async with pending_cleanup_action(
-                        client.unsubscribe_from_topic(TOPIC), release=gate.finish
+                        channel_for(client, TOPIC).leave(), release=gate.finish
                     ) as leaving:
                         await gate.exiting.wait()
                         await push(phoenix_server, ordinary, payload={"required": True})
@@ -418,7 +432,8 @@ class TestOptionalLifecycle:
                         assert recovery.done()
                     phoenix_server.defer_join_targets.clear()
                     replacement = JoinProbe(client)
-                    await client.subscribe_to_topic(
+                    await join_channel(
+                        client,
                         TOPIC,
                         replacement.receive,
                         on_join_response=replacement.install,
@@ -450,7 +465,7 @@ class TestOptionalLifecycle:
                     await phoenix_server.joined.get()
                     _, obsolete = await phoenix_server.deferred_joins.get()
                     await phoenix_server.joined.get()
-                    recovery = client.get_current_subscriptions()[TOPIC].recovery_task
+                    recovery = client.topic_subscriptions.copy()[TOPIC].recovery_task
                     assert recovery is not None
                     await push(phoenix_server, obsolete, WireEvent.ERROR)
                     await failures.receipts.get()
@@ -473,7 +488,8 @@ class TestOptionalLifecycle:
                     phoenix_server.defer_join_targets.clear()
                     await client.__aenter__()
                     replacement = JoinProbe(client)
-                    await client.subscribe_to_topic(
+                    await join_channel(
+                        client,
                         TOPIC,
                         replacement.receive,
                         on_join_response=replacement.install,
@@ -503,7 +519,7 @@ class TestOptionalLifecycle:
             await reply(phoenix_server, pending)
             await push(phoenix_server, pending, WireEvent.ERROR)
             connection, retry = await phoenix_server.deferred_joins.get()
-            assert not client.is_topic_joined(TOPIC)
+            assert not is_joined(client, TOPIC)
             assert probe.order == [{}, None]
             assert losses.empty()
             await phoenix_server.release_join(connection, retry)
@@ -532,7 +548,7 @@ class TestOptionalLifecycle:
             await push(phoenix_server, pending, WireEvent.CLOSE)
             lost_topic, error = await losses.get()
             assert (lost_topic, type(error)) == (TOPIC, ChannelError)
-            assert TOPIC not in client.get_current_subscriptions()
+            assert TOPIC not in client.topic_subscriptions.copy()
             assert probe.order == [{}, None]
 
     async def test_optional_error_before_success_recovers(
@@ -553,7 +569,7 @@ class TestOptionalLifecycle:
             await push(phoenix_server, pending, WireEvent.ERROR)
             await reply(phoenix_server, pending)
             connection, retry = await phoenix_server.deferred_joins.get()
-            assert not client.is_topic_joined(TOPIC)
+            assert not is_joined(client, TOPIC)
             assert probe.order == [{}]
             assert losses.empty()
             await phoenix_server.release_join(connection, retry)
@@ -581,5 +597,5 @@ class TestOptionalLifecycle:
             await reply(phoenix_server, pending)
             lost_topic, error = await losses.get()
             assert (lost_topic, type(error)) == (TOPIC, ChannelError)
-            assert TOPIC not in client.get_current_subscriptions()
+            assert TOPIC not in client.topic_subscriptions.copy()
             assert probe.order == [{}]

@@ -72,37 +72,58 @@ annotation/result union, not a model constructor. The installed package ships
 `py.typed` for type checkers.
 `SystemEvent` is a `StrEnum`, so members compare directly with their wire strings.
 
-Topic subscription and handler methods are unchanged in this cleanup.
+Create a `Channel`, register handlers, then join it. Retain the handle for
+readiness, handler changes and cleanup; the topic-string client methods below
+have been removed without compatibility aliases.
+
+| Previous method | Channel replacement |
+| --- | --- |
+| `subscribe_to_topic(topic, callback)` | `room = client.channel(topic)`; `room.on_any(callback)`; `await room.join()` or `async with room:` |
+| `unsubscribe_from_topic(topic)` | `await room.leave()` |
+| `is_topic_joined(topic)` | `room.joined` |
+| `add_event_handler(topic, event, handler)` | `room.on(event, handler)` or `@room.on(event)` |
+| `remove_event_handler(topic, event)` | `room.off(event)` |
+| `set_message_handler(topic, handler)` | `room.on_any(handler)` or `@room.on_any` |
+| `remove_message_handler(topic)` | `room.off_any()` |
+| `get_current_subscriptions()` | Retain your channel handles; no replacement collection getter |
+| `get_event_handler`, `has_event_handler`, `list_event_handlers` | Retain your handlers; no replacement introspection methods |
+| `get_message_handler`, `has_message_handler` | Retain your handlers; no replacement introspection methods |
 
 ## Quick Start
 
-Here's a minimal example to get you started:
+Create the channel, register its handlers, then join with `async with`:
 
 ```python
 import asyncio
+from typing import Any
+
 from phoenix_channels_python_client import Client
 
-async def main():
-    # Connect to Phoenix WebSocket server
+async def main() -> None:
     async with Client(
-        websocket_url="ws://localhost:4000/socket/websocket",
-        api_key="your-api-key"
+        "ws://localhost:4000/socket/websocket", api_key="your-api-key"
     ) as client:
-        
-        # Define message handler
-        async def handle_message(message):
-            print(f"Received: {message}")
-        
-        # Subscribe to a topic
-        await client.subscribe_to_topic("room:lobby", handle_message)
-        
-        # Ctrl+C or SIGTERM shuts the client down and run_forever() returns.
-        # The previous handlers are restored first, so a second signal reaches them.
-        await client.run_forever()
+        room = client.channel("room:lobby")
+
+        @room.on("new_msg")
+        async def handle_message(payload: dict[str, Any]) -> None:
+            print(f"Received: {payload}")
+
+        async with room:
+            await client.run_forever()
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+`client.channel(...)` is synchronous, returns an unjoined `Channel`, and sends
+nothing. Handlers registered before entry are ready for the first event after
+the join reply. Application queues still drop their oldest event at capacity,
+and recovery can discard undelivered events; this is not a lossless stream.
+
+Entering `async with room:` joins; exiting leaves, including on an exception or
+cancellation. With the default `run_forever()`, Ctrl+C or SIGTERM stops the client.
+The previous signal handlers are restored before a second signal is handled.
 
 ### Owning process signals yourself
 
@@ -144,8 +165,8 @@ Phoenix reserves `phx_join`, `phx_reply`, `phx_leave`, `phx_close` and
 - The client handles `phx_error` and `phx_close` itself, and neither reaches
   your handlers: a crashed channel is rejoined, and a channel the server
   closes loses its topic (see [Channel recovery](#channel-recovery)).
-- `add_event_handler` raises `ValueError` for `SystemEvent.error` and
-  `SystemEvent.close`. Use `on_topic_lost` and `is_topic_joined()` instead.
+- `channel.on(...)` raises `ValueError` for `SystemEvent.error` and
+  `SystemEvent.close`. Use `on_topic_lost` and `channel.joined` instead.
 
 ## Protocol Versions
 
@@ -183,107 +204,135 @@ string values `"1.0"` and `"2.0"`. Other values raise `ValueError`. It adds
 
 ### Basic Topic Subscription
 
+Use `on_any` when you need the complete `Message`:
+
 ```python
 import asyncio
-from phoenix_channels_python_client import Client
 
-async def message_handler(message):
-    print(f"Topic: {message.topic}")
-    print(f"Event: {message.event}")
-    print(f"Payload: {message.payload}")
+from phoenix_channels_python_client import Client, Message
 
-async def main():
+async def main() -> None:
     async with Client("ws://localhost:4000/socket/websocket", api_key="api-key") as client:
-        await client.subscribe_to_topic("chat:general", message_handler)
-        
-        # Use built-in method to keep connection alive
-        await client.run_forever()
+        room = client.channel("chat:general")
+
+        @room.on_any
+        async def message_handler(message: Message) -> None:
+            print(f"Topic: {message.topic}")
+            print(f"Event: {message.event}")
+            print(f"Payload: {message.payload}")
+
+        async with room:
+            await client.run_forever()
 
 asyncio.run(main())
 ```
 
 ## Message Handlers vs Event-Specific Handlers
 
-The library provides two complementary ways to handle incoming messages:
+A channel supports one catch-all handler and one handler per event:
 
-**Message Handler** - Receives ALL messages for a topic:
-- Set when subscribing to a topic or separately with `set_message_handler()`
-- Gets the complete message object with topic, event, payload, etc.
-- Good for logging, debugging, or handling any message type
+| Registration | Handler receives | Removal |
+| --- | --- | --- |
+| `@room.on_any` or `room.on_any(handler)` | Full `Message` | `room.off_any()` |
+| `@room.on("new_msg")` or `room.on("new_msg", handler)` | Payload dict | `room.off("new_msg")` |
 
-**Event-Specific Handlers** - Receive only messages with specific event names:
-- Added with `add_event_handler()` for particular events like "user_join", "chat_message", etc.
-- Only get the payload (data) part of the message
-- Perfect for handling specific application events
+Both registration forms return the handler unchanged. Registering again replaces
+the previous handler for that slot. Handlers must be async functions.
 
-**Execution order** when you have both types of handlers:
-1. **Message handler runs first** (if set) - receives the full message
-2. **Event-specific handler runs second** (if matching event) - receives just the payload
-
-All handlers must be `async def`. You can add, remove, or change either type of handler at any time during your connection.
+For each dispatched event, the catch-all runs first, then its event-specific
+handler. Handler selection is captured for that dispatch: changes apply to later
+dispatches, while teardown or cancellation can interrupt the current one. You may
+add or remove handlers before joining or while the channel is active. Removal is
+idempotent; it does not leave the channel.
 
 ### Event-Specific Handlers
 
-You can register handlers for specific events on a topic:
+Register event decorators before joining:
 
 ```python
 import asyncio
+from typing import Any
+
 from phoenix_channels_python_client import Client
 
-async def handle_user_join(payload):
-    print(f"User joined: {payload}")
-
-async def handle_user_leave(payload):
-    print(f"User left: {payload}")
-
-async def main():
+async def main() -> None:
     async with Client("ws://localhost:4000/socket/websocket", api_key="api-key") as client:
-        # Subscribe to topic first
-        await client.subscribe_to_topic("room:lobby")
-        
-        # Add event-specific handlers for custom events
-        client.add_event_handler("room:lobby", "user_join", handle_user_join)
-        client.add_event_handler("room:lobby", "user_leave", handle_user_leave)
-        
-        # Use built-in method to keep connection alive
-        await client.run_forever()
+        room = client.channel("room:lobby")
+
+        @room.on("user_join")
+        async def handle_user_join(payload: dict[str, Any]) -> None:
+            print(f"User joined: {payload}")
+
+        @room.on("user_leave")
+        async def handle_user_leave(payload: dict[str, Any]) -> None:
+            print(f"User left: {payload}")
+
+        async with room:
+            await client.run_forever()
 
 asyncio.run(main())
 ```
 
 ## Unsubscribing from Topics
 
-You can unsubscribe from topics to stop receiving messages and clean up resources:
+Leaving a channel stops delivery and cleans up its membership. Prefer a context
+manager so exceptions and cancellation also trigger cleanup:
 
 ```python
 import asyncio
-from phoenix_channels_python_client import Client
 
-async def on_message(msg):
-    print(f"Message: {msg.payload}")
+from phoenix_channels_python_client import Client, Message
 
-async def main():
+async def main() -> None:
     async with Client("ws://localhost:4000/socket/websocket", api_key="api-key") as client:
-        # Subscribe to a topic
-        await client.subscribe_to_topic("room:lobby", on_message)
-        
-        # Do some work...
-        await asyncio.sleep(5)
-        
-        # Unsubscribe when no longer needed
-        await client.unsubscribe_from_topic("room:lobby")
-        print("Unsubscribed from room:lobby")
-        
-        # Continue with other work or subscribe to different topics
-        await client.run_forever()
+        room = client.channel("room:lobby")
+
+        @room.on_any
+        async def on_message(message: Message) -> None:
+            print(f"Message: {message.payload}")
+
+        async with room:
+            await asyncio.sleep(5)
+
+        await room.leave()  # Repeated leave is harmless.
+        print(f"Left {room.topic}; joined={room.joined}")
 
 asyncio.run(main())
 ```
 
-**Notes on unsubscription:**
-- Removes all handlers (both message and event-specific) for that topic
-- Sends `phx_leave` and waits for the reply (`leave_timeout_s`, default 5 s)
-- Raises `ChannelError` if the topic isn't subscribed or the leave times out, and `SocketError` while disconnected
+For manual ownership, call `await room.join()` and ensure `await room.leave()`
+runs in your cleanup path. A left handle cannot join again; create a new channel.
+`room.joined` is false during leave or recovery, and `room.topic` remains available.
+A successful join confirms its reply was installed; a later server failure can
+already have changed readiness by the time your code resumes.
+
+Join rejection and timeout raise `ChannelError`; joining without a connected
+client raises `SocketError`. A second live channel for the same topic raises
+`ChannelError`. Duplicate/disconnected attempts rejected before admission leave
+the created handle usable. A failed admitted initial join retires that handle.
+
+Leave is idempotent, including while joining, rejoining or disconnected. A live
+membership sends a JSON leave and uses `leave_timeout_s`; failure can raise
+`ChannelError` or `SocketError`. Cleanup remains owned if its waiter is cancelled.
+If cleanup cannot confirm that the old membership ended, its topic can stay
+reserved until a terminal control or connection end makes reuse safe. A new handle
+for that topic then raises `ChannelError`; unrelated channels remain usable.
+
+### Join parameters
+
+`params` follows Phoenix's name for the join payload. Pass a dict, `None` for `{}`,
+or a synchronous callable returning a dict:
+
+```python
+room = client.channel("room:lobby", params={"locale": "en"})
+room = client.channel("room:private", params=lambda: {"token": fresh_token()})
+```
+
+The callable is evaluated once for each actual initial join or rejoin, allowing
+fresh credentials after reconnect. Creation alone does not call it or send a
+frame. Providers must be nonblocking and return a JSON-serializable dict;
+provider/encoding failure raises `ChannelError` with its cause. A provider failure
+during recovery permanently loses only that channel instead of retrying forever.
 
 ## Configuration
 
@@ -313,14 +362,14 @@ Only `websocket_url` may be positional; all other constructor options are keywor
 | `reconnect_policy` | `ReconnectPolicy()` | Backoff and close-code handling (see below) |
 | `heartbeat_interval_s` | `30.0` | Heartbeat period; `None` disables heartbeats and timeout enforcement |
 | `heartbeat_dead_threshold_s` | `None` | Optional finite positive acknowledgement-silence limit, greater than the enabled finite interval |
-| `join_timeout_s` | `10.0` | Wait for a join reply |
-| `leave_timeout_s` | `5.0` | Wait for a leave reply |
+| `join_timeout_s` | `10.0` | Finite positive join-operation deadline |
+| `leave_timeout_s` | `5.0` | Finite positive leave-operation deadline |
 | `max_topic_queue_size` | `1000` | Per-topic buffer; the oldest message is dropped when full |
 | `callback_drain_timeout_s` | `2.0` | How long the message being handled (its message handler, then its event handler) may finish before a rejoin cancels it; queued messages are dropped |
 | `on_reconnect` | `None` | `async () -> None`, called after required first-attempt reconciliation |
 | `on_disconnect` | `None` | `async (error: Exception \| None) -> None`; `None` on a clean close |
 | `on_heartbeat_ack` | `None` | Synchronous `() -> None`; runs on the message path, so keep it fast |
-| `on_topic_lost` | `None` | `async (topic: str, error: Exception) -> None`, called when the client drops a topic you didn't unsubscribe |
+| `on_topic_lost` | `None` | `async (topic: str, error: Exception) -> None`, called when the client permanently loses a channel you did not leave |
 | `reconnect_decider` | `None` | Synchronous `(event: ReconnectEvent) -> ReconnectDecision`; replaces the built-in reconnect policy (see [Owning the reconnect policy](#owning-the-reconnect-policy)) |
 | `additional_headers` | `None` | Extra handshake headers sent on every (re)connect |
 
@@ -331,7 +380,7 @@ Join-response installation failures instead fail the join (see below).
 
 - `async with` waits for the first connection. With `auto_reconnect=True` it keeps retrying, except after a refused handshake with HTTP 403, which raises `SocketError`; with `auto_reconnect=False` a failed first connection raises `SocketError`.
 - `run_forever()` returns `None` after `shutdown()`, a signal, or a close that doesn't reconnect. It raises `SocketError` on a terminal close, a refused handshake with HTTP 403, after repeated rapid disconnects, or when the client has never entered `async with`.
-- `subscribe_to_topic()` raises `ChannelError` on a rejected join, a join timeout or a duplicate subscription, and `SocketError` while disconnected or if the connection drops before the join completes.
+- `channel.join()` raises `ChannelError` on rejection, timeout or duplicate live membership, and `SocketError` when the client is disconnected or the connection fails before admission completes.
 - `await client.close_connection(reason)` force-closes the current connection; the client then reconnects if `auto_reconnect` is on. It does nothing if the client isn't connected or the connection is already closing.
 - `await client.shutdown()` uses the default reason `"Client shutdown"`; pass a
   reason to describe an explicit stop.
@@ -390,11 +439,22 @@ def decide(event: ReconnectEvent) -> ReconnectDecision:
 
 ### Channel recovery
 
-A channel can fail while the socket stays up. When its process crashes, the server sends `phx_error`, and the client rejoins that topic on the same socket, waiting the `ReconnectPolicy` backoff (`base_delay_s`, `factor`, `max_delay_s`, with equal jitter) before each attempt. A rejoin that times out is retried the same way, including one after a socket reconnect. A drop of the socket hands the topic to the socket's own rejoin.
+A channel can crash while the socket stays up. On `phx_error`, the client marks it
+not joined and retries its join on that socket using the `ReconnectPolicy`
+backoff. A missed rejoin reply is transient and retried. A socket disconnect hands
+recovery to the next connection. Only established channels recover automatically;
+a failed initial join belongs to its caller.
 
-The client drops the topic and calls `on_topic_lost(topic, error)` once when the server rejects a rejoin, after a crash or a reconnect, closes the channel with `phx_close`, or its message processor fails. It never calls it for `unsubscribe_from_topic()`, `shutdown()` or a failed first `subscribe_to_topic()`, which raises instead. Subscribing to the topic again from the callback works. `shutdown()` cancels the callback, including when the callback itself called `shutdown()`, so code after that call does not run.
+Rejected rejoins, invalid join params, installation failures and server
+`phx_close` permanently lose that channel. The client calls
+`on_topic_lost(topic, error)` once for permanent loss. Explicit leave, shutdown
+and failed initial join do not call it. Create a fresh handle to replace a lost
+channel after its old cleanup releases the topic.
 
-`get_current_subscriptions()` lists the subscribed topics. `is_topic_joined(topic)` tells whether a topic's channel is joined right now: it's false while the socket is down or a crashed channel waits to rejoin. Unsubscribing a topic whose channel is being recovered completes without waiting for a leave reply.
+Retain your channel handles and check `room.joined`: it is false while disconnected
+or rejoining. `await room.leave()` also works during recovery and stops future
+rejoin attempts. Client lifecycle callbacks stay constructor options; `shutdown()`
+cancels them, including a callback that itself called `shutdown()`.
 
 ### Heartbeats
 
@@ -484,8 +544,8 @@ applications remain responsible for logs outside this connection-owned boundary.
 
 ### Ordered join responses
 
-Use the optional keyword-only `on_join_response` hook to install a snapshot from
-initial joins, socket rejoins and same-socket channel recovery:
+Pass `on_join_response` when creating a channel to install a snapshot from every
+initial join, socket rejoin and same-socket recovery:
 
 ```python
 state = None
@@ -494,56 +554,51 @@ def install_snapshot(response):
     global state
     state = validate_snapshot(response)
 
-await client.subscribe_to_topic(
-    "room:123", on_message, on_join_response=install_snapshot
-)
+room = client.channel("room:123", on_join_response=install_snapshot)
+room.on_any(on_message)
+async with room:
+    await client.run_forever()
 ```
 
-`JoinResponseCallback` is exported from the package. The hook receives the decoded
-successful `payload.response`; a missing response is `None`. The transport adds no
-application schema or empty snapshot. Installation runs synchronously before
-`is_topic_joined()` becomes true, subscribe completes, or later deltas deliver.
-Subscribe returns `None`. Success admits the subscription; a later disconnect or
-channel failure can already have changed its current readiness when the caller
-resumes.
+`JoinResponseCallback` is exported from the package. The hook receives decoded
+successful `payload.response`; a missing response is `None`. It runs synchronously
+before the channel becomes joined, the join completes, or later events are
+delivered. The client adds no application schema or empty snapshot. Join and leave
+replies are handled separately from the bounded application-event queue.
 
-Hooks must be short, nonblocking and return `None`. Do not await, perform I/O,
-wait on locks, defer installation, or change task/client lifecycle inside them.
-Async callables, awaitable results and other non-`None` results fail admission.
-The join timeout bounds reply waiting and cannot preempt synchronous code. Hook
-exceptions (including directly raised `CancelledError`) fail with `ChannelError`
-and preserve their cause; arbitrary prior hook effects are not rolled back.
-Initial failure belongs to the caller. An established subscription whose installer
-fails is removed and reported once through `on_topic_lost`.
+Hooks must be short, nonblocking and return `None`. Async callables, awaitables
+and other non-`None` results fail installation with `ChannelError`, as do hook
+exceptions (including a directly raised `CancelledError`); the original cause is
+preserved. Arbitrary prior hook effects are not rolled back. Do not wait on locks,
+perform I/O, defer installation or change client lifecycle inside the hook. An
+asyncio deadline cannot preempt synchronous code that blocks the loop.
 
-Initial cancellation, timeout and leave remove the exact subscription. Physical
-cleanup remains owned if its waiter is canceled again, and shutdown awaits it.
-Never-established subscriptions are not adopted by automatic recovery. Recorded
-queue loss before a hook-enabled installation fails the attempt transiently;
-steady-state queues still drop their oldest message at capacity. There is no
-replay guarantee. A fresh client must install a fresh snapshot after process loss.
+Initial failure retires the admitted handle. Installation failure on an established
+channel is reported once through `on_topic_lost`. Queue overflow and recovery can
+still discard application events, so applications needing durable state must
+resynchronize rather than assume replay.
 
-Join replies match request refs on both protocols. V2 also filters stale channel
-generations by `join_ref`. V1 cannot reliably fence unsolicited events/lifecycle
-frames from older channels; it does not provide V2 event-generation isolation.
+Join replies match request refs on both protocols. V2 additionally checks a
+present `join_ref`; a missing join_ref is accepted, including for broadcasts.
+Membership controls use their available refs for correlation. V1 cannot provide
+V2 isolation for arbitrary unsolicited events from old memberships.
 
 ### Optional reconnect participation
 
-`subscribe_to_topic(topic, async_callback=None, *, on_join_response=None,
-blocks_reconnect=True) -> None` preserves required recovery by default. Required
-topics reconcile their first socket-rejoin attempt sequentially before
-`on_reconnect`; transient failures continue through existing recovery/backoff.
-The barrier does not wait for eventual success of every required topic.
+`client.channel(topic, *, params=None, on_join_response=None,
+blocks_reconnect=True)` creates a channel that blocks the reconnect barrier by
+default. Required channels reconcile their first socket-rejoin attempt sequentially
+before `on_reconnect`; transient failures continue through recovery/backoff. The
+barrier does not wait for eventual success of every required channel.
 
-Set `blocks_reconnect=False` for optional subscriptions. After required first
-attempts, their existing per-topic recovery tasks perform an immediate join and
-retry transient failures with the existing backoff. Required event delivery and
-`on_reconnect` do not wait for optional replies, old callback drains or retries.
-This option cannot isolate synchronous code that blocks the event loop. Explicit
-initial subscribe always waits for its own join response and installation.
+Set `blocks_reconnect=False` when creating an optional channel. Its owned recovery
+task attempts an immediate join after required first attempts and retries transient
+failures with the same backoff. Required delivery and `on_reconnect` do not wait for
+optional replies, callback drains or retries. Explicit `await room.join()` still
+waits for that channel's reply and installation.
 
-`on_reconnect` conveys no optional readiness or registration-absence guarantee.
-Check `is_topic_joined()` for current readiness and use `on_topic_lost` to replace
-permanently rejected optional subscriptions; do not blindly resubscribe them
-from `on_reconnect`. Leave, shutdown and another socket disconnect cancel/await
-the owned recovery; obsolete generations cannot install or revive a replacement.
+`on_reconnect` does not promise optional readiness. Check each handle's `joined`
+property and use `on_topic_lost` to replace permanent losses. Do not blindly create
+replacement channels on every reconnect. Leave, shutdown and another socket
+disconnect stop or hand over recovery; obsolete attempts cannot revive a left
+handle.

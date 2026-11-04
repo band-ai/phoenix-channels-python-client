@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from websockets import ClientConnection
@@ -28,7 +28,10 @@ from phoenix_channels_python_client.protocol import ProtocolVersion
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.supervisor import SupervisorMixin
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
-from phoenix_channels_python_client.topic_subscription import TopicSubscription
+from phoenix_channels_python_client.topic_subscription import (
+    ChannelState,
+    TopicSubscription,
+)
 from tests.support import TOPIC
 
 # Short, so harness joins and leaves that get no reply time out promptly.
@@ -48,6 +51,7 @@ def make_subscription(
 ) -> TopicSubscription:
     options.setdefault("queue", asyncio.Queue())
     options.setdefault("established", True)
+    options.setdefault("state", ChannelState.REJOINING)
     options.setdefault("conn_generation", 1)
     return TopicSubscription(
         name=name,
@@ -61,6 +65,10 @@ def make_subscription(
 @dataclass
 class FakeSocket:
     close_raises: bool = False
+    sent: list[str | bytes] = field(default_factory=list)
+
+    async def send(self, message: str | bytes) -> None:
+        self.sent.append(message)
 
     async def close(self, code: int | None = None, reason: str = "") -> None:
         del code, reason
@@ -85,21 +93,6 @@ class FakeRoutingProtocolHandler:
         del connection, subscriptions, conn_generation, kwargs
 
 
-class FakeTopicProtocolHandler(PHXProtocolHandler):
-    """Records what would be sent, so joins and leaves get no reply."""
-
-    def __init__(self) -> None:
-        super().__init__(ProtocolVersion.V2)
-        self.raise_on_send: Exception | None = None
-        self.sent: list[Message] = []
-
-    async def send_message(self, websocket: ClientConnection, message: Message) -> None:
-        del websocket
-        if self.raise_on_send is not None:
-            raise self.raise_on_send
-        self.sent.append(message)
-
-
 class TopicRuntimeHarness(TopicRuntimeMixin):
     """Runs the real topic runtime; joins and leaves get no reply.
 
@@ -114,13 +107,13 @@ class TopicRuntimeHarness(TopicRuntimeMixin):
         waits_before_stop: int = 1,
     ) -> None:
         self.logger = logging.getLogger(__name__)
-        self.connection: ClientConnection | None = fake_connection()
+        self.socket = cast(FakeSocket, fake_connection())
+        self.connection: ClientConnection | None = cast(ClientConnection, self.socket)
         self.state = ClientState.CONNECTED
         self.ref_counter = 0
         self.conn_generation = 1
         self.topic_subscriptions: dict[str, TopicSubscription] = {}
-        self.fake_handler = FakeTopicProtocolHandler()
-        self.protocol_handler = self.fake_handler
+        self.protocol_handler = PHXProtocolHandler(ProtocolVersion.V2)
         self.topics_lock = asyncio.Lock()
         self.shutdown_event = asyncio.Event()
         self.join_timeout_s = HARNESS_TIMEOUT_S
@@ -133,6 +126,12 @@ class TopicRuntimeHarness(TopicRuntimeMixin):
         # The attempt each requested channel-rejoin backoff was for, in order.
         self.rejoin_backoff_attempts: list[int] = []
         self.waits_before_stop = waits_before_stop
+
+    @property
+    def sent_messages(self) -> list[Message]:
+        return [
+            self.protocol_handler.parse_message(frame) for frame in self.socket.sent
+        ]
 
     def _channel_rejoin_delay(self, attempt: int) -> float:
         self.rejoin_backoff_attempts.append(attempt)
@@ -150,6 +149,7 @@ class TopicRuntimeHarness(TopicRuntimeMixin):
         await callback(*args)
 
     def register(self, subscription: TopicSubscription) -> TopicSubscription:
+        subscription.connection = self.connection
         self.topic_subscriptions[subscription.name] = subscription
         return subscription
 

@@ -6,8 +6,10 @@ import logging
 import pytest
 
 from phoenix_channels_python_client.client import Client
+from phoenix_channels_python_client.exceptions import ChannelError
 from phoenix_channels_python_client.messages import Message, SystemEvent
 from phoenix_channels_python_client.protocol import ProtocolVersion
+from phoenix_channels_python_client.topic_subscription import ChannelState
 from tests.fake_server import FakePhoenixServer, WireEvent
 from tests.support import (
     ASYNC_TIMEOUT_S,
@@ -23,12 +25,15 @@ from tests.support import (
     BusyCallback,
     LostTopics,
     ReconnectCounter,
+    channel_for,
     crash_with_rejoin_in_flight,
     deferred_channel_rejoin,
     deliver,
     derive_policy,
     each_protocol,
     expect_message,
+    is_joined,
+    join_channel,
     joins,
     make_client,
     only_client_id,
@@ -68,15 +73,15 @@ async def test_a_crashed_channel_rejoins_on_the_live_socket(
     )
     caplog.set_level(logging.INFO)
     async with client:
-        await client.subscribe_to_topic(TOPIC, received.put)
+        await join_channel(client, TOPIC, received.put)
         socket = client.connection
 
         await phoenix_server.crash_channel(TOPIC)
         assert await wait_for_condition(
-            lambda: not client.is_topic_joined(TOPIC), interval_s=0
+            lambda: not is_joined(client, TOPIC), interval_s=0
         )
         acks_when_lost = len(acks)
-        assert await wait_for_condition(lambda: client.is_topic_joined(TOPIC))
+        assert await wait_for_condition(lambda: is_joined(client, TOPIC))
 
         assert len(acks) > acks_when_lost
         assert joins(phoenix_server) == REJOINED_ONCE
@@ -98,7 +103,7 @@ async def test_a_broadcast_during_rejoin_is_not_delivered(
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         recorder = await subscribe_with_handlers(client)
         async with deferred_channel_rejoin(phoenix_server):
-            assert not client.is_topic_joined(TOPIC)
+            assert not is_joined(client, TOPIC)
             await phoenix_server.simulate_server_event(
                 TOPIC, EVENT, {"phase": "rejoining"}
             )
@@ -116,17 +121,17 @@ async def test_a_repeated_channel_error_starts_one_recovery(
     phoenix_server: FakePhoenixServer,
 ) -> None:
     async with make_client(phoenix_server, reconnect_policy=SLOW_RECOVERY) as client:
-        await client.subscribe_to_topic(TOPIC)
+        await join_channel(client, TOPIC)
         stored_join_ref = phoenix_server.members[
             (only_client_id(phoenix_server), TOPIC)
         ]
 
         await phoenix_server.crash_channel(TOPIC)
-        assert await wait_for_condition(lambda: not client.is_topic_joined(TOPIC))
+        assert await wait_for_condition(lambda: not is_joined(client, TOPIC))
         await phoenix_server.simulate_server_event(
             TOPIC, WireEvent.ERROR, {}, join_ref=stored_join_ref, ref=stored_join_ref
         )
-        assert await wait_for_condition(lambda: client.is_topic_joined(TOPIC))
+        assert await wait_for_condition(lambda: is_joined(client, TOPIC))
         await asyncio.sleep(SLOW_RECOVERY.max_delay_s)
 
         assert joins(phoenix_server) == REJOINED_ONCE
@@ -137,8 +142,8 @@ async def test_a_stale_channel_error_is_ignored(
     phoenix_server: FakePhoenixServer, received: asyncio.Queue[Message]
 ) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
-        await client.subscribe_to_topic(TOPIC, received.put)
-        old_join_ref = client.get_current_subscriptions()[TOPIC].join_ref
+        await join_channel(client, TOPIC, received.put)
+        old_join_ref = client.topic_subscriptions.copy()[TOPIC].join_ref
         await reconnect(phoenix_server, client)
         assert await wait_for_condition(rejoin_settled(client))
 
@@ -150,7 +155,7 @@ async def test_a_stale_channel_error_is_ignored(
         assert (await expect_message(received)).event == EVENT
         await asyncio.sleep(QUIET_S)
 
-        assert client.is_topic_joined(TOPIC)
+        assert is_joined(client, TOPIC)
         assert joins(phoenix_server) == REJOINED_ONCE
 
 
@@ -163,7 +168,7 @@ async def test_a_rejected_channel_rejoin_loses_the_topic(
         phoenix_server, reconnect_policy=FAST_RECONNECT, on_topic_lost=lost
     )
     async with client:
-        await client.subscribe_to_topic(TOPIC)
+        await join_channel(client, TOPIC)
         phoenix_server.fail_join_targets.add((only_client_id(phoenix_server), TOPIC))
 
         await phoenix_server.crash_channel(TOPIC)
@@ -171,7 +176,7 @@ async def test_a_rejected_channel_rejoin_loses_the_topic(
         await asyncio.sleep(QUIET_S)
 
         lost.only_error()
-        assert TOPIC not in client.get_current_subscriptions()
+        assert TOPIC not in client.topic_subscriptions.copy()
         assert joins(phoenix_server) == REJOINED_ONCE
     assert "Lost topic %s" in caplog.text
 
@@ -181,13 +186,13 @@ async def test_a_channel_crashing_again_right_after_its_rejoin_is_recovered(
     phoenix_server: FakePhoenixServer,
 ) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
-        await client.subscribe_to_topic(TOPIC)
+        await join_channel(client, TOPIC)
         phoenix_server.crashes_after_join = 1
 
         await phoenix_server.crash_channel(TOPIC)
 
         assert await wait_for_condition(lambda: joins(phoenix_server) == REJOINED_TWICE)
-        assert await wait_for_condition(lambda: client.is_topic_joined(TOPIC))
+        assert await wait_for_condition(lambda: is_joined(client, TOPIC))
         await asyncio.sleep(QUIET_S)
         assert joins(phoenix_server) == REJOINED_TWICE
 
@@ -200,12 +205,12 @@ async def test_a_timed_out_channel_rejoin_is_retried(
         phoenix_server, reconnect_policy=FAST_RECONNECT, join_timeout_s=JOIN_TIMEOUT_S
     )
     async with client:
-        await client.subscribe_to_topic(TOPIC)
+        await join_channel(client, TOPIC)
         client_id = await crash_with_rejoin_in_flight(phoenix_server, client)
 
         phoenix_server.unanswered_join_ids.discard(client_id)
 
-        assert await wait_for_condition(lambda: client.is_topic_joined(TOPIC))
+        assert await wait_for_condition(lambda: is_joined(client, TOPIC))
         assert joins(phoenix_server) == REJOINED_TWICE
 
 
@@ -220,13 +225,16 @@ async def test_unsubscribing_during_recovery_completes_promptly(
         on_topic_lost=lost,
     )
     async with client:
-        await client.subscribe_to_topic(TOPIC)
+        channel = await join_channel(client, TOPIC)
         await crash_with_rejoin_in_flight(phoenix_server, client)
 
-        await asyncio.wait_for(client.unsubscribe_from_topic(TOPIC), PROMPT_S)
+        await asyncio.wait_for(channel.leave(), PROMPT_S)
         await asyncio.sleep(QUIET_S)
 
-        assert TOPIC not in client.get_current_subscriptions()
+        assert not channel.joined
+        assert TOPIC in client.topic_subscriptions
+        with pytest.raises(ChannelError):
+            await client.channel(TOPIC).join()
         assert joins(phoenix_server) == REJOINED_ONCE
         assert not lost.lost
 
@@ -236,18 +244,18 @@ async def test_a_socket_drop_during_recovery_hands_the_topic_to_the_reconnect(
     phoenix_server: FakePhoenixServer,
 ) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
-        await client.subscribe_to_topic(TOPIC)
+        await join_channel(client, TOPIC)
         await crash_with_rejoin_in_flight(phoenix_server, client)
 
         # The new connection's joins are answered.
         await reconnect(phoenix_server, client)
-        assert await wait_for_condition(lambda: client.is_topic_joined(TOPIC))
+        assert await wait_for_condition(lambda: is_joined(client, TOPIC))
         await asyncio.sleep(QUIET_S)
 
         assert joins(phoenix_server) == REJOINED_TWICE
 
 
-async def test_a_channel_error_queued_behind_a_callback_does_not_double_rejoin(
+async def test_a_channel_error_during_a_callback_does_not_double_rejoin(
     phoenix_server: FakePhoenixServer,
 ) -> None:
     held = BusyCallback()
@@ -258,18 +266,20 @@ async def test_a_channel_error_queued_behind_a_callback_does_not_double_rejoin(
         callback_drain_timeout_s=ASYNC_TIMEOUT_S,
     )
     async with client:
-        await client.subscribe_to_topic(TOPIC, held)
+        await join_channel(client, TOPIC, held)
         await deliver(phoenix_server, client)
         await asyncio.wait_for(held.running.wait(), ASYNC_TIMEOUT_S)
         await phoenix_server.crash_channel(TOPIC)
-        subscription = client.get_current_subscriptions()[TOPIC]
-        assert await wait_for_condition(lambda: not subscription.queue.empty())
+        subscription = client.topic_subscriptions.copy()[TOPIC]
+        assert await wait_for_condition(
+            lambda: subscription.state == ChannelState.REJOINING
+        )
+        assert subscription.queue.empty()
 
-        # Nothing yields from the reconnect until the topic's drain, so the
-        # queued phx_error is handled during the socket rejoin.
+        # The reader starts recovery while the application callback is held.
         await reconnect(phoenix_server, client)
         held.release.set()
-        assert await wait_for_condition(lambda: client.is_topic_joined(TOPIC))
+        assert await wait_for_condition(lambda: is_joined(client, TOPIC))
         await asyncio.sleep(QUIET_S)
 
         assert joins(phoenix_server) == REJOINED_ONCE
@@ -284,14 +294,14 @@ async def test_a_server_channel_close_loses_the_topic(
         phoenix_server, reconnect_policy=FAST_RECONNECT, on_topic_lost=lost
     )
     async with client:
-        await client.subscribe_to_topic(TOPIC, received.put)
+        await join_channel(client, TOPIC, received.put)
 
         await phoenix_server.close_channel(TOPIC)
         assert await wait_for_condition(lambda: bool(lost.lost))
         await asyncio.sleep(QUIET_S)
 
         lost.only_error()
-        assert TOPIC not in client.get_current_subscriptions()
+        assert TOPIC not in client.topic_subscriptions.copy()
         assert joins(phoenix_server) == SUBSCRIBED
         assert received.empty()
 
@@ -301,10 +311,10 @@ async def test_our_own_leave_does_not_report_a_lost_topic(
 ) -> None:
     lost = LostTopics()
     async with make_client(phoenix_server, on_topic_lost=lost) as client:
-        await client.subscribe_to_topic(TOPIC)
-        await client.subscribe_to_topic(OTHER_TOPIC, received.put)
+        await join_channel(client, TOPIC)
+        await join_channel(client, OTHER_TOPIC, received.put)
 
-        await client.unsubscribe_from_topic(TOPIC)
+        await channel_for(client, TOPIC).leave()
         # Frames arrive in order, so the leave's phx_close was routed before this.
         await deliver(phoenix_server, client, OTHER_TOPIC)
         await expect_message(received)
@@ -316,16 +326,16 @@ async def test_is_topic_joined_is_false_while_disconnected(
     phoenix_server: FakePhoenixServer,
 ) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
-        await client.subscribe_to_topic(TOPIC)
+        await join_channel(client, TOPIC)
         phoenix_server.handshake_gate.clear()
 
         await phoenix_server.close_all_clients()
         assert await wait_for_condition(lambda: client.connection is None)
 
-        assert TOPIC in client.get_current_subscriptions()
-        assert not client.is_topic_joined(TOPIC)
+        assert TOPIC in client.topic_subscriptions.copy()
+        assert not is_joined(client, TOPIC)
         phoenix_server.handshake_gate.set()
-        assert await wait_for_condition(lambda: client.is_topic_joined(TOPIC))
+        assert await wait_for_condition(lambda: is_joined(client, TOPIC))
 
 
 async def test_resubscribing_from_on_topic_lost_works(
@@ -333,15 +343,15 @@ async def test_resubscribing_from_on_topic_lost_works(
 ) -> None:
     async def resubscribe(topic: str, error: Exception) -> None:
         del error
-        await client.subscribe_to_topic(topic, received.put)
+        await join_channel(client, topic, received.put)
 
     client = make_client(phoenix_server, on_topic_lost=resubscribe)
     async with client:
-        await client.subscribe_to_topic(TOPIC, received.put)
+        await join_channel(client, TOPIC, received.put)
 
         await phoenix_server.close_channel(TOPIC)
         assert await wait_for_condition(lambda: joins(phoenix_server) == REJOINED_ONCE)
-        assert await wait_for_condition(lambda: client.is_topic_joined(TOPIC))
+        assert await wait_for_condition(lambda: is_joined(client, TOPIC))
 
         await deliver(phoenix_server, client)
         assert (await expect_message(received)).event == EVENT
@@ -362,7 +372,7 @@ async def test_lifecycle_event_handlers_are_rejected(
     async def handler(payload: dict[str, object]) -> None:
         del payload
 
-    await client.subscribe_to_topic(TOPIC)
+    await join_channel(client, TOPIC)
 
     with pytest.raises(ValueError, match=str(event)):
-        client.add_event_handler(TOPIC, event, handler)
+        channel_for(client, TOPIC).on(event, handler)

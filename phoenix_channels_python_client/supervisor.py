@@ -28,7 +28,10 @@ from phoenix_channels_python_client.messages import (
 )
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.shutdown_signals import handle_shutdown_signals
-from phoenix_channels_python_client.topic_subscription import TopicSubscription
+from phoenix_channels_python_client.topic_subscription import (
+    ChannelState,
+    TopicSubscription,
+)
 from phoenix_channels_python_client.utils import cancel_and_wait, make_message
 
 # RFC 6455 §7.4.2 private-use range (4000-4999, unregistrable). The decider
@@ -59,6 +62,11 @@ class SupervisorRuntimeDeps(Protocol):
     def _generate_ref(self) -> str: ...
     async def _rejoin_topics(self, generation: int) -> None: ...
     def _fail_pending_joins(self, error: Exception) -> None: ...
+    def _retire_channels(self, error: Exception) -> None: ...
+    def _handle_channel_control(
+        self, topic: TopicSubscription, message: Message
+    ) -> bool: ...
+    def _release_reservation(self, topic: TopicSubscription) -> None: ...
     def _channel_recoveries(self) -> list[asyncio.Task[None]]: ...
     def _extract_close_details(
         self, *, connection: ClientConnection, routing_error: Exception | None
@@ -108,6 +116,7 @@ class SupervisorMixin:
             self.topic_subscriptions,
             conn_generation,
             on_heartbeat_response=self._handle_heartbeat_response,
+            on_channel_control=self.deps._handle_channel_control,
         )
 
     def _handle_heartbeat_response(self, message: Message) -> None:
@@ -317,9 +326,14 @@ class SupervisorMixin:
         routing = self.message_routing_task = asyncio.create_task(
             self._start_processing(connection, generation)
         )
+
         # Join replies arrive only through this task. It can stop while
         # a rejoin is still waiting on one, before cleanup runs.
-        routing.add_done_callback(self._fail_joins_when_routing_stops)
+        def routing_stopped(task: asyncio.Task[None]) -> None:
+            if self.connection is connection and self.message_routing_task is task:
+                self._fail_joins_when_routing_stops(task)
+
+        routing.add_done_callback(routing_stopped)
         if self.heartbeat_interval_s is not None:
             self.heartbeat_task = asyncio.create_task(
                 self._heartbeat_loop(connection, self.heartbeat_deadline)
@@ -416,6 +430,8 @@ class SupervisorMixin:
         )
         self.connected_event.clear()
         if self.state != ClientState.SHUTTING_DOWN:
+            if self.topic_subscriptions:
+                self.deps._retire_channels(SocketError("Connection supervisor stopped"))
             self.deps._transition_state(ClientState.CLOSED)
 
     async def _wait_for_shutdown_or_timeout(self, delay_s: float) -> None:
@@ -436,6 +452,7 @@ class SupervisorMixin:
     async def _cleanup_connection(self) -> None:
         self._fail_pending_joins_for_lost_connection()
         connection = self.connection
+        send_session = getattr(self, "send_session", None)
         # The socket rejoin after the reconnect takes over channel recoveries.
         recoveries = self.deps._channel_recoveries()
         running = [
@@ -457,6 +474,15 @@ class SupervisorMixin:
             # Close the socket even if the caller is cancelled meanwhile.
             if connection is not None:
                 await self._close_websocket(connection)
+            if send_session is not None:
+                await send_session.finish()
+                if getattr(self, "send_session", None) is send_session:
+                    self.send_session = None
+            for topic in list(self.topic_subscriptions.values()):
+                if topic.connection is connection:
+                    topic.terminal_received.set()
+                    if topic.state == ChannelState.LEFT:
+                        self.deps._release_reservation(topic)
 
     async def _close_websocket(self, connection: ClientConnection) -> None:
         try:
@@ -506,6 +532,9 @@ class SupervisorMixin:
         # handle_shutdown_signals judged it consumed.
         if signaled.is_set():
             await self.deps.shutdown("Signal received")
+        shutdown = getattr(self, "shutdown_task", None)
+        if self.shutdown_event.is_set() and shutdown is not None:
+            await asyncio.shield(shutdown)
         if self.terminal_error is not None:
             raise self.terminal_error
         if supervisor.cancelled() and self.shutdown_event.is_set():

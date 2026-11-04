@@ -11,7 +11,15 @@ from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer
 from tests.join_support import JoinProbe, deadline, push
 from tests.optional_support import JOIN_DEADLINE, subscribed_optional_pair
-from tests.support import FAST_RECONNECT, OTHER_TOPIC, TOPIC, each_protocol, make_client
+from tests.support import (
+    FAST_RECONNECT,
+    OTHER_TOPIC,
+    TOPIC,
+    each_protocol,
+    is_joined,
+    join_channel,
+    make_client,
+)
 
 
 @each_protocol
@@ -34,8 +42,8 @@ class TestOptionalReconnect:
             await required.installed.get()
             await push(phoenix_server, request, payload={"required": True})
             assert (await required.delivered.get()).payload == {"required": True}
-            assert TOPIC in client.get_current_subscriptions()
-            assert not client.is_topic_joined(TOPIC)
+            assert TOPIC in client.topic_subscriptions.copy()
+            assert not is_joined(client, TOPIC)
             connection, held = await phoenix_server.deferred_joins.get()
             await phoenix_server.release_join(connection, held)
             await optional.installed.get()
@@ -68,19 +76,20 @@ class TestOptionalReconnect:
                 try:
                     await release.wait()
                     received.put_nowait(
-                        (message, optional.state, client.is_topic_joined(TOPIC))
+                        (message, optional.state, is_joined(client, TOPIC))
                     )
                 finally:
                     finished.set()
 
-            await client.subscribe_to_topic(
+            await join_channel(
+                client,
                 TOPIC,
                 receive,
                 on_join_response=optional.install,
                 blocks_reconnect=False,
             )
-            await client.subscribe_to_topic(
-                OTHER_TOPIC, required.receive, on_join_response=required.install
+            await join_channel(
+                client, OTHER_TOPIC, required.receive, on_join_response=required.install
             )
             _, initial = await phoenix_server.joined.get()
             await phoenix_server.joined.get()
@@ -94,8 +103,8 @@ class TestOptionalReconnect:
                 await required.installed.get()
                 await push(phoenix_server, request, payload={"required": True})
                 assert (await required.delivered.get()).payload == {"required": True}
-                assert TOPIC in client.get_current_subscriptions()
-                assert not client.is_topic_joined(TOPIC)
+                assert TOPIC in client.topic_subscriptions.copy()
+                assert not is_joined(client, TOPIC)
                 assert not finished.is_set()
                 release.set()
                 await finished.wait()
@@ -127,7 +136,7 @@ class TestOptionalReconnect:
         ):
             await phoenix_server.close_all_clients()
             await reconnects.get()
-            assert not client.get_current_subscriptions()
+            assert not client.topic_subscriptions.copy()
 
     async def test_global_reconnect_finishes_before_all_optional_topics_are_ready(
         self, phoenix_server: FakePhoenixServer
@@ -142,7 +151,8 @@ class TestOptionalReconnect:
             ) as client,
         ):
             probe = JoinProbe(client)
-            await client.subscribe_to_topic(
+            await join_channel(
+                client,
                 TOPIC,
                 probe.receive,
                 on_join_response=probe.install,
@@ -156,7 +166,7 @@ class TestOptionalReconnect:
             await phoenix_server.close_all_clients()
             await reconnects.get()
             connection, request = await phoenix_server.deferred_joins.get()
-            assert not client.is_topic_joined(TOPIC)
+            assert not is_joined(client, TOPIC)
             await phoenix_server.release_join(connection, request)
             await probe.installed.get()
             await push(phoenix_server, request)
@@ -174,8 +184,8 @@ class TestOptionalReconnect:
                 on_reconnect=lambda: reconnects.put(None),
             ) as client,
         ):
-            await client.subscribe_to_topic(TOPIC)
-            await client.subscribe_to_topic(OTHER_TOPIC)
+            await join_channel(client, TOPIC)
+            await join_channel(client, OTHER_TOPIC)
             await phoenix_server.joined.get()
             await phoenix_server.joined.get()
             phoenix_server.defer_join_targets.add(
@@ -200,7 +210,7 @@ class TestOptionalReconnect:
         seen: asyncio.Queue[set[str]] = asyncio.Queue()
 
         async def reconnected() -> None:
-            await seen.put(set(client.get_current_subscriptions()))
+            await seen.put(set(client.topic_subscriptions.copy()))
 
         async with (
             deadline(),
@@ -210,12 +220,12 @@ class TestOptionalReconnect:
                 on_reconnect=reconnected,
             ) as client,
         ):
-            await client.subscribe_to_topic(TOPIC)
-            await client.subscribe_to_topic(OTHER_TOPIC)
+            await join_channel(client, TOPIC)
+            await join_channel(client, OTHER_TOPIC)
             phoenix_server.fail_join_targets.add((phoenix_server.next_client_id, TOPIC))
             await phoenix_server.close_all_clients()
             assert await seen.get() == {OTHER_TOPIC}
-            assert client.is_topic_joined(OTHER_TOPIC)
+            assert is_joined(client, OTHER_TOPIC)
 
     @pytest.mark.clock
     async def test_transient_required_attempt_releases_barrier_before_retry(
@@ -231,7 +241,7 @@ class TestOptionalReconnect:
             on_reconnect=lambda: reconnects.put(None),
         ) as client:
             probe = JoinProbe(client)
-            await client.subscribe_to_topic(TOPIC, on_join_response=probe.install)
+            await join_channel(client, TOPIC, on_join_response=probe.install)
             await probe.installed.get()
             clocked_peer.defer_join_targets.add((clocked_peer.next_client_id, TOPIC))
             await clocked_peer.close_all_clients()
@@ -240,7 +250,7 @@ class TestOptionalReconnect:
             connection, obsolete = await clocked_peer.deferred_joins.get()
             await clock.advance(JOIN_DEADLINE)
             await reconnects.get()
-            assert not client.is_topic_joined(TOPIC)
+            assert not is_joined(client, TOPIC)
             await clocked_peer.release_join(connection, obsolete)
             await clock.advance(FAST_RECONNECT.max_delay_s)
             await probe.installed.get()

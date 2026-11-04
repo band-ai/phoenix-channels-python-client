@@ -7,7 +7,7 @@ import asyncio
 from tests.cleanup_support import terminal_cleanup
 from tests.fake_server import FakePhoenixServer
 from tests.join_support import JoinProbe, deadline, push
-from tests.support import STOP_REASON, TOPIC, each_protocol, make_client
+from tests.support import STOP_REASON, TOPIC, each_protocol, join_channel, make_client
 
 
 @each_protocol
@@ -27,8 +27,11 @@ class TestCleanupOwnership:
                 await started.wait()
                 async with make_client(phoenix_server) as independent:
                     probe = JoinProbe(independent)
-                    await independent.subscribe_to_topic(
-                        TOPIC, probe.receive, on_join_response=probe.install
+                    await join_channel(
+                        independent,
+                        TOPIC,
+                        probe.receive,
+                        on_join_response=probe.install,
                     )
                     _, request = await phoenix_server.joined.get()
                     await push(phoenix_server, request)
@@ -54,8 +57,11 @@ class TestCleanupOwnership:
                 await started.wait()
                 async with make_client(phoenix_server) as independent:
                     probe = JoinProbe(independent)
-                    await independent.subscribe_to_topic(
-                        TOPIC, probe.receive, on_join_response=probe.install
+                    await join_channel(
+                        independent,
+                        TOPIC,
+                        probe.receive,
+                        on_join_response=probe.install,
                     )
                     _, request = await phoenix_server.joined.get()
                     await push(phoenix_server, request)
@@ -73,8 +79,8 @@ class TestCleanupOwnership:
         async with deadline(), terminal_cleanup(phoenix_server) as held:
             await held.client.__aenter__()
             probe = JoinProbe(held.client)
-            await held.client.subscribe_to_topic(
-                TOPIC, probe.receive, on_join_response=probe.install
+            await join_channel(
+                held.client, TOPIC, probe.receive, on_join_response=probe.install
             )
             _, request = await phoenix_server.joined.get()
             await push(phoenix_server, request, payload={"fresh": True})

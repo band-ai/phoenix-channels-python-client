@@ -24,6 +24,7 @@ from tests.support import (
     deliver,
     each_protocol,
     expect_message,
+    join_channel,
     make_client,
     reconnect,
     reconnect_after,
@@ -213,7 +214,7 @@ async def test_a_string_version_connects_and_receives_a_message(
         api_key=API_KEY,
         protocol_version=version,
     ) as client:
-        await client.subscribe_to_topic(TOPIC, received.put)
+        await join_channel(client, TOPIC, received.put)
         await deliver(phoenix_server, client, payload={"ok": True})
 
         message = await expect_message(received)
@@ -231,14 +232,14 @@ async def test_run_forever_returns_on_a_normal_close_when_reconnecting_on_it_is_
     async with make_client(
         phoenix_server, reconnect_policy=STOPS_ON_NORMAL_CLOSE
     ) as client:
-        await client.subscribe_to_topic(TOPIC)
+        await join_channel(client, TOPIC)
         run = asyncio.create_task(client.run_forever())
 
         await phoenix_server.close_all_clients(code=CloseCode.NORMAL_CLOSURE)
 
         assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
 
-    assert client.get_current_subscriptions() == {}
+    assert client.topic_subscriptions.copy() == {}
     assert client.connection is None
 
 
@@ -387,7 +388,7 @@ async def test_raising_lifecycle_callbacks_do_not_stop_reconnecting(
         await reconnect(phoenix_server, client)
         await reconnect(phoenix_server, client)
 
-        await client.subscribe_to_topic(TOPIC)
+        await join_channel(client, TOPIC)
 
 
 @pytest.mark.parametrize(
@@ -395,8 +396,8 @@ async def test_raising_lifecycle_callbacks_do_not_stop_reconnecting(
     [
         ({"heartbeat_interval_s": 0}, "heartbeat_interval_s must be > 0"),
         ({"heartbeat_interval_s": -1.0}, "heartbeat_interval_s must be > 0"),
-        ({"join_timeout_s": 0}, "join_timeout_s must be > 0"),
-        ({"leave_timeout_s": 0}, "leave_timeout_s must be > 0"),
+        ({"join_timeout_s": 0}, "join_timeout_s must be finite and > 0"),
+        ({"leave_timeout_s": 0}, "leave_timeout_s must be finite and > 0"),
         ({"max_topic_queue_size": 0}, "max_topic_queue_size must be > 0"),
         ({"callback_drain_timeout_s": 0}, "callback_drain_timeout_s must be > 0"),
     ],

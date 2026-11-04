@@ -1,18 +1,20 @@
 from typing import assert_type
-
-from phoenix_channels_python_client import Client, Message, ProtocolVersion
-
-client = Client(
-    "ws://localhost/socket", api_key=None, protocol_version=ProtocolVersion.V2
+from phoenix_channels_python_client import (
+    Channel, Client, Message, ProtocolVersion,
 )
+client = Client('ws://localhost/socket', api_key=None, protocol_version=ProtocolVersion.V2)
 assert_type(client, Client)
+room = client.channel('room:1', params=lambda: {'token': 'fresh'})
+assert_type(room, Channel)
+@room.on('event')
+async def on_event(payload: dict[str, object]) -> None:
+    pass
+async def scoped() -> None:
+    async with room:
+        pass
 assert_type(client.channel_socket_url, str)
 assert_type(ProtocolVersion.V2.vsn, str)
-
-
 def receive(message: Message) -> str:
     return message.topic
-
-
 async def stop() -> None:
     await client.shutdown()

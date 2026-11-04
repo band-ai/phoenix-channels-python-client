@@ -177,6 +177,7 @@ class PHXProtocolHandler:
         topic_subscriptions: dict[str, TopicSubscription],
         conn_generation: int,
         on_heartbeat_response: Callable[[Message], None] | None = None,
+        on_channel_control: Callable[[TopicSubscription, Message], bool] | None = None,
     ) -> None:
         self.logger.debug(
             "Starting websocket message loop for generation %s", conn_generation
@@ -215,23 +216,33 @@ class PHXProtocolHandler:
                 )
                 continue
 
-            if topic_subscription.queue.full():
-                try:
-                    topic_subscription.queue.get_nowait()
-                    topic_subscription.dropped_message_count += 1
-                    if (
-                        topic_subscription.dropped_message_count == 1
-                        or topic_subscription.dropped_message_count % 100 == 0
-                    ):
-                        self.logger.warning(
-                            "Dropped %s queued messages for topic %s due to full queue",
-                            topic_subscription.dropped_message_count,
-                            topic,
-                        )
-                except asyncio.QueueEmpty:
-                    self.logger.debug(
-                        "Queue became empty before drop on topic %s; skipping drop",
-                        topic,
-                    )
+            if on_channel_control is not None and on_channel_control(
+                topic_subscription, phx_message
+            ):
+                continue
 
-            await topic_subscription.queue.put(phx_message)
+            await self._enqueue_message(topic_subscription, phx_message)
+
+    async def _enqueue_message(
+        self, topic_subscription: TopicSubscription, phx_message: Message
+    ) -> None:
+        if topic_subscription.queue.full():
+            try:
+                topic_subscription.queue.get_nowait()
+                topic_subscription.dropped_message_count += 1
+                if (
+                    topic_subscription.dropped_message_count == 1
+                    or topic_subscription.dropped_message_count % 100 == 0
+                ):
+                    self.logger.warning(
+                        "Dropped %s queued messages for topic %s due to full queue",
+                        topic_subscription.dropped_message_count,
+                        topic_subscription.name,
+                    )
+            except asyncio.QueueEmpty:
+                self.logger.debug(
+                    "Queue became empty before drop on topic %s; skipping drop",
+                    topic_subscription.name,
+                )
+
+        await topic_subscription.queue.put(phx_message)

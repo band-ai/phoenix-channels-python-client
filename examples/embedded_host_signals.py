@@ -44,23 +44,24 @@ def host_signal_handlers(on_signal: Callable[[], object]) -> Iterator[None]:
             signal.signal(sig, handler)
 
 
-async def handle_message(message: Message) -> None:
-    logger.info("Received: %s", message)
-
-
 async def main() -> None:
     async with (
         Client(WS_URL, api_key=API_KEY) as client,
         asyncio.TaskGroup() as tasks,
     ):
-        await client.subscribe_to_topic(TOPIC, handle_message)
+        room = client.channel(TOPIC)
+
+        @room.on_any
+        async def handle_message(message: Message) -> None:
+            logger.info("Received: %s", message)
 
         def stop() -> None:
             tasks.create_task(client.shutdown("Host received a stop signal"))
 
-        with host_signal_handlers(stop):
-            logger.info("Ready - send SIGTERM or press Ctrl+C to stop")
-            await client.run_forever(install_signal_handlers=False)
+        async with room:
+            with host_signal_handlers(stop):
+                logger.info("Ready - send SIGTERM or press Ctrl+C to stop")
+                await client.run_forever(install_signal_handlers=False)
     logger.info("Stopped cleanly")
 
 
