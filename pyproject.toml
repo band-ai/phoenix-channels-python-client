@@ -11,7 +11,8 @@ license = "MIT"
 authors = [{ name = "Phoenix Channels Python Client" }]
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic>=2.8",
+    "pydantic>=2.8; python_version < '3.14'",
+    "pydantic>=2.12; python_version >= '3.14'",
     "websockets>=14.2",
 ]
 classifiers = [
@@ -22,6 +23,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +35,7 @@ dev = [
     "pre-commit>=3.0.0",
     "commitizen>=3.13.0",
     "pyrefly",
+    "mypy",
     "ruff",
 ]
 test = [
@@ -40,6 +43,9 @@ test = [
     "pytest-asyncio>=1.4",
     "looptime>=0.7,<0.10",
 ]
+
+[tool.mypy]
+files = ["phoenix_channels_python_client"]
 
 [tool.ruff.lint]
 select = ["ALL"]

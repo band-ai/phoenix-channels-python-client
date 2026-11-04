@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sys
 from collections.abc import Callable, Coroutine, Generator, Iterator
 from contextlib import contextmanager
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field
 from types import CodeType
-from typing import Any
+from typing import Any, TypeAlias
 from unittest.mock import patch
+
+# asyncio's factory stubs dropped generator coroutines in Python 3.12.
+if sys.version_info >= (3, 12):
+    _TaskWork: TypeAlias = Coroutine[Any, Any, Any]
+else:
+    _TaskWork: TypeAlias = Coroutine[Any, Any, Any] | Generator[Any, None, Any]
 
 
 class TaskWakeupGate:
@@ -113,7 +120,7 @@ class TaskLifecycleGate:
             self.start.set()
         if not hold_exit:
             self.finish.set()
-        self.task: asyncio.Task[None] | None = None
+        self.task: asyncio.Future[None] | None = None
         self.used = False
 
     @contextmanager
@@ -123,24 +130,48 @@ class TaskLifecycleGate:
 
         def factory(
             loop: asyncio.AbstractEventLoop,
-            work: Coroutine[Any, Any, Any] | Generator[Any, None, Any],
+            work: _TaskWork,
             /,
-            *,
-            context: Context | None = None,
+            **options: Any,
         ) -> asyncio.Future[Any]:
-            if (
-                not self.used
-                and inspect.iscoroutine(work)
-                and work.cr_code is self.code
-            ):
+            original = (
+                work
+                if (
+                    not self.used
+                    and inspect.iscoroutine(work)
+                    and work.cr_code is self.code
+                )
+                else None
+            )
+            wrapped = self._run(original) if original is not None else None
+            if wrapped is not None:
                 self.used = True
-                self.task = asyncio.Task(self._run(work), loop=loop, context=context)
-                return self.task
-            if previous is not None:
-                if context is not None:
-                    return context.run(previous, loop, work)
-                return previous(loop, work)
-            return asyncio.Task(work, loop=loop, context=context)
+
+            def close_unstarted(_future: asyncio.Future[Any] | None = None) -> None:
+                for coroutine in (wrapped, original):
+                    if (
+                        coroutine is not None
+                        and inspect.getcoroutinestate(coroutine) == inspect.CORO_CREATED
+                    ):
+                        coroutine.close()
+
+            scheduled = wrapped if wrapped is not None else work
+            try:
+                task = (
+                    previous(loop, scheduled, **options)
+                    if previous is not None
+                    else asyncio.Task(scheduled, loop=loop, **options)
+                )
+            except BaseException:
+                close_unstarted()
+                raise
+            if wrapped is not None:
+                self.task = task
+                if task.done():
+                    close_unstarted()
+                else:
+                    task.add_done_callback(close_unstarted)
+            return task
 
         loop.set_task_factory(factory)
         try:

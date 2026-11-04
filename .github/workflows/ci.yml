@@ -23,10 +23,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
         include:
           - os: windows-latest
-            python-version: "3.13"
+            python-version: "3.14"
 
     steps:
       - name: Checkout repository
@@ -80,17 +80,21 @@ jobs:
 
   type-check:
     if: *not-draft
-    name: Type Check
+    name: Type Check (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -103,24 +107,28 @@ jobs:
       - name: Run pyrefly
         run: uv run pyrefly check
 
+      - name: Run mypy
+        run: uv run mypy phoenix_channels_python_client
+
   package-typing:
     if: *not-draft
-    name: Package Typing (${{ matrix.os }})
+    name: Package Typing (Python ${{ matrix.python-version }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.14"]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -134,3 +142,33 @@ jobs:
         env:
           PHOENIX_PACKAGE_TEST: "1"
         run: uv run pytest tests/test_package_typing.py
+
+  minimum-dependencies:
+    if: *not-draft
+    name: Minimum Dependencies (Python 3.14, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Test minimum runtime dependencies
+        run: uv run --frozen --extra dev --with pydantic==2.12.0 --with websockets==14.2 pytest

@@ -43,7 +43,7 @@ uv run pytest
 ### Dependencies
 
 - Python 3.11+
-- `pydantic>=2.8`
+- `pydantic>=2.8` on Python 3.11–3.13; `pydantic>=2.12` on Python 3.14+
 - `websockets>=14.2`
 
 ## Public API migration
