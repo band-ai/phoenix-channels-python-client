@@ -324,10 +324,21 @@ class FakePhoenixServer:
         join_ref: str | None = None,
         ref: str | None = None,
     ) -> None:
-        """Push one event to every connected client."""
+        """Broadcast to every client; explicit refs allow targeted frame injection."""
         frame = Frame(join_ref, ref, topic, event, payload)
         for websocket in list(self._clients):
             await self._send(websocket, frame)
+
+    async def simulate_channel_push(
+        self, topic: str, event: str, payload: Mapping[str, object]
+    ) -> None:
+        """Push to each member with its server-stored join_ref."""
+        for websocket in list(self._clients):
+            member = (self._client_ids[websocket], topic)
+            if member in self.members:
+                await self._send(
+                    websocket, Frame(self.members[member], None, topic, event, payload)
+                )
 
     async def crash_channel(self, topic: str) -> None:
         """Crash every client's channel for ``topic``, as Phoenix's encode_on_exit."""
