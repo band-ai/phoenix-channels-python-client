@@ -30,6 +30,7 @@ from tests.support import (
     LostTopics,
     ReconnectCounter,
     crash_with_rejoin_in_flight,
+    deferred_channel_rejoin,
     deliver,
     derive_policy,
     each_protocol,
@@ -39,6 +40,7 @@ from tests.support import (
     only_client_id,
     reconnect,
     rejoin_settled,
+    subscribe_with_handlers,
     wait_for_condition,
 )
 
@@ -91,6 +93,28 @@ async def test_a_crashed_channel_rejoins_on_the_live_socket(
         assert reconnects.count == 0
 
     assert "Recovered channel for topic %s" in caplog.text
+
+
+@each_protocol
+async def test_a_broadcast_during_rejoin_is_not_delivered(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    sentinel = {"phase": "joined"}
+
+    async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
+        recorder = await subscribe_with_handlers(client)
+        async with deferred_channel_rejoin(phoenix_server):
+            assert not client.is_topic_joined(TOPIC)
+            await phoenix_server.simulate_server_event(
+                TOPIC, EVENT, {"phase": "rejoining"}
+            )
+
+        await phoenix_server.simulate_server_event(TOPIC, EVENT, sentinel)
+
+        # The sentinel follows the pending event and join reply on the same socket.
+        assert (await expect_message(recorder.messages)).payload == sentinel
+        assert await expect_message(recorder.event_payloads) == sentinel
+        assert recorder.deliveries == [(sentinel, True)]
 
 
 @each_protocol

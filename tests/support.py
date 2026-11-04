@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from http import HTTPStatus
 from typing import Any, TypeVar
 
@@ -25,7 +26,7 @@ from phoenix_channels_python_client.client_types import (
     ReconnectEvent,
 )
 from phoenix_channels_python_client.exceptions import PHXTopicError
-from phoenix_channels_python_client.phx_messages import ChannelMessage
+from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
 from phoenix_channels_python_client.protocol_handler import (
     PhoenixChannelsProtocolVersion,
 )
@@ -188,6 +189,32 @@ class LostTopics:
         return error
 
 
+class TopicRecorder:
+    """Record callback readiness before the client can catch callback failures."""
+
+    def __init__(self, client: PHXChannelsClient, topic: str = TOPIC) -> None:
+        self.client = client
+        self.topic = topic
+        self.messages: asyncio.Queue[ChannelMessage] = asyncio.Queue()
+        self.event_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+        self.deliveries: list[tuple[dict[str, object], bool]] = []
+
+    async def receive(self, message: ChannelMessage) -> None:
+        self.deliveries.append(
+            (message.payload, self.client.is_topic_joined(self.topic))
+        )
+        self.messages.put_nowait(message)
+
+
+async def subscribe_with_handlers(
+    client: PHXChannelsClient, topic: str = TOPIC, event: str = EVENT
+) -> TopicRecorder:
+    recorder = TopicRecorder(client, topic)
+    await client.subscribe_to_topic(topic, recorder.receive)
+    client.add_event_handler(topic, Event(event), recorder.event_payloads.put)
+    return recorder
+
+
 class CallbackError(Exception):
     pass
 
@@ -269,6 +296,24 @@ async def crash_with_rejoin_in_flight(
     return client_id
 
 
+@asynccontextmanager
+async def deferred_channel_rejoin(
+    server: FakePhoenixServer, topic: str = TOPIC
+) -> AsyncIterator[None]:
+    """Crash a channel and hold its rejoin reply until the context exits."""
+    target = (only_client_id(server), topic)
+    server.defer_join_targets.add(target)
+    try:
+        await server.crash_channel(topic)
+        connection, request = await expect_message(server.deferred_joins)
+        try:
+            yield
+        finally:
+            await server.release_join(connection, request)
+    finally:
+        server.defer_join_targets.discard(target)
+
+
 async def deliver(
     server: FakePhoenixServer,
     client: PHXChannelsClient,
@@ -276,9 +321,9 @@ async def deliver(
     payload: Mapping[str, object] | None = None,
     event: str = EVENT,
 ) -> None:
-    """Push one server event on the client's current join of ``topic``."""
-    join_ref = client.get_current_subscriptions()[topic].join_ref
-    await server.simulate_server_event(topic, event, payload or {}, join_ref=join_ref)
+    """Broadcast one server event without a join_ref."""
+    del client
+    await server.simulate_server_event(topic, event, payload or {})
 
 
 async def expect_message(received: asyncio.Queue[T]) -> T:
