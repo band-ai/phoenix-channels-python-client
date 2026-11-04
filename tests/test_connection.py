@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 from websockets.frames import CloseCode
@@ -23,6 +24,7 @@ from tests.support import (
     TOPIC,
     UNPARSEABLE_FRAME,
     deliver,
+    each_protocol,
     expect_message,
     make_client,
     reconnect,
@@ -37,6 +39,171 @@ FORCED_CLOSE_CODE = 4000
 
 # A close reason's limit in bytes, per RFC 6455.
 MAX_CLOSE_REASON_BYTES = 123
+
+
+@each_protocol
+@pytest.mark.parametrize("options", [{"api_key": None}, {}], ids=["none", "omitted"])
+@pytest.mark.parametrize(
+    ("query", "credentials"),
+    [
+        ("api_key=url-secret", [("api_key", "url-secret")]),
+        (
+            "API%5FKEY=private%2Bkey%2F%3F&api_key=second&aPi_KeY=",
+            [("API_KEY", "private+key/?"), ("api_key", "second"), ("aPi_KeY", "")],
+        ),
+    ],
+)
+async def test_without_an_api_key_argument_the_url_credential_is_preserved(
+    phoenix_server: FakePhoenixServer,
+    options: dict[str, Any],
+    query: str,
+    credentials: list[tuple[str, str]],
+) -> None:
+    url = phoenix_server.url_for(FakePhoenixServer.SOCKET_PATH)
+    async with PHXChannelsClient(
+        f"{url}?{query}&keep=one&keep=&vsn=old",
+        protocol_version=phoenix_server.protocol,
+        **options,
+    ) as client:
+        (connection,) = phoenix_server.list_client_connections()
+        assert connection.request is not None
+        expected = [
+            *credentials,
+            ("keep", "one"),
+            ("keep", ""),
+            ("vsn", phoenix_server.protocol.vsn),
+        ]
+        assert (
+            parse_qsl(urlsplit(client.channel_socket_url).query, keep_blank_values=True)
+            == expected
+        )
+        assert (
+            parse_qsl(urlsplit(connection.request.path).query, keep_blank_values=True)
+            == expected
+        )
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [None, {"x-api-key": "header-key"}, {"x-auth-token": "header-token"}],
+)
+def test_an_empty_api_key_argument_is_rejected(
+    headers: dict[str, str] | None,
+) -> None:
+    with pytest.raises(ValueError, match=r"^api_key must be nonempty or None$"):
+        PHXChannelsClient("ws://127.0.0.1:1/socket", "", additional_headers=headers)
+
+
+@each_protocol
+@pytest.mark.parametrize("options", [{}, {"api_key": None}], ids=["omitted", "none"])
+async def test_a_client_connects_without_an_api_key(
+    phoenix_server: FakePhoenixServer, options: dict[str, Any]
+) -> None:
+    async with PHXChannelsClient(
+        phoenix_server.url_for(FakePhoenixServer.SOCKET_PATH),
+        protocol_version=phoenix_server.protocol,
+        **options,
+    ) as client:
+        (connection,) = phoenix_server.list_client_connections()
+        assert connection.request is not None
+        expected = [("vsn", phoenix_server.protocol.vsn)]
+        assert parse_qsl(urlsplit(connection.request.path).query) == expected
+        assert parse_qsl(urlsplit(client.channel_socket_url).query) == expected
+        assert client.channel_socket_url_redacted == client.channel_socket_url
+
+
+@each_protocol
+@pytest.mark.parametrize("positional", [True, False], ids=["positional", "keyword"])
+@pytest.mark.parametrize("api_key", [API_KEY, " "], ids=["key", "whitespace"])
+async def test_an_api_key_argument_replaces_url_credentials(
+    phoenix_server: FakePhoenixServer, api_key: str, *, positional: bool
+) -> None:
+    url = phoenix_server.url_for(FakePhoenixServer.SOCKET_PATH)
+    url += "?API%5FKEY=old&api_key=other&token=legacy-token&keep=&vsn=old"
+    if positional:
+        client = PHXChannelsClient(
+            url, api_key, protocol_version=phoenix_server.protocol
+        )
+    else:
+        client = PHXChannelsClient(
+            url, api_key=api_key, protocol_version=phoenix_server.protocol
+        )
+    async with client:
+        (connection,) = phoenix_server.list_client_connections()
+        assert connection.request is not None
+        expected = [
+            ("token", "legacy-token"),
+            ("keep", ""),
+            ("api_key", api_key),
+            ("vsn", phoenix_server.protocol.vsn),
+        ]
+        assert (
+            parse_qsl(urlsplit(connection.request.path).query, keep_blank_values=True)
+            == expected
+        )
+        assert (
+            parse_qsl(urlsplit(client.channel_socket_url).query, keep_blank_values=True)
+            == expected
+        )
+
+
+@each_protocol
+@pytest.mark.parametrize(
+    "options",
+    [{}, {"api_key": None}, {"api_key": API_KEY}],
+    ids=["omitted", "none", "given"],
+)
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"X-API-Key": "header-key"},
+        {"X-Auth-Token": "header-token"},
+        {"X-API-Key": "header-key", "X-Auth-Token": "header-token"},
+    ],
+    ids=["api-key", "token", "both"],
+)
+async def test_header_authentication_suppresses_query_credentials(
+    phoenix_server: FakePhoenixServer,
+    options: dict[str, Any],
+    headers: dict[str, str],
+) -> None:
+    url = phoenix_server.url_for(FakePhoenixServer.SOCKET_PATH)
+    token = "legacy-token" if "X-Auth-Token" in headers else ""
+    async with PHXChannelsClient(
+        f"{url}?API%5FKEY=old&api_key=other&token={token}&keep=one&keep=",
+        protocol_version=phoenix_server.protocol,
+        additional_headers=headers,
+        reconnect_policy=FAST_RECONNECT,
+        **options,
+    ) as client:
+        for reconnecting in (False, True):
+            if reconnecting:
+                await reconnect(phoenix_server, client)
+            (connection,) = phoenix_server.list_client_connections()
+            assert connection.request is not None
+            expected = [
+                ("keep", "one"),
+                ("keep", ""),
+                ("vsn", phoenix_server.protocol.vsn),
+            ]
+            assert (
+                parse_qsl(
+                    urlsplit(connection.request.path).query, keep_blank_values=True
+                )
+                == expected
+            )
+            assert (
+                parse_qsl(
+                    urlsplit(client.channel_socket_url).query, keep_blank_values=True
+                )
+                == expected
+            )
+            assert client.channel_socket_url_redacted == client.channel_socket_url
+            assert client.additional_headers == {
+                name.lower(): value for name, value in headers.items()
+            }
+            for name, value in headers.items():
+                assert connection.request.headers[name] == value
 
 
 @pytest.mark.parametrize(
