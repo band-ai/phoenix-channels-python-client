@@ -5,7 +5,7 @@ import json
 import logging
 from http import HTTPStatus
 from logging.handlers import BufferingHandler
-from urllib.parse import parse_qsl, quote, urlsplit
+from urllib.parse import parse_qsl, quote, quote_plus, urlencode, urlsplit
 
 import pytest
 from websockets.asyncio.server import ServerConnection, serve
@@ -15,6 +15,89 @@ from phoenix_channels_python_client import PHXChannelsClient
 from phoenix_channels_python_client.client_types import ReconnectPolicy
 from phoenix_channels_python_client.diagnostics import ConnectionLogger
 from phoenix_channels_python_client.exceptions import PHXConnectionError
+from tests.fake_server import FakePhoenixServer
+
+URL_CREDENTIAL = "url/private+ credential?x=1&z=#[]"
+ARGUMENT_CREDENTIAL = "argument/private+ credential?x=2"
+HEADER_CREDENTIAL = "header/private+ credential?x=3"
+
+
+@pytest.mark.parametrize(
+    ("api_key", "embedded", "headers"),
+    [
+        (ARGUMENT_CREDENTIAL, False, {}),
+        (None, True, {}),
+        (ARGUMENT_CREDENTIAL, True, {}),
+        (None, True, {"x-api-key": HEADER_CREDENTIAL}),
+        (None, True, {"x-auth-token": HEADER_CREDENTIAL}),
+        (
+            ARGUMENT_CREDENTIAL,
+            True,
+            {"x-api-key": HEADER_CREDENTIAL, "x-auth-token": "other-header-value"},
+        ),
+    ],
+    ids=["argument", "url", "override", "api-header", "token-header", "both-headers"],
+)
+async def test_optional_api_key_credentials_are_redacted(
+    phoenix_server: FakePhoenixServer,
+    caplog: pytest.LogCaptureFixture,
+    api_key: str | None,
+    headers: dict[str, str],
+    *,
+    embedded: bool,
+) -> None:
+    url = phoenix_server.url_for(FakePhoenixServer.SOCKET_PATH)
+    credentials = [*headers.values()]
+    if api_key is not None:
+        credentials.append(api_key)
+    if embedded:
+        url += "?" + urlencode({"api_key": URL_CREDENTIAL})
+        credentials.append(URL_CREDENTIAL)
+    caplog.set_level(logging.DEBUG, logger="phoenix_channels_python_client.client")
+    client = PHXChannelsClient(url, api_key, additional_headers=headers)
+    collector = BufferingHandler(1000)
+    client.logger.addHandler(collector)
+    try:
+        async with client:
+            redacted_params = parse_qsl(
+                urlsplit(client.channel_socket_url_redacted).query
+            )
+            if headers:
+                assert redacted_params == [("vsn", "2.0.0")]
+            else:
+                assert redacted_params == [("api_key", "***"), ("vsn", "2.0.0")]
+            for credential in credentials:
+                for variant in (
+                    credential,
+                    quote(credential, safe=""),
+                    quote_plus(credential),
+                ):
+                    assert client.redact_diagnostic(variant) == "[REDACTED]"
+                    client.logger.warning(variant)
+            client.logger.warning(
+                "untrusted %s", credentials, extra={"websocket": credentials}
+            )
+        records = [
+            record for record in caplog.records if record.name == client.logger.name
+        ]
+        assert records
+        assert collector.buffer
+        for record in [*records, *collector.buffer]:
+            assert record.args == ()
+            assert record.exc_info is None
+            assert not hasattr(record, "websocket")
+            for credential in credentials:
+                for variant in (
+                    credential,
+                    quote(credential, safe=""),
+                    quote_plus(credential),
+                ):
+                    assert variant not in repr(record.__dict__)
+                    assert variant not in client.channel_socket_url_redacted
+        assert any("[REDACTED]" in record.getMessage() for record in collector.buffer)
+    finally:
+        client.logger.removeHandler(collector)
+        collector.close()
 
 
 class TestConnectionSecurity:

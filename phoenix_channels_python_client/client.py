@@ -52,7 +52,7 @@ TopicLostCallback = Callable[[str, Exception], Awaitable[None]]
 
 def _build_channel_socket_urls(
     websocket_url: str,
-    api_key: str,
+    api_key: str | None,
     vsn: str,
     *,
     header_auth: AuthenticationHeader | None = None,
@@ -63,19 +63,21 @@ def _build_channel_socket_urls(
         key.casefold() == TOKEN_PARAMETER and value for key, value in query_params
     ):
         raise ValueError("token query authentication cannot be combined with x-api-key")
+    replaced_parameters = {"vsn"}
+    authentication_params: list[tuple[str, str]] = []
+    if header_auth:
+        replaced_parameters.update({API_KEY_PARAMETER, TOKEN_PARAMETER})
+    elif api_key is not None:
+        replaced_parameters.add(API_KEY_PARAMETER)
+        authentication_params.append((API_KEY_PARAMETER, api_key))
     filtered = [
         (key, value)
         for key, value in query_params
-        if key.casefold()
-        not in (
-            {API_KEY_PARAMETER, "vsn", TOKEN_PARAMETER}
-            if header_auth
-            else {API_KEY_PARAMETER, "vsn"}
-        )
+        if key.casefold() not in replaced_parameters
     ]
     with_auth = [
         *filtered,
-        *([] if header_auth else [(API_KEY_PARAMETER, api_key)]),
+        *authentication_params,
         ("vsn", vsn),
     ]
 
@@ -120,7 +122,7 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
     def __init__(  # noqa: PLR0913, PLR0915  # the public options
         self,
         websocket_url: str,
-        api_key: str,
+        api_key: str | None = None,
         *,
         protocol_version: PhoenixChannelsProtocolVersion
         | str = DEFAULT_PROTOCOL_VERSION,
@@ -139,6 +141,8 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         reconnect_decider: ReconnectDecider | None = None,
         additional_headers: dict[str, str] | None = None,
     ) -> None:
+        if api_key == "":
+            raise ValueError("api_key must be nonempty or None")
         self.additional_headers = normalize_headers(additional_headers)
         self.logger = ConnectionLogger(
             logger, diagnostic_secrets(websocket_url, api_key, self.additional_headers)

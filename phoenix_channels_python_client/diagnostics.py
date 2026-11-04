@@ -114,10 +114,12 @@ class ConnectionLogger(logging.Logger):
             super().handle(safe_record)
 
 
-def diagnostic_secrets(url: str, api_key: str, headers: dict[str, str]) -> set[str]:
+def diagnostic_secrets(
+    url: str, api_key: str | None, headers: dict[str, str]
+) -> set[str]:
     """Collect connection credentials without changing authentication bytes."""
     return {
-        api_key,
+        *([api_key] if api_key is not None else []),
         *(
             value
             for name, value in parse_qsl(urlsplit(url).query)

@@ -257,6 +257,23 @@ asyncio.run(main())
 
 ## Configuration
 
+`api_key` defaults to `None` and can still be passed positionally. Without an
+authentication header, a supplied key replaces any `api_key` in the URL; omitting
+it (or passing `None`) keeps the URL credential, if present. An empty argument
+(`api_key=""`) raises `ValueError`.
+
+Connect without a credential, or keep one already in the URL:
+
+```python
+async with PHXChannelsClient("ws://localhost:4000/socket/websocket") as client:
+    ...
+
+async with PHXChannelsClient(
+    "wss://server.com/socket/websocket?api_key=your-api-key"
+) as client:
+    ...
+```
+
 Everything after `api_key` is keyword-only:
 
 | Option | Default | Meaning |
@@ -392,6 +409,16 @@ setup_logging(logging.DEBUG)  # loggers live under "phoenix_channels_python_clie
 - Consider this limitation when evaluating this client for sensitive environments
 
 Pass `additional_headers={"x-api-key": key}` or `{"x-auth-token": jwt}` to use header-only authentication on every connection and reconnect.
+
+No `api_key` argument is needed for header authentication:
+
+```python
+async with PHXChannelsClient(
+    "wss://server.com/socket/websocket",
+    additional_headers={"x-api-key": "your-api-key"},
+) as client:
+    ...
+```
 
 ---
 
