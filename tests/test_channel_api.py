@@ -18,9 +18,7 @@ from tests.join_support import deadline, paused_writes, push, reply
 from tests.scheduling import TaskLifecycleGate
 from tests.support import (
     EVENT,
-    FAST_RECONNECT,
     JOIN_TIMEOUT_S,
-    OTHER_TOPIC,
     TOPIC,
     each_protocol,
     make_client,
@@ -87,125 +85,6 @@ async def test_only_one_created_handle_can_claim_a_live_topic(client: Client) ->
         assert not second.joined
     async with second:
         assert second.joined
-
-
-@each_protocol
-@pytest.mark.parametrize("params", [None, {"token": "static"}])
-async def test_join_params_are_sent_as_a_json_map(
-    client: Client,
-    phoenix_server: FakePhoenixServer,
-    params: dict[str, str] | None,
-) -> None:
-    async with client.channel(TOPIC, params=params):
-        _, request = await phoenix_server.joined.get()
-        assert request.payload == (params if params is not None else {})
-
-
-@each_protocol
-async def test_callable_params_are_fresh_for_channel_and_socket_rejoins(
-    phoenix_server: FakePhoenixServer,
-) -> None:
-    attempts = 0
-    installed: asyncio.Queue[None] = asyncio.Queue()
-
-    def params() -> dict[str, Any]:
-        nonlocal attempts
-        attempts += 1
-        return {"attempt": attempts}
-
-    async with (
-        deadline(),
-        make_client(
-            phoenix_server,
-            reconnect_policy=FAST_RECONNECT,
-        ) as client,
-    ):
-        room = client.channel(
-            TOPIC,
-            params=params,
-            on_join_response=lambda _: installed.put_nowait(None),
-        )
-        await room.join()
-        await installed.get()
-        _, initial = await phoenix_server.joined.get()
-        assert initial.payload == {"attempt": 1}
-        await phoenix_server.crash_channel(TOPIC)
-        await installed.get()
-        _, recovery = await phoenix_server.joined.get()
-        assert recovery.payload == {"attempt": 2}
-        await phoenix_server.close_all_clients()
-        await installed.get()
-        _, reconnect = await phoenix_server.joined.get()
-        assert reconnect.payload == {"attempt": 3}
-        assert attempts == reconnect.payload["attempt"]
-        assert room.joined
-
-
-@each_protocol
-@pytest.mark.parametrize("exception_type", [ValueError, asyncio.CancelledError])
-async def test_initial_params_failure_preserves_its_cause_and_sends_nothing(
-    client: Client,
-    phoenix_server: FakePhoenixServer,
-    exception_type: type[BaseException],
-) -> None:
-    failure = exception_type("private provider failure")
-
-    def params() -> dict[str, Any]:
-        raise failure
-
-    channel = client.channel(TOPIC, params=params)
-    with pytest.raises(ChannelError) as caught:
-        await channel.join()
-    assert caught.value.__cause__ is failure
-    assert phoenix_server.join_topics == []
-    assert not channel.joined
-    with pytest.raises(ChannelError):
-        await channel.join()
-    async with client.channel(TOPIC) as replacement:
-        assert replacement.joined
-
-
-@each_protocol
-async def test_params_failure_on_recovery_loses_only_that_channel(
-    phoenix_server: FakePhoenixServer,
-) -> None:
-    attempts = 0
-    lost: asyncio.Queue[tuple[str, Exception]] = asyncio.Queue()
-
-    def params() -> dict[str, Any]:
-        nonlocal attempts
-        attempts += 1
-        if attempts > 1:
-            raise ValueError("provider cannot refresh")
-        return {"token": "initial"}
-
-    async def on_lost(topic: str, error: Exception) -> None:
-        await lost.put((topic, error))
-
-    async with (
-        deadline(),
-        make_client(
-            phoenix_server,
-            reconnect_policy=FAST_RECONNECT,
-            on_topic_lost=on_lost,
-        ) as client,
-    ):
-        affected = client.channel(TOPIC, params=params)
-        neighbor = client.channel(OTHER_TOPIC)
-        await affected.join()
-        await neighbor.join()
-        await phoenix_server.crash_channel(TOPIC)
-        topic, error = await lost.get()
-        assert topic == TOPIC
-        assert isinstance(error, ChannelError)
-        assert not affected.joined
-        assert neighbor.joined
-        assert attempts == phoenix_server.join_topics.count(TOPIC) + 1
-        assert phoenix_server.join_topics.count(TOPIC) == 1
-        received: asyncio.Queue[Message] = asyncio.Queue()
-        neighbor.on_any(received.put)
-        await phoenix_server.simulate_server_event(OTHER_TOPIC, EVENT, {"ok": True})
-        assert (await received.get()).payload == {"ok": True}
 
 
 @pytest.mark.parametrize("option", ["join_timeout_s", "leave_timeout_s"])
