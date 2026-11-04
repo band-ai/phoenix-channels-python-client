@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from enum import Enum
 from urllib.parse import parse_qsl, quote, quote_plus, urlsplit
 
 from websockets.protocol import State
@@ -14,7 +15,34 @@ from phoenix_channels_python_client.authentication import (
 )
 
 REDACTED = "[REDACTED]"
+OMITTED = "<omitted>"
 PERCENT_ESCAPE = re.compile(r"%[0-9a-fA-F]{2}")
+# A printf-style conversion, as logging applies to a record's msg and args.
+PLACEHOLDER = re.compile(
+    r"%(?:\([^)]*\))?[#0 +-]*(?:\*|\d+)?(?:\.(?:\*|\d+))?[hlL]?[diouxXeEfFgGcrsa%]"
+)
+WEBSOCKET_STATE_MESSAGE = "= connection is %s"
+
+
+def render_value(value: object) -> str:
+    # Enum members and booleans are code-defined; any other value, numbers
+    # included, may carry personal data.
+    return str(value) if isinstance(value, Enum | bool) else OMITTED
+
+
+def render_message(record: logging.LogRecord) -> str:
+    """Fill a record's placeholders without exposing its arguments."""
+    message = str(record.msg)
+    if not record.args:
+        return message
+    args = record.args if isinstance(record.args, tuple) else ()
+    if message == WEBSOCKET_STATE_MESSAGE and args and args[0] in State.__members__:
+        return message % args[0]
+    values = iter(args)
+    return PLACEHOLDER.sub(
+        lambda match: "%" if match[0] == "%%" else render_value(next(values, None)),
+        message,
+    )
 
 
 AUTHENTICATION_NAMES = frozenset(
@@ -86,15 +114,7 @@ class ConnectionLogger(logging.Logger):
     def handle(self, record: logging.LogRecord) -> None:
         if self.target.disabled:
             return
-        message = str(record.msg)
-        if (
-            record.msg == "= connection is %s"
-            and isinstance(record.args, tuple)
-            and len(record.args) == 1
-            and isinstance(record.args[0], str)
-            and record.args[0] in State.__members__
-        ):
-            message = record.msg % record.args
+        message = render_message(record)
         if record.exc_info and record.exc_info[0]:
             message += " [" + record.exc_info[0].__name__ + "]"
         safe_record = logging.LogRecord(

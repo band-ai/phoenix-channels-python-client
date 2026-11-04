@@ -91,7 +91,7 @@ async def test_a_crashed_channel_rejoins_on_the_live_socket(
         assert (await expect_message(received)).event == EVENT
         assert reconnects.count == 0
 
-    assert "Recovered channel for topic %s" in caplog.text
+    assert "Recovered channel for topic <omitted>" in caplog.text
 
 
 @each_protocol
@@ -178,7 +178,7 @@ async def test_a_rejected_channel_rejoin_loses_the_topic(
         lost.only_error()
         assert TOPIC not in client.topic_subscriptions.copy()
         assert joins(phoenix_server) == REJOINED_ONCE
-    assert "Lost topic %s" in caplog.text
+    assert "Lost topic <omitted>" in caplog.text
 
 
 @each_protocol

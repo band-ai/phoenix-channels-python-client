@@ -838,8 +838,9 @@ class TopicRuntimeMixin:
 
     def _validate_join_hook(self, topic: TopicSubscription) -> None:
         hook = topic.on_join_response
-        if inspect.iscoroutinefunction(hook) or inspect.iscoroutinefunction(
-            hook.__call__ if callable(hook) else None
+        if hook is not None and (
+            inspect.iscoroutinefunction(hook)
+            or inspect.iscoroutinefunction(type(hook).__call__)
         ):
             raise ChannelError("on_join_response must be synchronous")
 

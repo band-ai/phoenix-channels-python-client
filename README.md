@@ -648,7 +648,9 @@ Expiry or heartbeat send failure force-closes that socket; the supervisor handle
 ## Logging
 
 The library uses loggers under `phoenix_channels_python_client`. Configure
-logging in your application; importing the package does not configure it:
+logging in your application; importing the package does not configure it.
+Connection log lines show `<omitted>` in place of values that may carry personal
+data (see [Authentication and diagnostic safety](#authentication-and-diagnostic-safety)):
 
 ```python
 import logging
@@ -703,10 +705,12 @@ exception objects, or socket metadata. `client.redact_diagnostic(text)` applies
 the credential policy to transport errors a caller needs to retain. Caller-visible
 errors may still contain personal data and should not be logged outside this policy.
 
-Connection diagnostics omit dynamic strings and transport payloads, including URLs,
-headers, frame bodies, user/topic identities, and untrusted server error details.
-Logs retain static lifecycle descriptions, native connection states,
-and exception types. Application data and caller-visible errors are not changed;
+Connection diagnostics omit dynamic values and transport payloads, including URLs,
+headers, frame bodies, user/topic identities, numbers, and untrusted server error
+details. Each omitted value appears as `<omitted>`, for example
+`No handler found for event <omitted> on topic <omitted>`. Logs retain static
+lifecycle descriptions, enum values such as connection states, booleans, and
+exception types. Application data and caller-visible errors are not changed;
 applications remain responsible for logs outside this connection-owned boundary.
 
 ---

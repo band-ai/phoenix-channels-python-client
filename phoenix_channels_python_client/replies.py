@@ -20,13 +20,11 @@ def reply_from_message(message: Message, *, binary_status: str | None = None) ->
     if binary_status is not None:
         if type(message.payload) is not bytes:
             raise TypeError("Binary reply requires a bytes payload")
-        status, response = binary_status, message.payload
-    else:
-        payload = message.payload
-        if not isinstance(payload, dict):
-            raise TypeError("Text reply requires a response envelope")
-        status = payload.get("status")
-        response = payload.get("response")
-        if not isinstance(status, str) or not isinstance(response, dict):
-            raise TypeError("Reply must contain a string status and a response map")
+        return Reply(status=binary_status, response=message.payload)
+    payload = message.payload
+    if not isinstance(payload, dict):
+        raise TypeError("Text reply requires a response envelope")
+    status, response = payload.get("status"), payload.get("response")
+    if not isinstance(status, str) or not isinstance(response, dict):
+        raise TypeError("Reply must contain a string status and a response map")
     return Reply(status=status, response=response)
