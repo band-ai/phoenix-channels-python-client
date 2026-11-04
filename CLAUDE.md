@@ -67,3 +67,24 @@ uv run pre-commit run --all-files
 
 - **Durable Logging:** Feel free to add high-quality, meaningful logs that not only help isolate the current bug but remain valuable and maintainable for future debugging.
 - **Verify, Prototype & Validate:** Verify everything. Prototype solutions, test hypotheses actively, and validate all behaviors before drawing conclusions.
+
+## Skills
+
+Project rules live in this file. Skills add task-specific guidance.
+Skills are maintained in `.claude/skills/` and exposed through `.agents/skills/`
+by a relative symlink. `AGENTS.md` links to this file so supported agent hosts
+share the same project rules. Invoke a skill with `/name` in Claude Code or
+`$name` in Codex; hosts may also select relevant skills from their descriptions.
+
+| Skill | Use |
+| --- | --- |
+| [phoenix-plan](.claude/skills/phoenix-plan/SKILL.md) | Investigate and review a ticket plan before implementation. |
+| [phoenix-python-conventions](.claude/skills/phoenix-python-conventions/SKILL.md) | Write or review Python source, logging, and error handling. |
+| [phoenix-python-test-conventions](.claude/skills/phoenix-python-test-conventions/SKILL.md) | Write or assess tests, coverage, peers, and synchronization. |
+| [phoenix-code-review](.claude/skills/phoenix-code-review/SKILL.md) | Run the six-angle review when explicitly requested. |
+| [phoenix-here-is-a-review](.claude/skills/phoenix-here-is-a-review/SKILL.md) | Verify and address supplied review feedback. |
+| [phoenix-pr-triage](.claude/skills/phoenix-pr-triage/SKILL.md) | Assess a PR quickly without changing code or publishing. |
+| [phoenix-ci-triage](.claude/skills/phoenix-ci-triage/SKILL.md) | Diagnose failing GitHub Actions checks. |
+| [phoenix-investigate-test-error](.claude/skills/phoenix-investigate-test-error/SKILL.md) | Investigate a failing or flaky test with an unclear cause. |
+| [phoenix-linear-create-branch](.claude/skills/phoenix-linear-create-branch/SKILL.md) | Create a branch for an identified Linear ticket. |
+| [phoenix-dependabot-triage](.claude/skills/phoenix-dependabot-triage/SKILL.md) | Assess Dependabot updates and validate authorized changes. |
