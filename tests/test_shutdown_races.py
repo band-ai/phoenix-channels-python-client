@@ -14,6 +14,7 @@ from phoenix_channels_python_client.exceptions import SocketError
 from phoenix_channels_python_client.messages import Message
 from phoenix_channels_python_client.protocol import ProtocolVersion
 from tests.fake_server import FakePhoenixServer
+from tests.scheduling import TaskLifecycleGate
 from tests.support import (
     ASYNC_TIMEOUT_S,
     FAST_RECONNECT,
@@ -290,10 +291,12 @@ async def test_reentering_during_a_shutdown_raises(
             await phoenix_server.close_all_clients(code=CloseCode.NORMAL_CLOSURE)
             assert await wait_for_condition(lambda: client.state is ClientState.CLOSED)
 
-            stop = asyncio.create_task(client.shutdown(STOP_REASON))
-            await asyncio.wait_for(held.cancelled.wait(), ASYNC_TIMEOUT_S)
-            with pytest.raises(SocketError):
-                await asyncio.wait_for(client.__aenter__(), ASYNC_TIMEOUT_S)
+            gate = TaskLifecycleGate(Client._shutdown.__code__, hold_start=True)
+            with gate.installed():
+                stop = asyncio.create_task(client.shutdown(STOP_REASON))
+                await asyncio.wait_for(gate.started.wait(), ASYNC_TIMEOUT_S)
+                with pytest.raises(SocketError, match="already running"):
+                    await asyncio.wait_for(client.__aenter__(), ASYNC_TIMEOUT_S)
 
         await asyncio.wait_for(stop, ASYNC_TIMEOUT_S)
 
