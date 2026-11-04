@@ -1,4 +1,4 @@
-"""Join installation rejects invalid hooks and known pre-installation loss."""
+"""Join installation validates hooks and precedes application delivery."""
 
 from __future__ import annotations
 
@@ -11,9 +11,8 @@ from typing import Any, cast
 import pytest
 
 from phoenix_channels_python_client import JoinResponseCallback
-from phoenix_channels_python_client.exceptions import ChannelError, SocketError
+from phoenix_channels_python_client.exceptions import ChannelError
 from phoenix_channels_python_client.messages import Message
-from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer, ReplyStatus
 from tests.join_hooks import AsyncInstaller
 from tests.join_support import (
@@ -22,13 +21,14 @@ from tests.join_support import (
     deadline,
     pending_subscribe,
     push,
-    reply,
 )
 from tests.support import (
     FAST_RECONNECT,
     OTHER_TOPIC,
     TOPIC,
     each_protocol,
+    is_joined,
+    join_channel,
     make_client,
 )
 
@@ -67,9 +67,7 @@ class TestJoinInstallation:
             make_client(phoenix_server, on_topic_lost=on_lost) as client,
         ):
             with pytest.raises(ChannelError) as caught:
-                await client.subscribe_to_topic(
-                    TOPIC, on_join_response=throwing_hook(error)
-                )
+                await join_channel(client, TOPIC, on_join_response=throwing_hook(error))
             assert caught.value.__cause__ is error
             assert caplog.record_tuples == [
                 (
@@ -78,10 +76,10 @@ class TestJoinInstallation:
                     f"Join response installation failed [{type(error).__name__}]",
                 )
             ]
-            assert TOPIC not in client.get_current_subscriptions()
+            assert TOPIC not in client.topic_subscriptions.copy()
             probe = JoinProbe(client)
-            await client.subscribe_to_topic(
-                TOPIC, probe.receive, on_join_response=probe.install
+            await join_channel(
+                client, TOPIC, probe.receive, on_join_response=probe.install
             )
             await phoenix_server.joined.get()
             _, request = await phoenix_server.joined.get()
@@ -101,11 +99,11 @@ class TestJoinInstallation:
         hook = asynchronous
         async with deadline(), make_client(phoenix_server) as client:
             with pytest.raises(ChannelError):
-                await client.subscribe_to_topic(
-                    TOPIC, on_join_response=cast("JoinResponseCallback", hook)
+                await join_channel(
+                    client, TOPIC, on_join_response=cast("JoinResponseCallback", hook)
                 )
             assert not ran.is_set()
-            assert not client.get_current_subscriptions()
+            assert not client.topic_subscriptions.copy()
             assert len(phoenix_server.join_topics) == 0
 
     async def test_wrapped_coroutine_is_closed_without_running(
@@ -126,12 +124,14 @@ class TestJoinInstallation:
         try:
             async with deadline(), make_client(phoenix_server) as client:
                 with pytest.raises(ChannelError):
-                    await client.subscribe_to_topic(
-                        TOPIC, on_join_response=cast("JoinResponseCallback", hook)
+                    await join_channel(
+                        client,
+                        TOPIC,
+                        on_join_response=cast("JoinResponseCallback", hook),
                     )
                 assert inspect.getcoroutinestate(result) == inspect.CORO_CLOSED
                 assert not ran.is_set()
-                assert not client.get_current_subscriptions()
+                assert not client.topic_subscriptions.copy()
                 assert len(phoenix_server.join_topics) == 1
         finally:
             result.close()
@@ -142,11 +142,11 @@ class TestJoinInstallation:
         hook = AsyncInstaller()
         async with deadline(), make_client(phoenix_server) as client:
             with pytest.raises(ChannelError):
-                await client.subscribe_to_topic(
-                    TOPIC, on_join_response=cast("JoinResponseCallback", hook)
+                await join_channel(
+                    client, TOPIC, on_join_response=cast("JoinResponseCallback", hook)
                 )
             assert not hook.ran.is_set()
-            assert not client.get_current_subscriptions()
+            assert not client.topic_subscriptions.copy()
             assert phoenix_server.join_topics == []
 
     async def test_invalid_return_fails_installation(
@@ -155,8 +155,8 @@ class TestJoinInstallation:
         hook = cast("JoinResponseCallback", lambda _: "invalid return")
         async with deadline(), make_client(phoenix_server) as client:
             with pytest.raises(ChannelError):
-                await client.subscribe_to_topic(TOPIC, on_join_response=hook)
-            assert not client.get_current_subscriptions()
+                await join_channel(client, TOPIC, on_join_response=hook)
+            assert not client.topic_subscriptions.copy()
 
     async def test_returned_future_is_not_canceled(
         self, phoenix_server: FakePhoenixServer
@@ -165,9 +165,9 @@ class TestJoinInstallation:
         hook = cast("JoinResponseCallback", lambda _: future)
         async with deadline(), make_client(phoenix_server) as client:
             with pytest.raises(ChannelError):
-                await client.subscribe_to_topic(TOPIC, on_join_response=hook)
+                await join_channel(client, TOPIC, on_join_response=hook)
             assert not future.cancelled()
-            assert not client.get_current_subscriptions()
+            assert not client.topic_subscriptions.copy()
 
     async def test_returned_task_remains_owned_until_its_owner_releases_it(
         self, phoenix_server: FakePhoenixServer
@@ -186,9 +186,9 @@ class TestJoinInstallation:
             async with deadline(), make_client(phoenix_server) as client:
                 await started.wait()
                 with pytest.raises(ChannelError):
-                    await client.subscribe_to_topic(TOPIC, on_join_response=hook)
+                    await join_channel(client, TOPIC, on_join_response=hook)
                 assert not task.done()
-                assert not client.get_current_subscriptions()
+                assert not client.topic_subscriptions.copy()
                 release.set()
                 assert await task is result
         finally:
@@ -218,15 +218,15 @@ class TestJoinInstallation:
                 phoenix_server, on_topic_lost=on_lost, reconnect_policy=FAST_RECONNECT
             ) as client,
         ):
-            await client.subscribe_to_topic(TOPIC, on_join_response=install)
+            await join_channel(client, TOPIC, on_join_response=install)
             await phoenix_server.close_all_clients()
             error = await lost.get()
             assert isinstance(error, ChannelError)
             assert isinstance(error.__cause__, ChannelError)
             assert error.__cause__.__cause__ is failure
-            assert not client.get_current_subscriptions()
+            assert not client.topic_subscriptions.copy()
             probe = JoinProbe(client)
-            await client.subscribe_to_topic(TOPIC, on_join_response=probe.install)
+            await join_channel(client, TOPIC, on_join_response=probe.install)
             assert installed == [{}]
             assert lost.empty()
 
@@ -253,34 +253,34 @@ class TestJoinInstallation:
                 phoenix_server, on_topic_lost=on_lost, reconnect_policy=FAST_RECONNECT
             ) as client,
         ):
-            await client.subscribe_to_topic(TOPIC, on_join_response=install)
+            await join_channel(client, TOPIC, on_join_response=install)
             await phoenix_server.crash_channel(TOPIC)
             error = await lost.get()
             assert isinstance(error, ChannelError)
             assert isinstance(error.__cause__, ChannelError)
             assert error.__cause__.__cause__ is failure
-            assert not client.get_current_subscriptions()
+            assert not client.topic_subscriptions.copy()
             probe = JoinProbe(client)
-            await client.subscribe_to_topic(TOPIC, on_join_response=probe.install)
+            await join_channel(client, TOPIC, on_join_response=probe.install)
             assert installed == [{}]
             assert lost.empty()
 
-    async def test_preinstall_queue_at_capacity_installs(
+    async def test_join_ack_installs_outside_a_saturated_application_queue(
         self, phoenix_server: FakePhoenixServer
     ) -> None:
-        capacity = 2
+        capacity, burst = 2, 4
         barrier = asyncio.Event()
         gate = ProcessorGate(hold_start=True)
         async with (
             deadline(),
             make_client(phoenix_server, max_topic_queue_size=capacity) as client,
         ):
-            # This independent topic proves the router has consumed the burst.
+
             async def routed(message: Message) -> None:
                 del message
                 barrier.set()
 
-            await client.subscribe_to_topic(OTHER_TOPIC, routed)
+            await join_channel(client, OTHER_TOPIC, routed)
             _, independent = await phoenix_server.joined.get()
             phoenix_server.defer_join_targets.add(
                 (phoenix_server.next_client_id - 1, TOPIC)
@@ -288,113 +288,26 @@ class TestJoinInstallation:
             probe = JoinProbe(client)
             with gate.installed():
                 async with pending_subscribe(client, probe) as admission:
-                    _, request = await phoenix_server.deferred_joins.get()
+                    peer, request = await phoenix_server.deferred_joins.get()
                     await gate.started.wait()
-                    for _ in range(capacity - 1):
-                        await push(phoenix_server, request)
-                    await reply(phoenix_server, request)
-                    await push(phoenix_server, independent)
-                    await barrier.wait()
-                    gate.start.set()
+                    await phoenix_server.release_join(peer, request)
+                    assert await probe.installed.get() == {}
                     await admission
-                    await push(phoenix_server, request, payload={"after": True})
-                    await probe.delivered.get()
-                    assert probe.order == [None, {"after": True}]
-
-    async def test_preinstall_overflow_fails_closed(
-        self, phoenix_server: FakePhoenixServer
-    ) -> None:
-        capacity = 2
-        barrier = asyncio.Event()
-        gate = ProcessorGate(hold_start=True)
-        async with (
-            deadline(),
-            make_client(phoenix_server, max_topic_queue_size=capacity) as client,
-        ):
-            # This independent topic proves the router has consumed the burst.
-            async def routed(message: Message) -> None:
-                del message
-                barrier.set()
-
-            await client.subscribe_to_topic(OTHER_TOPIC, routed)
-            _, independent = await phoenix_server.joined.get()
-            phoenix_server.defer_join_targets.add(
-                (phoenix_server.next_client_id - 1, TOPIC)
-            )
-            probe = JoinProbe(client)
-            with gate.installed():
-                async with pending_subscribe(client, probe) as admission:
-                    _, request = await phoenix_server.deferred_joins.get()
-                    await gate.started.wait()
-                    for _ in range(capacity):
-                        await push(phoenix_server, request)
-                    await reply(phoenix_server, request)
+                    for number in range(burst):
+                        await push(phoenix_server, request, payload={"n": number})
                     await push(phoenix_server, independent)
                     await barrier.wait()
+                    owner = client.topic_subscriptions[TOPIC]
+                    assert owner.dropped_message_count == burst - capacity
+                    assert is_joined(client, TOPIC)
                     gate.start.set()
-                    with pytest.raises(SocketError, match="Messages lost"):
-                        await admission
-                    assert probe.order == []
-                    assert not client.is_topic_joined(TOPIC)
+                    received = [await probe.delivered.get() for _ in range(capacity)]
+            assert [message.payload for message in received] == [{"n": 2}, {"n": 3}]
+            assert probe.order == [{}, {"n": 2}, {"n": 3}]
 
-    async def test_established_overflow_retries_with_a_new_snapshot(
+    async def test_rejoin_snapshot_installs_while_its_application_processor_is_held(
         self, phoenix_server: FakePhoenixServer
     ) -> None:
-        capacity = 2
-        barrier: asyncio.Queue[None] = asyncio.Queue()
-        gate = ProcessorGate(hold_start=True)
-
-        async def routed(message: Message) -> None:
-            del message
-            await barrier.put(None)
-
-        async with (
-            deadline(),
-            make_client(
-                phoenix_server,
-                reconnect_policy=FAST_RECONNECT,
-                max_topic_queue_size=capacity,
-            ) as client,
-        ):
-            probe = JoinProbe(client)
-            await client.subscribe_to_topic(
-                TOPIC, probe.receive, on_join_response=probe.install
-            )
-            await client.subscribe_to_topic(OTHER_TOPIC, routed)
-            await phoenix_server.joined.get()
-            _, independent = await phoenix_server.joined.get()
-            await probe.installed.get()
-            client_id = phoenix_server.next_client_id - 1
-            phoenix_server.defer_join_targets.add((client_id, TOPIC))
-            with gate.installed():
-                await phoenix_server.crash_channel(TOPIC)
-                _, request = await phoenix_server.deferred_joins.get()
-                await gate.started.wait()
-                for _ in range(capacity):
-                    await push(phoenix_server, request)
-                await reply(phoenix_server, request)
-                await push(phoenix_server, independent)
-                await barrier.get()
-                phoenix_server.defer_join_targets.discard((client_id, TOPIC))
-                phoenix_server.join_payloads[TOPIC] = {
-                    "status": ReplyStatus.OK,
-                    "response": {"fresh": True},
-                }
-                gate.start.set()
-                assert await probe.installed.get() == {"fresh": True}
-            assert probe.order == [{}, {"fresh": True}]
-            # Actual post-recovery delivery, rather than a task-state assertion.
-            _, request = await phoenix_server.joined.get()
-            _, request = await phoenix_server.joined.get()
-            await push(phoenix_server, request)
-            await probe.delivered.get()
-
-    @pytest.mark.clock
-    async def test_dropped_success_reply_settles_at_the_controlled_join_deadline(
-        self, clock: Clock, clocked_peer: FakePhoenixServer
-    ) -> None:
-        capacity = 2
-        join_deadline = 10.0
         barrier = asyncio.Event()
         gate = ProcessorGate(hold_start=True)
 
@@ -402,27 +315,36 @@ class TestJoinInstallation:
             del message
             barrier.set()
 
-        async with make_client(
-            clocked_peer, join_timeout_s=join_deadline, max_topic_queue_size=capacity
-        ) as client:
-            await client.subscribe_to_topic(OTHER_TOPIC, routed)
-            _, independent = await clocked_peer.joined.get()
-            clocked_peer.defer_join_targets.add(
-                (clocked_peer.next_client_id - 1, TOPIC)
-            )
+        async with (
+            deadline(),
+            make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client,
+        ):
             probe = JoinProbe(client)
+            channel = await join_channel(
+                client, TOPIC, probe.receive, on_join_response=probe.install
+            )
+            await phoenix_server.joined.get()
+            await probe.installed.get()
+            await join_channel(client, OTHER_TOPIC, routed)
+            _, independent = await phoenix_server.joined.get()
+            phoenix_server.defer_join_targets.add(
+                (phoenix_server.next_client_id - 1, TOPIC)
+            )
+            phoenix_server.join_payloads[TOPIC] = {
+                "status": ReplyStatus.OK,
+                "response": {"fresh": True},
+            }
             with gate.installed():
-                async with pending_subscribe(client, probe) as admission:
-                    _, request = await clocked_peer.deferred_joins.get()
-                    await gate.started.wait()
-                    await reply(clocked_peer, request)
-                    for _ in range(capacity):
-                        await push(clocked_peer, request)
-                    await push(clocked_peer, independent)
-                    await barrier.wait()
-                    gate.start.set()
-                    await clock.advance(join_deadline)
-                    with pytest.raises(ChannelError, match="Timed out"):
-                        await admission
-                assert probe.order == []
-                assert TOPIC not in client.get_current_subscriptions()
+                await phoenix_server.crash_channel(TOPIC)
+                peer, request = await phoenix_server.deferred_joins.get()
+                await gate.started.wait()
+                await phoenix_server.release_join(peer, request)
+                assert await probe.installed.get() == {"fresh": True}
+                await push(phoenix_server, request, payload={"after": True})
+                await push(phoenix_server, independent)
+                await barrier.wait()
+                assert channel.joined
+                assert probe.order == [{}, {"fresh": True}]
+                gate.start.set()
+                await probe.delivered.get()
+            assert probe.order == [{}, {"fresh": True}, {"after": True}]

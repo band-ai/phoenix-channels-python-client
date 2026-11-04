@@ -36,6 +36,7 @@ from tests.support import (
     ReconnectCounter,
     RecordingDecider,
     derive_policy,
+    join_channel,
     joins,
     make_client,
     reconnect,
@@ -455,7 +456,7 @@ async def test_each_socket_is_decided_before_its_rejoin(
     async with make_client(
         phoenix_server, reconnect_decider=deciding, on_reconnect=reconnects
     ) as client:
-        await client.subscribe_to_topic(TOPIC)
+        await join_channel(client, TOPIC)
         await reconnect(phoenix_server, client)
 
     assert connected == [(1, 0, 0), (2, SUBSCRIBED, 0)]
@@ -470,7 +471,7 @@ async def test_a_refused_socket_is_closed_without_a_rejoin(
     decider = RecordingDecider()
     stop = terminal() if stop_with_error else STOP
     async with make_client(phoenix_server, reconnect_decider=decider) as client:
-        await client.subscribe_to_topic(TOPIC)
+        await join_channel(client, TOPIC)
         # What a consumer does when the session ended during the handshake.
         decider.answers[Connected] = stop
         await phoenix_server.close_all_clients(code=CloseCode.GOING_AWAY)

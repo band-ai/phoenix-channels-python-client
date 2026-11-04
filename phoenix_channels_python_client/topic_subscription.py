@@ -7,18 +7,38 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from websockets import ClientConnection
+
 from phoenix_channels_python_client.client_types import JoinResponseCallback
 from phoenix_channels_python_client.messages import (
     CLIENT_LIFECYCLE_EVENTS,
     ChannelEvent,
     Message,
 )
+from phoenix_channels_python_client.send_session import SessionSends
 
 
-class TopicProcessingState(StrEnum):
-    WAITING_FOR_JOIN = "waiting_for_join"
-    PROCESSING_LEAVE = "processing_leave"
-    NORMAL_PROCESSING = "normal_processing"
+class ChannelState(StrEnum):
+    CREATED = "created"
+    JOINING = "joining"
+    JOINED = "joined"
+    REJOINING = "rejoining"
+    LEFT = "left"
+
+
+class ChannelCause(StrEnum):
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    CONFIGURATION = "configuration"
+    CRASH = "crash"
+    CLOSE = "close"
+    TRANSPORT = "transport"
+    TIMEOUT = "timeout"
+    LEAVE = "leave"
+    STOP = "stop"
+
+
+JoinParams = dict[str, Any] | Callable[[], dict[str, Any]] | None
 
 
 @dataclass()
@@ -30,8 +50,19 @@ class TopicSubscription:
     queue: Queue[Message]
     join_ref: str
     process_topic_messages_task: Task[None] | None
-    current_join_ready: Future[None] = field(default_factory=asyncio.Future)
-    unsubscribe_completed: Future[None] = field(default_factory=asyncio.Future)
+    current_join_ready_future: Future[None] | None = field(default=None, init=False)
+    unsubscribe_completed_future: Future[None] | None = field(default=None, init=False)
+    state: ChannelState = ChannelState.CREATED
+    cause: ChannelCause | None = None
+    params: JoinParams = None
+    connection: ClientConnection | None = None
+    join_submitted: bool = False
+    terminal_received: asyncio.Event = field(default_factory=asyncio.Event)
+    leave_task: Task[None] | None = None
+    send_outcomes: set[Future[None]] = field(default_factory=set)
+    send_session: SessionSends | None = None
+    cleanup_done: bool = False
+    loss_reported: bool = False
     leave_requested: asyncio.Event = field(default_factory=asyncio.Event)
     event_handlers: dict[ChannelEvent, Callable[[dict[str, Any]], Awaitable[None]]] = (
         field(default_factory=dict)
@@ -39,7 +70,6 @@ class TopicSubscription:
     on_join_response: JoinResponseCallback | None = None
     blocks_reconnect: bool = True
     established: bool = False
-    join_drop_baseline: int = 0
     leave_ref: str | None = None
     conn_generation: int = 0
     dropped_message_count: int = 0
@@ -49,13 +79,31 @@ class TopicSubscription:
     # Rejoins the channel after a crash, while the socket stays up.
     recovery_task: Task[None] | None = None
 
+    @property
+    def current_join_ready(self) -> Future[None]:
+        if self.current_join_ready_future is None:
+            self.current_join_ready_future = asyncio.get_running_loop().create_future()
+        return self.current_join_ready_future
+
+    @current_join_ready.setter
+    def current_join_ready(self, value: Future[None]) -> None:
+        self.current_join_ready_future = value
+
+    @property
+    def unsubscribe_completed(self) -> Future[None]:
+        if self.unsubscribe_completed_future is None:
+            self.unsubscribe_completed_future = (
+                asyncio.get_running_loop().create_future()
+            )
+        return self.unsubscribe_completed_future
+
     def add_event_handler(
         self, event: ChannelEvent, handler: Callable[[dict[str, Any]], Awaitable[None]]
     ) -> None:
         if event in CLIENT_LIFECYCLE_EVENTS:
             raise ValueError(
                 f"{event} is handled by the client; use on_topic_lost and "
-                "is_topic_joined instead"
+                "channel.joined instead"
             )
         self.event_handlers[event] = handler
 

@@ -15,6 +15,7 @@ from websockets.frames import CloseCode
 from websockets.http11 import Response
 from websockets.protocol import State
 
+from phoenix_channels_python_client.channel import Channel, MessageHandler
 from phoenix_channels_python_client.client import Client
 from phoenix_channels_python_client.client_types import (
     PROCEED,
@@ -22,6 +23,7 @@ from phoenix_channels_python_client.client_types import (
     ConnectFailed,
     Connecting,
     Disconnected,
+    JoinResponseCallback,
     ReconnectDecision,
     ReconnectEvent,
     ReconnectPolicy,
@@ -29,6 +31,7 @@ from phoenix_channels_python_client.client_types import (
 from phoenix_channels_python_client.exceptions import ChannelError
 from phoenix_channels_python_client.messages import Message
 from phoenix_channels_python_client.protocol import ProtocolVersion
+from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from tests.fake_server import FakePhoenixServer
 
 API_KEY = "test_key"
@@ -136,6 +139,34 @@ def make_client(
     return Client(server.url_for(path), protocol_version=server.protocol, **options)
 
 
+def channel_for(client: TopicRuntimeMixin, topic: str = TOPIC) -> Channel:
+    """Reach an existing owner's handle in internal lifecycle regressions."""
+    return Channel(client, client.topic_subscriptions[topic])
+
+
+def is_joined(client: TopicRuntimeMixin, topic: str = TOPIC) -> bool:
+    return topic in client.topic_subscriptions and channel_for(client, topic).joined
+
+
+async def join_channel(
+    client: TopicRuntimeMixin,
+    topic: str = TOPIC,
+    handler: MessageHandler | None = None,
+    *,
+    on_join_response: JoinResponseCallback | None = None,
+    blocks_reconnect: bool = True,
+) -> Channel:
+    channel = client.channel(
+        topic,
+        on_join_response=on_join_response,
+        blocks_reconnect=blocks_reconnect,
+    )
+    if handler is not None:
+        channel.on_any(handler)
+    await channel.join()
+    return channel
+
+
 async def wait_for_condition(
     condition: Callable[[], bool],
     timeout_s: float = ASYNC_TIMEOUT_S,
@@ -192,14 +223,13 @@ class TopicRecorder:
     def __init__(self, client: Client, topic: str = TOPIC) -> None:
         self.client = client
         self.topic = topic
+        self.channel = client.channel(topic)
         self.messages: asyncio.Queue[Message] = asyncio.Queue()
         self.event_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
         self.deliveries: list[tuple[dict[str, object], bool]] = []
 
     async def receive(self, message: Message) -> None:
-        self.deliveries.append(
-            (message.payload, self.client.is_topic_joined(self.topic))
-        )
+        self.deliveries.append((message.payload, self.channel.joined))
         self.messages.put_nowait(message)
 
 
@@ -207,8 +237,9 @@ async def subscribe_with_handlers(
     client: Client, topic: str = TOPIC, event: str = EVENT
 ) -> TopicRecorder:
     recorder = TopicRecorder(client, topic)
-    await client.subscribe_to_topic(topic, recorder.receive)
-    client.add_event_handler(topic, event, recorder.event_payloads.put)
+    recorder.channel.on_any(recorder.receive)
+    recorder.channel.on(event, recorder.event_payloads.put)
+    await recorder.channel.join()
     return recorder
 
 
@@ -287,7 +318,7 @@ async def crash_with_rejoin_in_flight(server: FakePhoenixServer, client: Client)
     server.unanswered_join_ids.add(client_id)
     await server.crash_channel(TOPIC)
     assert await wait_for_condition(lambda: joins(server) == REJOINED_ONCE)
-    assert not client.is_topic_joined(TOPIC)
+    assert not is_joined(client, TOPIC)
     return client_id
 
 
@@ -362,7 +393,7 @@ def rejoin_settled(client: Client, topic: str = TOPIC) -> Callable[[], bool]:
     """True once the topic's current join has an outcome, or the topic is gone."""
 
     def settled() -> bool:
-        subscription = client.get_current_subscriptions().get(topic)
+        subscription = client.topic_subscriptions.copy().get(topic)
         return subscription is None or (
             subscription.conn_generation == client.conn_generation
             and subscription.current_join_ready.done()

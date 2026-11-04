@@ -4,7 +4,7 @@ import asyncio
 import logging
 import math
 from types import TracebackType
-from typing import Self, cast
+from typing import Any, Self, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from websockets import ClientConnection
@@ -30,13 +30,14 @@ from phoenix_channels_python_client.diagnostics import (
     ConnectionLogger,
     diagnostic_secrets,
 )
-from phoenix_channels_python_client.exceptions import SocketError
+from phoenix_channels_python_client.exceptions import ChannelError, SocketError
 from phoenix_channels_python_client.protocol import (
     DEFAULT_PROTOCOL_VERSION,
     ProtocolVersion,
 )
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.reconnect_controller import ReconnectControllerMixin
+from phoenix_channels_python_client.send_session import SessionSends
 from phoenix_channels_python_client.supervisor import SupervisorMixin
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
@@ -147,10 +148,10 @@ class Client(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
 
         _validate_heartbeat_threshold(heartbeat_interval_s, heartbeat_dead_threshold_s)
 
-        if join_timeout_s <= 0:
-            raise ValueError("join_timeout_s must be > 0")
-        if leave_timeout_s <= 0:
-            raise ValueError("leave_timeout_s must be > 0")
+        if not math.isfinite(join_timeout_s) or join_timeout_s <= 0:
+            raise ValueError("join_timeout_s must be finite and > 0")
+        if not math.isfinite(leave_timeout_s) or leave_timeout_s <= 0:
+            raise ValueError("leave_timeout_s must be finite and > 0")
         if max_topic_queue_size <= 0:
             raise ValueError("max_topic_queue_size must be > 0")
         if callback_drain_timeout_s <= 0:
@@ -177,6 +178,8 @@ class Client(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
 
         self.connection: ClientConnection | None = None
         self.topic_subscriptions: dict[str, TopicSubscription] = {}
+        self.send_session: SessionSends | None = None
+        self.shutdown_initiator: asyncio.Task[Any] | None = None
         self.ref_counter = 0
         self.state = ClientState.CLOSED
         self.topics_lock = asyncio.Lock()
@@ -260,6 +263,7 @@ class Client(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
         if task is None:
             if self.is_fully_closed:
                 return
+            self.shutdown_initiator = asyncio.current_task()
             self._request_stop()
             task = self.shutdown_task = asyncio.create_task(self._shutdown(reason))
         # Every caller waits for the same shutdown, and one caller's
@@ -272,25 +276,33 @@ class Client(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
         if self.state not in (ClientState.SHUTTING_DOWN, ClientState.CLOSED):
             self._transition_state(ClientState.SHUTTING_DOWN)
         self.shutdown_event.set()
+        self._retire_channels(ChannelError("Client is shutting down"))
 
     async def _shutdown(self, reason: str) -> None:
         self.logger.info("Event loop shutting down! reason=%s", reason)
 
-        await self._unsubscribe_all()
-        # Includes on_topic_lost callbacks still running for topics already gone.
-        await cancel_and_wait(*self.lifecycle_tasks)
-        if self.cleanup_tasks:
-            await asyncio.gather(*self.cleanup_tasks)
+        # Closing first unblocks admitted sends before channel cleanup waits for them.
         await self._stop_supervisor()
         await self._cleanup_connection()
+        await self._unsubscribe_all()
+        # Includes on_topic_lost callbacks still running for topics already gone.
+        await cancel_and_wait(
+            *(
+                task
+                for task in self.lifecycle_tasks
+                if task is not self.shutdown_initiator
+            )
+        )
+        if self.cleanup_tasks:
+            await asyncio.gather(*self.cleanup_tasks)
         self.connected_event.clear()
         self._transition_state(ClientState.CLOSED)
 
     async def _unsubscribe_all(self) -> None:
-        topics = list(self.topic_subscriptions)
+        topics = list(self.topic_subscriptions.values())
         results = await asyncio.gather(
             *(
-                self.unsubscribe_from_topic(topic, allow_disconnected=True)
+                self._leave_channel(topic, initiator=self.shutdown_initiator)
                 for topic in topics
             ),
             return_exceptions=True,
@@ -298,9 +310,9 @@ class Client(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
         for topic, result in zip(topics, results, strict=True):
             if isinstance(result, Exception):
                 self.logger.warning(
-                    "Failed to unsubscribe from topic %s during shutdown: %s",
-                    topic,
-                    result,
+                    "Channel cleanup failed for %s [%s]",
+                    topic.name,
+                    type(result).__name__,
                 )
 
     async def _stop_supervisor(self) -> None:

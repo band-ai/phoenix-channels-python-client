@@ -10,7 +10,10 @@ import pytest
 from phoenix_channels_python_client.client_types import ClientState
 from phoenix_channels_python_client.exceptions import ChannelError, SocketError
 from phoenix_channels_python_client.messages import Message, SystemEvent
-from phoenix_channels_python_client.topic_subscription import TopicSubscription
+from phoenix_channels_python_client.topic_subscription import (
+    ChannelCause,
+    ChannelState,
+)
 from phoenix_channels_python_client.utils import make_message
 from tests.fake_server import ReplyStatus
 from tests.harness import (
@@ -22,6 +25,8 @@ from tests.support import (
     ASYNC_TIMEOUT_S,
     TOPIC,
     LostTopics,
+    is_joined,
+    join_channel,
     wait_for_condition,
     wait_forever,
 )
@@ -61,7 +66,9 @@ async def test_a_join_error_without_a_reason_fails_the_join() -> None:
 async def test_a_non_reply_while_leaving_leaves_the_leave_pending() -> None:
     topic = make_subscription()
 
-    await TopicRuntimeHarness()._handle_leave_mode(
+    topic.leave_ref = "leave"
+    topic.state = ChannelState.LEFT
+    TopicRuntimeHarness()._handle_channel_control(
         topic, make_message(USER_EVENT, TOPIC, payload={})
     )
 
@@ -69,12 +76,18 @@ async def test_a_non_reply_while_leaving_leaves_the_leave_pending() -> None:
 
 
 async def test_a_failed_leave_reply_fails_the_leave() -> None:
-    topic = make_subscription()
+    runtime = TopicRuntimeHarness()
+    topic = runtime.register(make_subscription())
+    topic.leave_ref = "leave"
+    topic.state = ChannelState.LEFT
     reply = make_message(
-        SystemEvent.reply, TOPIC, payload={"status": ReplyStatus.ERROR}
+        SystemEvent.reply,
+        TOPIC,
+        payload={"status": ReplyStatus.ERROR},
+        ref=topic.leave_ref,
     )
 
-    await TopicRuntimeHarness()._handle_leave_mode(topic, reply)
+    runtime._handle_channel_control(topic, reply)
 
     assert isinstance(topic.unsubscribe_completed.exception(), ChannelError)
 
@@ -91,15 +104,15 @@ async def test_a_connection_lost_before_the_join_is_sent_fails_the_subscribe() -
     runtime = TopicRuntimeHarness()
     # An uncontended lock doesn't yield, so holding it opens the window.
     async with runtime.topics_lock:
-        subscribe = asyncio.create_task(runtime.subscribe_to_topic(TOPIC))
+        subscribe = asyncio.create_task(join_channel(runtime, TOPIC))
         await asyncio.sleep(0)
         assert not subscribe.done()
         runtime.connection = None
 
-    with pytest.raises(SocketError, match="Cannot subscribe"):
+    with pytest.raises(SocketError, match="Cannot join"):
         await asyncio.wait_for(subscribe, ASYNC_TIMEOUT_S)
     assert TOPIC not in runtime.topic_subscriptions
-    assert runtime.fake_handler.sent == []
+    assert runtime.sent_messages == []
 
 
 async def test_a_rejoin_without_a_connection_keeps_the_topic() -> None:
@@ -115,7 +128,6 @@ async def test_a_rejoin_without_a_connection_keeps_the_topic() -> None:
 async def test_a_rejoin_failing_during_shutdown_keeps_the_topic() -> None:
     runtime = TopicRuntimeHarness()
     topic = runtime.register(make_subscription())
-    runtime.fake_handler.raise_on_send = RuntimeError("send fail")
     runtime.shutdown_event.set()
     runtime.state = ClientState.SHUTTING_DOWN
 
@@ -131,7 +143,7 @@ async def test_a_rejoin_skips_a_topic_being_left() -> None:
 
     await runtime._rejoin_topics(generation=2)
 
-    assert runtime.fake_handler.sent == []
+    assert runtime.sent_messages == []
 
 
 async def test_a_rejoin_skips_a_topic_unregistered_while_its_task_stops() -> None:
@@ -152,7 +164,7 @@ async def test_a_rejoin_skips_a_topic_unregistered_while_its_task_stops() -> Non
 
     await runtime._rejoin_topics(generation=2)
 
-    assert runtime.fake_handler.sent == []
+    assert runtime.sent_messages == []
     assert topic.join_ref == DEFAULT_JOIN_REF
     assert topic.process_topic_messages_task is task
 
@@ -164,81 +176,56 @@ async def test_the_processor_exits_for_an_unknown_topic() -> None:
     )
 
 
-async def test_the_processor_skips_an_older_join_and_stops_on_the_leave_reply() -> None:
+async def test_the_processor_skips_an_older_join_and_delivers_the_current_one() -> None:
     runtime = TopicRuntimeHarness()
     topic = runtime.register(make_subscription(join_ref="new"))
-    topic.current_join_ready.set_result(None)
-    topic.leave_requested.set()
-    topic.queue.put_nowait(
-        make_message(
-            SystemEvent.reply,
-            TOPIC,
-            payload={"status": ReplyStatus.ERROR},
-            join_ref="old",
-        )
-    )
-    topic.queue.put_nowait(
-        make_message(
-            SystemEvent.reply, TOPIC, payload={"status": ReplyStatus.OK}, join_ref="new"
-        )
-    )
+    received: asyncio.Queue[Message] = asyncio.Queue()
+    topic.async_callback = received.put
+    runtime._set_subscription_ready(topic)
+    for join_ref in ("old", "new"):
+        topic.queue.put_nowait(make_message(USER_EVENT, TOPIC, join_ref=join_ref))
 
-    await asyncio.wait_for(runtime._process_topic_messages(TOPIC), ASYNC_TIMEOUT_S)
-
-    assert topic.unsubscribe_completed.result() is None
+    processor = asyncio.create_task(runtime._process_topic_messages(TOPIC))
+    try:
+        message = await asyncio.wait_for(received.get(), ASYNC_TIMEOUT_S)
+        assert message.join_ref == "new"
+        assert received.empty()
+    finally:
+        processor.cancel()
+        await asyncio.gather(processor, return_exceptions=True)
 
 
-async def test_a_processor_error_drops_the_topic_and_reports_it_lost(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_processor_queue_failure_retires_the_channel_and_reports_it_lost() -> (
+    None
+):
+    failure = RuntimeError("queue failure")
+
+    class FailedQueue(asyncio.Queue[Message]):
+        async def get(self) -> Message:
+            raise failure
+
     lost = LostTopics()
     runtime = TopicRuntimeHarness(on_topic_lost=lost)
-    topic = runtime.register(make_subscription())
-    failure = RuntimeError("state boom")
-    unregisters = 0
-    unregister = runtime._unregister_topic
-
-    async def count_unregisters(
-        topic_name: str,
-        error: Exception | None = None,
-        *,
-        only: TopicSubscription | None = None,
-    ) -> TopicSubscription | None:
-        nonlocal unregisters
-        unregisters += 1
-        return await unregister(topic_name, error=error, only=only)
-
-    def fail(_: object) -> NoReturn:
-        raise failure
-
-    monkeypatch.setattr(runtime, "_unregister_topic", count_unregisters)
-    monkeypatch.setattr(runtime, "_determine_processing_state", fail)
-    topic.queue.put_nowait(
-        make_message(
-            SystemEvent.reply,
-            TOPIC,
-            payload={"status": ReplyStatus.OK},
-            join_ref=DEFAULT_JOIN_REF,
-        )
-    )
-    # The real processor task, so the loss path's cancel has the task it stops.
+    topic = runtime.register(make_subscription(queue=FailedQueue()))
+    runtime._set_subscription_ready(topic)
     processor = asyncio.create_task(runtime._process_topic_messages(TOPIC))
     topic.process_topic_messages_task = processor
 
     assert await wait_for_condition(lambda: len(lost.lost) == 1)
     await asyncio.wait({processor})
 
-    assert unregisters == 1
     assert TOPIC not in runtime.topic_subscriptions
-    assert topic.current_join_ready.exception() is failure
-    assert lost.lost == [(TOPIC, failure)]
+    error = topic.current_join_ready.exception()
+    assert isinstance(error, ChannelError)
+    assert error.__cause__ is failure
+    assert lost.lost == [(TOPIC, error)]
 
 
 async def test_each_channel_rejoin_attempt_backs_off_further() -> None:
     timed_out_rejoins = 3
     runtime = TopicRuntimeHarness(waits_before_stop=timed_out_rejoins + 1)
     topic = runtime.register(make_subscription(conn_generation=runtime.conn_generation))
-    runtime._mark_channel_errored(topic)
+    runtime._transition_channel(topic, ChannelCause.CRASH, ChannelError("crashed"))
 
     try:
         await asyncio.wait_for(
@@ -246,16 +233,17 @@ async def test_each_channel_rejoin_attempt_backs_off_further() -> None:
             ASYNC_TIMEOUT_S,
         )
     finally:
+        runtime.connection = None
         await runtime._unregister_topic(TOPIC)
 
     # Each unanswered rejoin times out, so every backoff is one attempt further.
     assert runtime.rejoin_backoff_attempts == list(range(timed_out_rejoins + 1))
     # The shutdown during the last backoff stops the rejoin it would have sent.
-    sent = [message.event for message in runtime.fake_handler.sent]
+    sent = [message.event for message in runtime.sent_messages]
     assert sent == [SystemEvent.join] * timed_out_rejoins
 
 
-async def test_a_message_queued_behind_a_close_is_not_delivered() -> None:
+async def test_reader_observed_close_prevents_queued_application_delivery() -> None:
     received: list[str] = []
 
     async def on_message(message: Message) -> None:
@@ -266,15 +254,18 @@ async def test_a_message_queued_behind_a_close_is_not_delivered() -> None:
     topic = runtime.register(make_subscription())
     topic.async_callback = on_message
     runtime._set_subscription_ready(topic)
-    topic.queue.put_nowait(
-        make_message(SystemEvent.close, TOPIC, join_ref=topic.join_ref)
-    )
     topic.queue.put_nowait(make_message(USER_EVENT, TOPIC, join_ref=topic.join_ref))
+    runtime._handle_channel_control(
+        topic,
+        make_message(
+            SystemEvent.close, TOPIC, join_ref=topic.join_ref, ref=topic.join_ref
+        ),
+    )
     processor = asyncio.create_task(runtime._process_topic_messages(TOPIC))
 
     assert await wait_for_condition(lambda: bool(lost.lost))
     assert received == []
-    assert not runtime.is_topic_joined(TOPIC)
+    assert not is_joined(runtime, TOPIC)
     lost.only_error()
 
     processor.cancel()
@@ -291,7 +282,7 @@ async def test_losing_a_replaced_topic_reports_nothing_and_keeps_the_replacement
 
     await runtime._lose_topic(replaced, ChannelError("lost"))
 
-    assert runtime.get_current_subscriptions()[TOPIC] is replacement
+    assert runtime.topic_subscriptions.copy()[TOPIC] is replacement
     assert not lost.lost
 
 

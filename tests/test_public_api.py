@@ -10,6 +10,7 @@ from phoenix_channels_python_client import Client
 
 def test_wildcard_imports_expose_only_the_public_api() -> None:
     assert set(phoenix.__all__) == {
+        "Channel",
         "ChannelError",
         "Client",
         "ClientError",
@@ -72,8 +73,30 @@ async def test_shutdown_accepts_no_reason(client: Client) -> None:
     await client.shutdown()
 
     assert client.connection is None
-    assert client.get_current_subscriptions() == {}
+    assert client.topic_subscriptions == {}
 
 
 def test_protocol_handler_is_not_a_client_public_method() -> None:
     assert not hasattr(Client, "get_protocol_handler")
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "subscribe_to_topic",
+        "unsubscribe_from_topic",
+        "is_topic_joined",
+        "get_current_subscriptions",
+        "add_event_handler",
+        "remove_event_handler",
+        "get_event_handler",
+        "has_event_handler",
+        "list_event_handlers",
+        "set_message_handler",
+        "remove_message_handler",
+        "get_message_handler",
+        "has_message_handler",
+    ],
+)
+def test_topic_string_client_methods_are_removed(name: str) -> None:
+    assert not hasattr(Client, name)

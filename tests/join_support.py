@@ -14,7 +14,7 @@ from phoenix_channels_python_client.messages import Message
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from tests.fake_server import FakePhoenixServer, Frame, ReplyStatus, WireEvent
 from tests.scheduling import TaskLifecycleGate
-from tests.support import ASYNC_TIMEOUT_S, EVENT, TOPIC
+from tests.support import ASYNC_TIMEOUT_S, EVENT, TOPIC, is_joined, join_channel
 
 
 class JoinProbe:
@@ -27,13 +27,13 @@ class JoinProbe:
         self.delivered: asyncio.Queue[Message] = asyncio.Queue()
 
     def install(self, response: object) -> None:
-        assert not self.client.is_topic_joined(self.topic)
+        assert not is_joined(self.client, self.topic)
         self.state = response
         self.order.append(response)
         self.installed.put_nowait(response)
 
     async def receive(self, message: Message) -> None:
-        assert self.client.is_topic_joined(self.topic)
+        assert is_joined(self.client, self.topic)
         self.order.append(message.payload)
         self.delivered.put_nowait(message)
 
@@ -42,14 +42,16 @@ class JoinProbe:
 async def pending_subscribe(
     client: Client, probe: JoinProbe, *, blocks_reconnect: bool = True
 ) -> AsyncIterator[asyncio.Task[None]]:
-    task = asyncio.create_task(
-        client.subscribe_to_topic(
+    async def join() -> None:
+        await join_channel(
+            client,
             probe.topic,
             probe.receive,
             on_join_response=probe.install,
             blocks_reconnect=blocks_reconnect,
         )
-    )
+
+    task = asyncio.create_task(join())
     try:
         yield task
     finally:

@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 from tests.join_support import JoinProbe, deadline
-from tests.support import FAST_RECONNECT, OTHER_TOPIC, TOPIC, make_client
+from tests.support import FAST_RECONNECT, OTHER_TOPIC, TOPIC, join_channel, make_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Coroutine
@@ -48,7 +48,8 @@ async def subscribed_optional(
         ) as client,
     ):
         probe = JoinProbe(client)
-        await client.subscribe_to_topic(
+        await join_channel(
+            client,
             TOPIC,
             probe.receive,
             on_join_response=probe.install,
@@ -71,10 +72,8 @@ async def subscribed_optional_pair(
         _,
     ):
         required = JoinProbe(client, OTHER_TOPIC)
-        await client.subscribe_to_topic(
-            OTHER_TOPIC,
-            required.receive,
-            on_join_response=required.install,
+        await join_channel(
+            client, OTHER_TOPIC, required.receive, on_join_response=required.install
         )
         await server.joined.get()
         await required.installed.get()

@@ -11,7 +11,14 @@ from phoenix_channels_python_client import Client
 from phoenix_channels_python_client.messages import Message
 from tests.fake_server import FakePhoenixServer
 from tests.join_support import push
-from tests.support import STOP_REASON, TOPIC, make_client
+from tests.support import (
+    JOIN_TIMEOUT_S,
+    STOP_REASON,
+    TOPIC,
+    channel_for,
+    join_channel,
+    make_client,
+)
 
 
 @dataclass
@@ -37,16 +44,21 @@ class HeldCleanup:
 
 @asynccontextmanager
 async def terminal_cleanup(peer: FakePhoenixServer) -> AsyncIterator[HeldCleanup]:
-    client = make_client(peer, auto_reconnect=False, heartbeat_interval_s=None)
+    client = make_client(
+        peer,
+        auto_reconnect=False,
+        heartbeat_interval_s=None,
+        callback_drain_timeout_s=JOIN_TIMEOUT_S,
+    )
     held = HeldCleanup(client)
     leave: asyncio.Task[None] | None = None
     await client.__aenter__()
     try:
-        await client.subscribe_to_topic(TOPIC, held.receive)
+        await join_channel(client, TOPIC, held.receive)
         _, request = await peer.joined.get()
         await push(peer, request)
         await held.running.wait()
-        leave = asyncio.create_task(client.unsubscribe_from_topic(TOPIC))
+        leave = asyncio.create_task(channel_for(client, TOPIC).leave())
         await peer.left.get()
         leave.cancel()
         await held.finalizing.wait()

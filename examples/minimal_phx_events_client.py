@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal Phoenix Channels client.
 
-Connects to a Phoenix Channels server, subscribes to one topic and logs every
+Connects to a Phoenix Channels server, joins one channel and logs every
 message until Ctrl+C or SIGTERM.
 
 Usage:
@@ -30,19 +30,21 @@ TOPIC = "user_rooms:your-room-id"
 logger = logging.getLogger(__name__)
 
 
-async def message_handler(message: Message) -> None:
-    logger.info("Received: %s", message)
-
-
 async def main() -> None:
     async with Client(
         WS_BASE_URL,
         api_key=API_KEY,
         protocol_version=ProtocolVersion.V2,
     ) as client:
-        await client.subscribe_to_topic(TOPIC, message_handler)
-        logger.info("Ready - press Ctrl+C or send SIGTERM to stop")
-        await client.run_forever()
+        room = client.channel(TOPIC)
+
+        @room.on_any
+        async def message_handler(message: Message) -> None:
+            logger.info("Received: %s", message)
+
+        async with room:
+            logger.info("Ready - press Ctrl+C or send SIGTERM to stop")
+            await client.run_forever()
 
 
 if __name__ == "__main__":

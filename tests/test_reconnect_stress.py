@@ -11,7 +11,7 @@ from phoenix_channels_python_client.client import Client
 from phoenix_channels_python_client.client_types import ReconnectPolicy
 from phoenix_channels_python_client.protocol import ProtocolVersion
 from tests.fake_server import FakePhoenixServer
-from tests.support import ASYNC_TIMEOUT_S, STOP_REASON, TOPIC, make_client
+from tests.support import ASYNC_TIMEOUT_S, STOP_REASON, TOPIC, join_channel, make_client
 
 # Clients sharing one API key, so the server lets only one stay connected.
 SHARED_API_KEY = "shared-agent"
@@ -96,7 +96,7 @@ async def contending_clients(
                     leave_timeout_s=CONTENDED_TOPIC_TIMEOUT_S,
                 )
             )
-            await client.subscribe_to_topic(TOPIC)
+            await join_channel(client, TOPIC)
             clients.append(client)
         runs = [asyncio.create_task(client.run_forever()) for client in clients]
         try:

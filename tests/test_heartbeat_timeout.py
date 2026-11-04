@@ -25,6 +25,8 @@ from tests.support import (
     deliver,
     each_protocol,
     expect_message,
+    is_joined,
+    join_channel,
     make_client,
     wait_forever,
 )
@@ -183,7 +185,7 @@ async def test_pong_and_topic_traffic_do_not_renew_and_recovery_delivers(
         on_reconnect=on_reconnect,
         on_disconnect=on_disconnect,
     ) as client:
-        await client.subscribe_to_topic(TOPIC, received.put)
+        await join_channel(client, TOPIC, received.put)
         old_task = client.heartbeat_task
         old_socket = client.connection
         await clock.advance(INTERVAL)
@@ -221,7 +223,7 @@ async def test_pong_and_topic_traffic_do_not_renew_and_recovery_delivers(
         await verify_delivery(peer, client, received)
         assert timer(client).when() == fresh_deadline
         assert client.pending_heartbeat_ref == pending.ref
-        assert client.is_topic_joined(TOPIC)
+        assert is_joined(client, TOPIC)
         await peer.reply_heartbeat(new_connection, pending)
         await verify_delivery(peer, client, received)
         assert timer(client).when() == clock.loop.time() + THRESHOLD
@@ -240,7 +242,7 @@ async def test_wrong_and_duplicate_replies_do_not_renew(
     async with monitored(
         peer, on_heartbeat_ack=lambda: acks.put_nowait(None)
     ) as client:
-        await client.subscribe_to_topic(TOPIC, received.put)
+        await join_channel(client, TOPIC, received.put)
         await clock.advance(INTERVAL)
         connection, frame = await peer.heartbeats.get()
         await peer.simulate_server_event(
@@ -501,7 +503,7 @@ async def test_monitoring_runs_during_reconnect_setup(
         on_disconnect=on_disconnect,
         join_timeout_s=THRESHOLD * WINDOWS,
     ) as client:
-        await client.subscribe_to_topic(TOPIC, received.put)
+        await join_channel(client, TOPIC, received.put)
         old_task = client.heartbeat_task
         if held_stage == "rejoin":
             peer.defer_join_targets.add((peer.next_client_id, TOPIC))
@@ -561,7 +563,7 @@ async def test_finishing_rejoin_does_not_reset_the_window(
         on_disconnect=on_disconnect,
         join_timeout_s=THRESHOLD * WINDOWS,
     ) as client:
-        await client.subscribe_to_topic(TOPIC, received.put)
+        await join_channel(client, TOPIC, received.put)
         peer.defer_join_targets.add((peer.next_client_id, TOPIC))
         await peer.close_all_clients()
         await disconnected.wait()
