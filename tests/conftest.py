@@ -10,6 +10,12 @@ from phoenix_channels_python_client.client import Client
 from phoenix_channels_python_client.messages import Message
 from phoenix_channels_python_client.protocol import ProtocolVersion
 from tests.fake_server import FakePhoenixServer
+from tests.package_typing_support import (
+    InstalledPackage,
+    PackageArtifacts,
+    build_package,
+    install_package,
+)
 from tests.support import TopicRecorder, make_client, subscribe_with_handlers
 
 pytest_plugins = ("tests.clock",)
@@ -45,3 +51,17 @@ def received() -> asyncio.Queue[Message]:
 @pytest_asyncio.fixture
 async def subscribed_handlers(client: Client) -> TopicRecorder:
     return await subscribe_with_handlers(client)
+
+
+@pytest.fixture(scope="session")
+def package_artifacts(tmp_path_factory: pytest.TempPathFactory) -> PackageArtifacts:
+    return build_package(tmp_path_factory.mktemp("package-artifacts"))
+
+
+@pytest.fixture(scope="session")
+def installed_package(
+    package_artifacts: PackageArtifacts, tmp_path_factory: pytest.TempPathFactory
+) -> InstalledPackage:
+    return install_package(
+        package_artifacts, tmp_path_factory.mktemp("installed-package")
+    )
