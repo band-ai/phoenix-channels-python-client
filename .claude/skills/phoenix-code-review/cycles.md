@@ -15,9 +15,14 @@ Unverified/dropped claims are not defects; use
 
 ## Continue or stop
 
-- No verified blocking findings: finish authorized nits/suggestions and stop.
+An actionable issue is a verified `issue:` finding with a CONFIRMED or
+PARTIALLY RIGHT verdict, in scope or explicitly authorized for this run, and
+not deferred. This applies to every angle group, independently of whether
+the finding blocks GitHub approval.
+
+- No unresolved actionable issues: finish authorized nits/suggestions and stop.
   Do not add a cycle solely to re-review final cleanup.
-- Blocking findings remain and fixes are making supported progress: apply
+- Actionable issues remain and fixes are making supported progress: apply
   verified fixes and continue within the cap.
 - Regressions recur or fixes appear to create further failures: investigate
   the shared cause and ownership before adding another patch. Counts and

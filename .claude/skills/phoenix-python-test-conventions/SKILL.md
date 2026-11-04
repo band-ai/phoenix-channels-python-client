@@ -41,7 +41,8 @@ the test. Test packages keep `__init__.py` free of helper logic.
 
 ## Assertions and layout
 
-Use module-level pytest functions, matching this suite. Name each test for
+Follow the neighboring suite's layout: module-level functions or behavior
+classes. Preserve class-level markers and parametrization. Name each test for
 one observable claim; use parametrization for independent variations instead
 of branching on a scenario inside a test. Use plain `assert` for readable
 pytest diffs. Compare the relevant complete outcome rather than hiding
