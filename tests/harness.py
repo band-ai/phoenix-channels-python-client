@@ -23,11 +23,9 @@ from phoenix_channels_python_client.client_types import (
     ReconnectDecision,
     ReconnectEvent,
 )
-from phoenix_channels_python_client.phx_messages import ChannelMessage
-from phoenix_channels_python_client.protocol_handler import (
-    PhoenixChannelsProtocolVersion,
-    PHXProtocolHandler,
-)
+from phoenix_channels_python_client.messages import Message
+from phoenix_channels_python_client.protocol import ProtocolVersion
+from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.supervisor import SupervisorMixin
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
@@ -91,13 +89,11 @@ class FakeTopicProtocolHandler(PHXProtocolHandler):
     """Records what would be sent, so joins and leaves get no reply."""
 
     def __init__(self) -> None:
-        super().__init__(PhoenixChannelsProtocolVersion.V2)
+        super().__init__(ProtocolVersion.V2)
         self.raise_on_send: Exception | None = None
-        self.sent: list[ChannelMessage] = []
+        self.sent: list[Message] = []
 
-    async def send_message(
-        self, websocket: ClientConnection, message: ChannelMessage
-    ) -> None:
+    async def send_message(self, websocket: ClientConnection, message: Message) -> None:
         del websocket
         if self.raise_on_send is not None:
             raise self.raise_on_send

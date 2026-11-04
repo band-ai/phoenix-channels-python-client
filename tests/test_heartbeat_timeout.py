@@ -12,8 +12,8 @@ import pytest
 from websockets import ClientConnection
 from websockets.protocol import State
 
-from phoenix_channels_python_client.client import PHXChannelsClient
-from phoenix_channels_python_client.phx_messages import ChannelMessage, PHXEvent
+from phoenix_channels_python_client.client import Client
+from phoenix_channels_python_client.messages import Message, SystemEvent
 from phoenix_channels_python_client.utils import make_message
 from tests.clock import CLOCK_RESOLUTION, Clock
 from tests.fake_server import SYSTEM_TOPIC, FakePhoenixServer, WireEvent
@@ -48,9 +48,9 @@ def test_invalid_threshold_is_rejected(
     threshold: float, interval: float | None
 ) -> None:
     with pytest.raises(ValueError, match="heartbeat_dead_threshold_s"):
-        PHXChannelsClient(
+        Client(
             "ws://localhost",
-            "key",
+            api_key="key",
             heartbeat_interval_s=interval,
             heartbeat_dead_threshold_s=threshold,
         )
@@ -61,18 +61,16 @@ def test_invalid_threshold_is_rejected(
 )
 def test_enforcement_requires_a_smaller_finite_interval(interval: float) -> None:
     with pytest.raises(ValueError, match="finite heartbeat interval"):
-        PHXChannelsClient(
+        Client(
             "ws://localhost",
-            "key",
+            api_key="key",
             heartbeat_interval_s=interval,
             heartbeat_dead_threshold_s=THRESHOLD,
         )
 
 
 @asynccontextmanager
-async def monitored(
-    peer: FakePhoenixServer, **options: Any
-) -> AsyncIterator[PHXChannelsClient]:
+async def monitored(peer: FakePhoenixServer, **options: Any) -> AsyncIterator[Client]:
     options.setdefault("auto_reconnect", False)
     async with make_client(
         peer,
@@ -86,7 +84,7 @@ async def monitored(
     assert client.connection is None
 
 
-def timer(client: PHXChannelsClient) -> asyncio.Timeout:
+def timer(client: Client) -> asyncio.Timeout:
     active = client._heartbeat_timeout
     assert active is not None
     return active
@@ -94,8 +92,8 @@ def timer(client: PHXChannelsClient) -> asyncio.Timeout:
 
 async def verify_delivery(
     peer: FakePhoenixServer,
-    client: PHXChannelsClient,
-    received: asyncio.Queue[ChannelMessage],
+    client: Client,
+    received: asyncio.Queue[Message],
 ) -> None:
     payload = {"message": "heartbeat recovery"}
     await deliver(peer, client, payload=payload)
@@ -167,7 +165,7 @@ async def test_pong_and_topic_traffic_do_not_renew_and_recovery_delivers(
 ) -> None:
     peer = clocked_peer
     peer.answer_heartbeats = False
-    received: asyncio.Queue[ChannelMessage] = asyncio.Queue()
+    received: asyncio.Queue[Message] = asyncio.Queue()
     reconnected = asyncio.Event()
     disconnected = asyncio.Event()
 
@@ -238,7 +236,7 @@ async def test_wrong_and_duplicate_replies_do_not_renew(
     peer = clocked_peer
     peer.answer_heartbeats = False
     acks: asyncio.Queue[None] = asyncio.Queue()
-    received: asyncio.Queue[ChannelMessage] = asyncio.Queue()
+    received: asyncio.Queue[Message] = asyncio.Queue()
     async with monitored(
         peer, on_heartbeat_ack=lambda: acks.put_nowait(None)
     ) as client:
@@ -311,12 +309,12 @@ class HeldOperation:
 
 @contextmanager
 def hold_send(
-    client: PHXChannelsClient, monkeypatch: pytest.MonkeyPatch
+    client: Client, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[HeldOperation]:
     held = HeldOperation(asyncio.Event(), asyncio.Event(), asyncio.Event())
     send = client._protocol_handler.send_message
 
-    async def sending(connection: ClientConnection, message: ChannelMessage) -> None:
+    async def sending(connection: ClientConnection, message: Message) -> None:
         await send(connection, message)
         held.entered.set()
         try:
@@ -336,7 +334,7 @@ def hold_send(
 
 @contextmanager
 def hold_close(
-    client: PHXChannelsClient, monkeypatch: pytest.MonkeyPatch
+    client: Client, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[HeldOperation]:
     socket = client.connection
     assert socket is not None
@@ -424,9 +422,7 @@ async def test_send_failure_closes_instead_of_disabling_monitoring(
         socket = client.connection
         assert socket is not None
 
-        async def failed_send(
-            connection: ClientConnection, message: ChannelMessage
-        ) -> None:
+        async def failed_send(connection: ClientConnection, message: Message) -> None:
             del connection, message
             raise error
 
@@ -490,7 +486,7 @@ async def test_monitoring_runs_during_reconnect_setup(
         del error
         disconnected.set()
 
-    received: asyncio.Queue[ChannelMessage] = asyncio.Queue()
+    received: asyncio.Queue[Message] = asyncio.Queue()
 
     async def reconnected() -> None:
         entered.set()
@@ -545,7 +541,7 @@ async def test_finishing_rejoin_does_not_reset_the_window(
     clocked_peer: FakePhoenixServer,
 ) -> None:
     peer = clocked_peer
-    received: asyncio.Queue[ChannelMessage] = asyncio.Queue()
+    received: asyncio.Queue[Message] = asyncio.Queue()
     reconnected = asyncio.Event()
     disconnected = asyncio.Event()
 
@@ -606,7 +602,7 @@ async def test_matching_reply_at_or_after_deadline_cannot_revive_it(
         # Check the exact-time guard before the timeout callback gets a turn.
         client._handle_heartbeat_response(
             make_message(
-                topic=SYSTEM_TOPIC, event=PHXEvent.reply, payload={}, ref=frame.ref
+                topic=SYSTEM_TOPIC, event=SystemEvent.reply, payload={}, ref=frame.ref
             )
         )
         assert not acknowledged.is_set()
@@ -620,7 +616,7 @@ async def test_matching_reply_at_or_after_deadline_cannot_revive_it(
         # An already parsed reply cannot re-enter a cleared timer either.
         client._handle_heartbeat_response(
             make_message(
-                topic=SYSTEM_TOPIC, event=PHXEvent.reply, payload={}, ref=frame.ref
+                topic=SYSTEM_TOPIC, event=SystemEvent.reply, payload={}, ref=frame.ref
             )
         )
         assert not acknowledged.is_set()
@@ -672,7 +668,7 @@ async def test_replacement_waits_for_old_operation_cancellation_to_finish(
     clocked_peer: FakePhoenixServer,
     monkeypatch: pytest.MonkeyPatch,
     operation: Callable[
-        [PHXChannelsClient, pytest.MonkeyPatch], AbstractContextManager[HeldOperation]
+        [Client, pytest.MonkeyPatch], AbstractContextManager[HeldOperation]
     ],
 ) -> None:
     peer = clocked_peer

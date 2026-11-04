@@ -17,9 +17,9 @@ from websockets.exceptions import ConnectionClosed
 from websockets.frames import CloseCode
 from websockets.http11 import Request, Response
 
-from phoenix_channels_python_client.protocol_handler import (
+from phoenix_channels_python_client.protocol import (
     DEFAULT_PROTOCOL_VERSION,
-    PhoenixChannelsProtocolVersion,
+    ProtocolVersion,
 )
 
 # One IPv4 socket on a port the OS picks, so test runs never collide on a port.
@@ -69,7 +69,7 @@ class FakePhoenixServer:
 
     def __init__(
         self,
-        protocol: PhoenixChannelsProtocolVersion = DEFAULT_PROTOCOL_VERSION,
+        protocol: ProtocolVersion = DEFAULT_PROTOCOL_VERSION,
     ) -> None:
         self.protocol = protocol
         self.host = LOOPBACK_HOST
@@ -119,7 +119,7 @@ class FakePhoenixServer:
 
     def _encode(self, frame: Frame) -> str:
         match self.protocol:
-            case PhoenixChannelsProtocolVersion.V1:
+            case ProtocolVersion.V1:
                 return json.dumps(
                     {
                         "topic": frame.topic,
@@ -128,7 +128,7 @@ class FakePhoenixServer:
                         "payload": dict(frame.payload),
                     }
                 )
-            case PhoenixChannelsProtocolVersion.V2:
+            case ProtocolVersion.V2:
                 return json.dumps(
                     [
                         frame.join_ref,
@@ -142,7 +142,7 @@ class FakePhoenixServer:
     def _decode(self, raw: str | bytes) -> Frame | None:
         data = json.loads(raw)
         match self.protocol, data:
-            case PhoenixChannelsProtocolVersion.V1, {"topic": str(topic)}:
+            case ProtocolVersion.V1, {"topic": str(topic)}:
                 return Frame(
                     data.get("join_ref"),
                     data.get("ref"),
@@ -150,7 +150,7 @@ class FakePhoenixServer:
                     data.get("event"),
                     data.get("payload") or {},
                 )
-            case PhoenixChannelsProtocolVersion.V2, [
+            case ProtocolVersion.V2, [
                 join_ref,
                 ref,
                 str(topic),

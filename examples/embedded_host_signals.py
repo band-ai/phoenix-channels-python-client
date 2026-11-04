@@ -19,8 +19,7 @@ import signal
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
-from phoenix_channels_python_client import PHXChannelsClient, setup_logging
-from phoenix_channels_python_client.phx_messages import ChannelMessage
+from phoenix_channels_python_client import Client, Message
 
 API_KEY = "your-api-key"
 WS_URL = "wss://your-server.com/socket/websocket"
@@ -45,13 +44,13 @@ def host_signal_handlers(on_signal: Callable[[], object]) -> Iterator[None]:
             signal.signal(sig, handler)
 
 
-async def handle_message(message: ChannelMessage) -> None:
+async def handle_message(message: Message) -> None:
     logger.info("Received: %s", message)
 
 
 async def main() -> None:
     async with (
-        PHXChannelsClient(WS_URL, api_key=API_KEY) as client,
+        Client(WS_URL, api_key=API_KEY) as client,
         asyncio.TaskGroup() as tasks,
     ):
         await client.subscribe_to_topic(TOPIC, handle_message)
@@ -66,5 +65,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    setup_logging(logging.INFO)
+    logging.basicConfig(level=logging.INFO)
     asyncio.run(main())

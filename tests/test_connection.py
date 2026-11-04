@@ -7,12 +7,10 @@ from urllib.parse import parse_qsl, urlsplit
 import pytest
 from websockets.frames import CloseCode
 
-from phoenix_channels_python_client.client import PHXChannelsClient
-from phoenix_channels_python_client.exceptions import PHXConnectionError
-from phoenix_channels_python_client.phx_messages import ChannelMessage
-from phoenix_channels_python_client.protocol_handler import (
-    PhoenixChannelsProtocolVersion,
-)
+from phoenix_channels_python_client.client import Client
+from phoenix_channels_python_client.exceptions import SocketError
+from phoenix_channels_python_client.messages import Message
+from phoenix_channels_python_client.protocol import ProtocolVersion
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     API_KEY,
@@ -60,7 +58,7 @@ async def test_without_an_api_key_argument_the_url_credential_is_preserved(
     credentials: list[tuple[str, str]],
 ) -> None:
     url = phoenix_server.url_for(FakePhoenixServer.SOCKET_PATH)
-    async with PHXChannelsClient(
+    async with Client(
         f"{url}?{query}&keep=one&keep=&vsn=old",
         protocol_version=phoenix_server.protocol,
         **options,
@@ -91,7 +89,7 @@ def test_an_empty_api_key_argument_is_rejected(
     headers: dict[str, str] | None,
 ) -> None:
     with pytest.raises(ValueError, match=r"^api_key must be nonempty or None$"):
-        PHXChannelsClient("ws://127.0.0.1:1/socket", "", additional_headers=headers)
+        Client("ws://127.0.0.1:1/socket", api_key="", additional_headers=headers)
 
 
 @each_protocol
@@ -99,7 +97,7 @@ def test_an_empty_api_key_argument_is_rejected(
 async def test_a_client_connects_without_an_api_key(
     phoenix_server: FakePhoenixServer, options: dict[str, Any]
 ) -> None:
-    async with PHXChannelsClient(
+    async with Client(
         phoenix_server.url_for(FakePhoenixServer.SOCKET_PATH),
         protocol_version=phoenix_server.protocol,
         **options,
@@ -113,21 +111,13 @@ async def test_a_client_connects_without_an_api_key(
 
 
 @each_protocol
-@pytest.mark.parametrize("positional", [True, False], ids=["positional", "keyword"])
 @pytest.mark.parametrize("api_key", [API_KEY, " "], ids=["key", "whitespace"])
 async def test_an_api_key_argument_replaces_url_credentials(
-    phoenix_server: FakePhoenixServer, api_key: str, *, positional: bool
+    phoenix_server: FakePhoenixServer, api_key: str
 ) -> None:
     url = phoenix_server.url_for(FakePhoenixServer.SOCKET_PATH)
     url += "?API%5FKEY=old&api_key=other&token=legacy-token&keep=&vsn=old"
-    if positional:
-        client = PHXChannelsClient(
-            url, api_key, protocol_version=phoenix_server.protocol
-        )
-    else:
-        client = PHXChannelsClient(
-            url, api_key=api_key, protocol_version=phoenix_server.protocol
-        )
+    client = Client(url, api_key=api_key, protocol_version=phoenix_server.protocol)
     async with client:
         (connection,) = phoenix_server.list_client_connections()
         assert connection.request is not None
@@ -169,7 +159,7 @@ async def test_header_authentication_suppresses_query_credentials(
 ) -> None:
     url = phoenix_server.url_for(FakePhoenixServer.SOCKET_PATH)
     token = "legacy-token" if "X-Auth-Token" in headers else ""
-    async with PHXChannelsClient(
+    async with Client(
         f"{url}?API%5FKEY=old&api_key=other&token={token}&keep=one&keep=",
         protocol_version=phoenix_server.protocol,
         additional_headers=headers,
@@ -209,19 +199,18 @@ async def test_header_authentication_suppresses_query_credentials(
 @pytest.mark.parametrize(
     ("protocol", "version"),
     [
-        (PhoenixChannelsProtocolVersion.V1, "1.0"),
-        (PhoenixChannelsProtocolVersion.V2, "2.0"),
-        (PhoenixChannelsProtocolVersion.V1, "unsupported"),
+        (ProtocolVersion.V1, "1.0"),
+        (ProtocolVersion.V2, "2.0"),
     ],
 )
 async def test_a_string_version_connects_and_receives_a_message(
     phoenix_server: FakePhoenixServer,
     version: str,
-    received: asyncio.Queue[ChannelMessage],
+    received: asyncio.Queue[Message],
 ) -> None:
-    async with PHXChannelsClient(
+    async with Client(
         phoenix_server.url_for(FakePhoenixServer.SOCKET_PATH),
-        API_KEY,
+        api_key=API_KEY,
         protocol_version=version,
     ) as client:
         await client.subscribe_to_topic(TOPIC, received.put)
@@ -297,7 +286,7 @@ async def test_forced_close_during_a_terminal_server_close_does_not_reconnect(
 
         await client.close_connection(STOP_REASON)
 
-        with pytest.raises(PHXConnectionError):
+        with pytest.raises(SocketError):
             await asyncio.wait_for(run, ASYNC_TIMEOUT_S)
         await asyncio.wait_for(server_close, ASYNC_TIMEOUT_S)
 
@@ -333,7 +322,7 @@ async def test_entering_fails_when_the_server_is_unreachable(
 ) -> None:
     await phoenix_server.stop()
 
-    with pytest.raises(PHXConnectionError):
+    with pytest.raises(SocketError):
         async with make_client(phoenix_server, auto_reconnect=False):
             pass
 
@@ -341,7 +330,7 @@ async def test_entering_fails_when_the_server_is_unreachable(
 async def test_run_forever_before_entering_raises(
     phoenix_server: FakePhoenixServer,
 ) -> None:
-    with pytest.raises(PHXConnectionError, match="not connected"):
+    with pytest.raises(SocketError, match="not connected"):
         await make_client(phoenix_server).run_forever()
 
 

@@ -1,10 +1,14 @@
-class PHXClientError(Exception):
+class ClientError(Exception):
     pass
 
 
-class PHXTopicError(PHXClientError):
+class ChannelError(ClientError):
     pass
 
 
-class PHXConnectionError(PHXClientError):
+class SocketError(ClientError):
     """Raised when there's an error connecting to the Phoenix WebSocket server."""
+
+
+class PushTimeoutError(ChannelError):
+    """Raised when a channel push receives no reply before its deadline."""

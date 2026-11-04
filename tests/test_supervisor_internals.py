@@ -11,11 +11,11 @@ from phoenix_channels_python_client.client_types import (
     Disconnected,
     ReconnectDecision,
 )
-from phoenix_channels_python_client.exceptions import PHXConnectionError
-from phoenix_channels_python_client.phx_messages import (
+from phoenix_channels_python_client.exceptions import SocketError
+from phoenix_channels_python_client.messages import (
     PHOENIX_TOPIC,
-    ChannelMessage,
-    PHXEvent,
+    Message,
+    SystemEvent,
 )
 from phoenix_channels_python_client.supervisor import _FORCED_CLOSE_CODE
 from phoenix_channels_python_client.utils import make_message
@@ -30,12 +30,14 @@ from tests.support import wait_forever
 HEARTBEAT_REF = "5"
 
 
-def heartbeat_reply(ref: str) -> ChannelMessage:
-    return make_message(topic=PHOENIX_TOPIC, event=PHXEvent.reply, payload={}, ref=ref)
+def heartbeat_reply(ref: str) -> Message:
+    return make_message(
+        topic=PHOENIX_TOPIC, event=SystemEvent.reply, payload={}, ref=ref
+    )
 
 
 async def test_a_terminal_connect_failure_ends_the_loop_with_its_error() -> None:
-    terminal = PHXConnectionError("refused for good")
+    terminal = SocketError("refused for good")
     harness = SupervisorHarness(connect_failures=1)
     harness.connect_failure_decision = ReconnectDecision(
         should_reconnect=False, terminal_error=terminal
@@ -95,9 +97,7 @@ async def test_shutdown_before_connecting_fails_the_initial_connection() -> None
     await harness._supervisor_loop()
 
     assert harness._initial_connection_future is not None
-    assert isinstance(
-        harness._initial_connection_future.exception(), PHXConnectionError
-    )
+    assert isinstance(harness._initial_connection_future.exception(), SocketError)
 
 
 async def test_cleanup_survives_a_socket_that_fails_to_close() -> None:

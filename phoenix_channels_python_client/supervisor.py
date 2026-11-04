@@ -20,11 +20,11 @@ from phoenix_channels_python_client.client_types import (
     ReconnectDecision,
     ReconnectEvent,
 )
-from phoenix_channels_python_client.exceptions import PHXConnectionError
-from phoenix_channels_python_client.phx_messages import (
+from phoenix_channels_python_client.exceptions import SocketError
+from phoenix_channels_python_client.messages import (
     HEARTBEAT_EVENT,
     PHOENIX_TOPIC,
-    ChannelMessage,
+    Message,
 )
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.shutdown_signals import handle_shutdown_signals
@@ -110,7 +110,7 @@ class SupervisorMixin:
             on_heartbeat_response=self._handle_heartbeat_response,
         )
 
-    def _handle_heartbeat_response(self, message: ChannelMessage) -> None:
+    def _handle_heartbeat_response(self, message: Message) -> None:
         if message.ref is not None and message.ref == self._pending_heartbeat_ref:
             if self._heartbeat_dead_threshold_s is not None:
                 timer = self._heartbeat_timeout
@@ -267,7 +267,7 @@ class SupervisorMixin:
         """The decision to retry after ``exc``, or ``None`` to stop."""
         if not self.auto_reconnect:
             self._settle_initial_connection(
-                PHXConnectionError(
+                SocketError(
                     self._deps.redact_diagnostic(
                         "Failed to connect to "
                         f"{self.channel_socket_url_redacted}: {exc}"
@@ -394,7 +394,7 @@ class SupervisorMixin:
             self.logger.info("Reconnect stopped by the reconnect policy")
         return None
 
-    def _record_terminal_error(self, error: PHXConnectionError) -> None:
+    def _record_terminal_error(self, error: SocketError) -> None:
         self._terminal_error = error
         # Log records stay static: the cause reaches the caller as the raised error.
         self.logger.error("Reconnect stopped by a terminal error")
@@ -412,7 +412,7 @@ class SupervisorMixin:
 
     def _settle_supervisor_exit(self) -> None:
         self._settle_initial_connection(
-            PHXConnectionError("Connection supervisor stopped before connecting")
+            SocketError("Connection supervisor stopped before connecting")
         )
         self._connected_event.clear()
         if self._state != ClientState.SHUTTING_DOWN:
@@ -430,7 +430,7 @@ class SupervisorMixin:
 
     def _fail_pending_joins_for_lost_connection(self) -> None:
         self._deps._fail_pending_joins(
-            PHXConnectionError("Connection lost before the join completed")
+            SocketError("Connection lost before the join completed")
         )
 
     async def _cleanup_connection(self) -> None:
@@ -483,7 +483,7 @@ class SupervisorMixin:
         """
         supervisor = self._supervisor_task
         if supervisor is None:
-            raise PHXConnectionError(
+            raise SocketError(
                 "Client is not connected. Use 'async with' context manager."
             )
 

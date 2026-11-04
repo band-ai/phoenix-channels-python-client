@@ -5,15 +5,9 @@ import logging
 
 import pytest
 
-from phoenix_channels_python_client.client import PHXChannelsClient
-from phoenix_channels_python_client.phx_messages import (
-    ChannelMessage,
-    PHXEvent,
-    UserEvent,
-)
-from phoenix_channels_python_client.protocol_handler import (
-    PhoenixChannelsProtocolVersion,
-)
+from phoenix_channels_python_client.client import Client
+from phoenix_channels_python_client.messages import Message, SystemEvent
+from phoenix_channels_python_client.protocol import ProtocolVersion
 from tests.fake_server import FakePhoenixServer, WireEvent
 from tests.support import (
     ASYNC_TIMEOUT_S,
@@ -60,7 +54,7 @@ PROMPT_S = SLOW_LEAVE_TIMEOUT_S / 4
 @each_protocol
 async def test_a_crashed_channel_rejoins_on_the_live_socket(
     phoenix_server: FakePhoenixServer,
-    received: asyncio.Queue[ChannelMessage],
+    received: asyncio.Queue[Message],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     acks: list[None] = []
@@ -138,9 +132,9 @@ async def test_a_repeated_channel_error_starts_one_recovery(
         assert joins(phoenix_server) == REJOINED_ONCE
 
 
-@pytest.mark.parametrize("protocol", [PhoenixChannelsProtocolVersion.V2])
+@pytest.mark.parametrize("protocol", [ProtocolVersion.V2])
 async def test_a_stale_channel_error_is_ignored(
-    phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
+    phoenix_server: FakePhoenixServer, received: asyncio.Queue[Message]
 ) -> None:
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         await client.subscribe_to_topic(TOPIC, received.put)
@@ -283,7 +277,7 @@ async def test_a_channel_error_queued_behind_a_callback_does_not_double_rejoin(
 
 @each_protocol
 async def test_a_server_channel_close_loses_the_topic(
-    phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
+    phoenix_server: FakePhoenixServer, received: asyncio.Queue[Message]
 ) -> None:
     lost = LostTopics()
     client = make_client(
@@ -303,7 +297,7 @@ async def test_a_server_channel_close_loses_the_topic(
 
 
 async def test_our_own_leave_does_not_report_a_lost_topic(
-    phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
+    phoenix_server: FakePhoenixServer, received: asyncio.Queue[Message]
 ) -> None:
     lost = LostTopics()
     async with make_client(phoenix_server, on_topic_lost=lost) as client:
@@ -335,7 +329,7 @@ async def test_is_topic_joined_is_false_while_disconnected(
 
 
 async def test_resubscribing_from_on_topic_lost_works(
-    phoenix_server: FakePhoenixServer, received: asyncio.Queue[ChannelMessage]
+    phoenix_server: FakePhoenixServer, received: asyncio.Queue[Message]
 ) -> None:
     async def resubscribe(topic: str, error: Exception) -> None:
         del error
@@ -356,14 +350,14 @@ async def test_resubscribing_from_on_topic_lost_works(
 @pytest.mark.parametrize(
     "event",
     [
-        PHXEvent.error,
-        PHXEvent.close,
-        UserEvent("phx_error"),
-        UserEvent("phx_close"),
+        SystemEvent.error,
+        SystemEvent.close,
+        "phx_error",
+        "phx_close",
     ],
 )
 async def test_lifecycle_event_handlers_are_rejected(
-    client: PHXChannelsClient, event: PHXEvent | UserEvent
+    client: Client, event: str | SystemEvent
 ) -> None:
     async def handler(payload: dict[str, object]) -> None:
         del payload

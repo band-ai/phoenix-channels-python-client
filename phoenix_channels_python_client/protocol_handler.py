@@ -4,34 +4,20 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from enum import StrEnum
 from typing import Any, NamedTuple
 
 from websockets import ClientConnection
 
 from phoenix_channels_python_client.diagnostics import ConnectionLogger
-from phoenix_channels_python_client.phx_messages import (
-    PHOENIX_TOPIC,
-    ChannelMessage,
-    Event,
+from phoenix_channels_python_client.messages import PHOENIX_TOPIC, Message
+from phoenix_channels_python_client.protocol import (
+    DEFAULT_PROTOCOL_VERSION,
+    ProtocolVersion,
 )
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 from phoenix_channels_python_client.utils import make_message
 
 logger = logging.getLogger(__name__)
-
-
-class PhoenixChannelsProtocolVersion(StrEnum):
-    V1 = "1.0"
-    V2 = "2.0"
-
-    @property
-    def vsn(self) -> str:
-        """The ``vsn`` query parameter that selects this version on the server."""
-        return _PROTOCOL_SPECS[self].vsn
-
-
-DEFAULT_PROTOCOL_VERSION = PhoenixChannelsProtocolVersion.V2
 
 
 class _RawFrame(NamedTuple):
@@ -82,10 +68,10 @@ def _require_text(value: object, label: str, field: str) -> str:
     return value
 
 
-def _to_message(label: str, frame: _RawFrame) -> ChannelMessage:
+def _to_message(label: str, frame: _RawFrame) -> Message:
     return make_message(
         topic=_require_text(frame.topic, label, "topic"),
-        event=Event(_require_text(frame.event, label, "event")),
+        event=_require_text(frame.event, label, "event"),
         payload=frame.payload if isinstance(frame.payload, dict) else {},
         ref=frame.ref,
         join_ref=frame.join_ref,
@@ -93,33 +79,26 @@ def _to_message(label: str, frame: _RawFrame) -> ChannelMessage:
 
 
 class _ProtocolSpec(NamedTuple):
-    """A protocol version's ``vsn`` and how its frames decode."""
+    """A protocol version's diagnostic label and frame decoder."""
 
-    vsn: str
     label: str
     decode: Callable[[object, str], _RawFrame]
 
 
 _PROTOCOL_SPECS = {
-    PhoenixChannelsProtocolVersion.V1: _ProtocolSpec("1.0.0", "v1", _decode_v1),
-    PhoenixChannelsProtocolVersion.V2: _ProtocolSpec("2.0.0", "v2", _decode_v2),
+    ProtocolVersion.V1: _ProtocolSpec("v1", _decode_v1),
+    ProtocolVersion.V2: _ProtocolSpec("v2", _decode_v2),
 }
 
 
 class PHXProtocolHandler:
     def __init__(
         self,
-        protocol_version: PhoenixChannelsProtocolVersion
-        | str = DEFAULT_PROTOCOL_VERSION,
+        protocol_version: ProtocolVersion | str = DEFAULT_PROTOCOL_VERSION,
         *,
         diagnostic_logger: logging.Logger | None = None,
     ) -> None:
-        # Non-v2 values select v1 for compatibility with the original client.
-        self.protocol_version = (
-            PhoenixChannelsProtocolVersion.V2
-            if protocol_version == PhoenixChannelsProtocolVersion.V2
-            else PhoenixChannelsProtocolVersion.V1
-        )
+        self.protocol_version = ProtocolVersion(protocol_version)
         self.logger = diagnostic_logger or ConnectionLogger(
             logger.getChild("ProtocolHandler"), set()
         )
@@ -128,7 +107,7 @@ class PHXProtocolHandler:
             self.protocol_version,
         )
 
-    def parse_message(self, raw_message: str | bytes) -> ChannelMessage:
+    def parse_message(self, raw_message: str | bytes) -> Message:
         self.logger.debug("Parsing raw message: %s", raw_message)
         try:
             return self._decode_message(raw_message)
@@ -139,16 +118,16 @@ class PHXProtocolHandler:
             self.logger.exception("Unexpected error parsing message")
             raise ValueError(f"Invalid message format: {exc}") from exc
 
-    def _decode_message(self, raw_message: str | bytes) -> ChannelMessage:
+    def _decode_message(self, raw_message: str | bytes) -> Message:
         parsed_data = json.loads(raw_message)
         self.logger.debug("Decoded data: %s", parsed_data)
         spec = _PROTOCOL_SPECS[self.protocol_version]
         return _to_message(spec.label, spec.decode(parsed_data, spec.label))
 
-    def serialize_message(self, message: ChannelMessage) -> str:
+    def serialize_message(self, message: Message) -> str:
         self.logger.debug("Serializing message: %s", message)
         try:
-            if self.protocol_version == PhoenixChannelsProtocolVersion.V2:
+            if self.protocol_version == ProtocolVersion.V2:
                 serialized = json.dumps(
                     [
                         message.join_ref,
@@ -173,9 +152,7 @@ class PHXProtocolHandler:
         self.logger.debug("Serialized to: %s", serialized)
         return serialized
 
-    async def send_message(
-        self, websocket: ClientConnection, message: ChannelMessage
-    ) -> None:
+    async def send_message(self, websocket: ClientConnection, message: Message) -> None:
         self.logger.debug(
             "Serializing %s to Phoenix Channels %s format",
             message,
@@ -186,10 +163,10 @@ class PHXProtocolHandler:
         self.logger.debug("Sending as TEXT frame: %s", text_message)
         await websocket.send(text_message)
 
-    def is_stale_join(self, message: ChannelMessage, current_join_ref: str) -> bool:
+    def is_stale_join(self, message: Message, current_join_ref: str) -> bool:
         # Phoenix broadcasts have no join_ref to compare against the current join.
         return (
-            self.protocol_version == PhoenixChannelsProtocolVersion.V2
+            self.protocol_version == ProtocolVersion.V2
             and message.join_ref is not None
             and message.join_ref != current_join_ref
         )
@@ -199,7 +176,7 @@ class PHXProtocolHandler:
         connection: ClientConnection,
         topic_subscriptions: dict[str, TopicSubscription],
         conn_generation: int,
-        on_heartbeat_response: Callable[[ChannelMessage], None] | None = None,
+        on_heartbeat_response: Callable[[Message], None] | None = None,
     ) -> None:
         self.logger.debug(
             "Starting websocket message loop for generation %s", conn_generation

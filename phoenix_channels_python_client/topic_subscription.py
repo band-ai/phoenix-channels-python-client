@@ -8,12 +8,11 @@ from enum import StrEnum
 from typing import Any
 
 from phoenix_channels_python_client.client_types import JoinResponseCallback
-from phoenix_channels_python_client.phx_messages import (
+from phoenix_channels_python_client.messages import (
     CLIENT_LIFECYCLE_EVENTS,
     ChannelEvent,
-    ChannelMessage,
+    Message,
 )
-from phoenix_channels_python_client.utils import parse_event
 
 
 class TopicProcessingState(StrEnum):
@@ -27,8 +26,8 @@ class TopicSubscription:
     """A topic subscription and everything needed to handle its messages."""
 
     name: str
-    async_callback: Callable[[ChannelMessage], Awaitable[None]] | None
-    queue: Queue[ChannelMessage]
+    async_callback: Callable[[Message], Awaitable[None]] | None
+    queue: Queue[Message]
     join_ref: str
     process_topic_messages_task: Task[None] | None
     current_join_ready: Future[None] = field(default_factory=asyncio.Future)
@@ -53,9 +52,7 @@ class TopicSubscription:
     def add_event_handler(
         self, event: ChannelEvent, handler: Callable[[dict[str, Any]], Awaitable[None]]
     ) -> None:
-        # PHXEvent is not a StrEnum, so the wire strings "phx_error" and
-        # "phx_close" are not members of CLIENT_LIFECYCLE_EVENTS.
-        if parse_event(event) in CLIENT_LIFECYCLE_EVENTS:
+        if event in CLIENT_LIFECYCLE_EVENTS:
             raise ValueError(
                 f"{event} is handled by the client; use on_topic_lost and "
                 "is_topic_joined instead"

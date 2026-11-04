@@ -8,16 +8,14 @@ from typing import Any, NoReturn, cast
 import pytest
 from websockets import ClientConnection
 
-from phoenix_channels_python_client.phx_messages import ChannelMessage
-from phoenix_channels_python_client.protocol_handler import (
-    PhoenixChannelsProtocolVersion,
-    PHXProtocolHandler,
-)
+from phoenix_channels_python_client.messages import Message
+from phoenix_channels_python_client.protocol import ProtocolVersion
+from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from tests.harness import make_subscription
 from tests.support import EVENT, TOPIC
 
-V1 = PhoenixChannelsProtocolVersion.V1
-V2 = PhoenixChannelsProtocolVersion.V2
+V1 = ProtocolVersion.V1
+V2 = ProtocolVersion.V2
 
 # v1 servers may send refs as JSON numbers.
 INTEGER_REF = 1
@@ -42,7 +40,7 @@ class ScriptedConnection:
         self.sent.append(text)
 
 
-class QueueEmptiedWhileFull(asyncio.Queue[ChannelMessage]):
+class QueueEmptiedWhileFull(asyncio.Queue[Message]):
     """Reports full, but is empty by the time the oldest message is dropped."""
 
     def full(self) -> bool:
@@ -51,7 +49,7 @@ class QueueEmptiedWhileFull(asyncio.Queue[ChannelMessage]):
     def get_nowait(self) -> NoReturn:
         raise asyncio.QueueEmpty
 
-    async def put(self, item: ChannelMessage) -> None:
+    async def put(self, item: Message) -> None:
         cast(Any, self)._queue.append(item)
 
 
@@ -87,18 +85,10 @@ def test_a_v1_frame_parses_into_a_message() -> None:
     assert (message.topic, message.event, message.ref) == (TOPIC, EVENT, "1")
 
 
-def test_an_unknown_version_keeps_the_v1_frame_format() -> None:
-    handler = PHXProtocolHandler("unsupported")
-    frame = {"topic": TOPIC, "event": EVENT, "ref": "1", "payload": {"ok": True}}
-
-    message = handler.parse_message(json.dumps(frame))
-
-    assert (message.topic, message.event, message.payload) == (
-        TOPIC,
-        EVENT,
-        {"ok": True},
-    )
-    assert json.loads(handler.serialize_message(message)) == frame
+@pytest.mark.parametrize("version", ["unsupported", "1.0.0", "2.0.0", "", " 2.0"])
+def test_an_unknown_version_is_rejected(version: str) -> None:
+    with pytest.raises(ValueError, match="not a valid ProtocolVersion"):
+        PHXProtocolHandler(version)
 
 
 def test_a_v1_frame_with_integer_refs_parses_as_strings() -> None:
@@ -130,7 +120,7 @@ def test_a_v1_frame_with_integer_refs_parses_as_strings() -> None:
     ],
 )
 def test_a_malformed_frame_is_rejected(
-    protocol: PhoenixChannelsProtocolVersion,
+    protocol: ProtocolVersion,
     raw: str,
     expected_exception: type[Exception],
 ) -> None:
@@ -146,7 +136,7 @@ def test_a_malformed_frame_is_rejected(
     ],
 )
 def test_a_frame_without_an_object_payload_parses_with_an_empty_one(
-    protocol: PhoenixChannelsProtocolVersion, raw: str
+    protocol: ProtocolVersion, raw: str
 ) -> None:
     assert PHXProtocolHandler(protocol).parse_message(raw).payload == {}
 

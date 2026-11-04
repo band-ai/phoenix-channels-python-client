@@ -8,13 +8,11 @@ import pytest
 from websockets.frames import CloseCode
 from websockets.protocol import State
 
-from phoenix_channels_python_client.client import PHXChannelsClient
+from phoenix_channels_python_client.client import Client
 from phoenix_channels_python_client.client_types import ClientState
-from phoenix_channels_python_client.exceptions import PHXConnectionError
-from phoenix_channels_python_client.phx_messages import ChannelMessage
-from phoenix_channels_python_client.protocol_handler import (
-    PhoenixChannelsProtocolVersion,
-)
+from phoenix_channels_python_client.exceptions import SocketError
+from phoenix_channels_python_client.messages import Message
+from phoenix_channels_python_client.protocol import ProtocolVersion
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     ASYNC_TIMEOUT_S,
@@ -69,7 +67,7 @@ class HeldCallback:
     def __exit__(self, *exc_info: object) -> None:
         self.release.set()
 
-    async def __call__(self, message: ChannelMessage) -> None:
+    async def __call__(self, message: Message) -> None:
         del message
         self.running.set()
         try:
@@ -81,7 +79,7 @@ class HeldCallback:
 
 
 async def run_held_callback(
-    server: FakePhoenixServer, client: PHXChannelsClient, callback: HeldCallback
+    server: FakePhoenixServer, client: Client, callback: HeldCallback
 ) -> None:
     await client.subscribe_to_topic(TOPIC, callback)
     await deliver(server, client)
@@ -89,7 +87,7 @@ async def run_held_callback(
 
 
 async def shut_down_during_a_held_reconnect(
-    server: FakePhoenixServer, client: PHXChannelsClient, callback: HeldCallback
+    server: FakePhoenixServer, client: Client, callback: HeldCallback
 ) -> tuple[asyncio.Task[None], asyncio.Task[None]]:
     """Hold a reconnect's handshake, then start shutdown; return (run, stop)."""
     await run_held_callback(server, client, callback)
@@ -181,7 +179,7 @@ async def test_shutdown_during_the_reconnect_backoff_makes_no_new_connection(
 
 
 async def test_shutdown_during_recovery_leaves_no_tasks(
-    protocol: PhoenixChannelsProtocolVersion,
+    protocol: ProtocolVersion,
 ) -> None:
     # Proactor replaces the listener's accept task per connection: own it too.
     before = asyncio.all_tasks()
@@ -232,7 +230,7 @@ async def test_shutdown_during_initial_connect_fails_the_entry(
     await asyncio.wait_for(phoenix_server.handshake_pending.wait(), ASYNC_TIMEOUT_S)
 
     await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
-    with pytest.raises(PHXConnectionError):
+    with pytest.raises(SocketError):
         await asyncio.wait_for(enter, ASYNC_TIMEOUT_S)
 
 
@@ -291,7 +289,7 @@ async def test_reentering_during_a_shutdown_raises(
 
             stop = asyncio.create_task(client.shutdown(STOP_REASON))
             await asyncio.wait_for(held.cancelled.wait(), ASYNC_TIMEOUT_S)
-            with pytest.raises(PHXConnectionError):
+            with pytest.raises(SocketError):
                 await asyncio.wait_for(client.__aenter__(), ASYNC_TIMEOUT_S)
 
         await asyncio.wait_for(stop, ASYNC_TIMEOUT_S)
@@ -302,7 +300,7 @@ async def test_shutdown_from_a_topic_callback_cancels_the_callback(
 ) -> None:
     callback_cancelled = asyncio.Event()
 
-    async def stop_from_callback(message: ChannelMessage) -> None:
+    async def stop_from_callback(message: Message) -> None:
         del message
         try:
             await client.shutdown(STOP_REASON)
@@ -388,7 +386,7 @@ async def a_handshake_was_refused(server: FakePhoenixServer) -> None:
 
 
 async def expire_on_first_refusal(
-    server: FakePhoenixServer, client: PHXChannelsClient, deadline: asyncio.Timeout
+    server: FakePhoenixServer, client: Client, deadline: asyncio.Timeout
 ) -> asyncio.Task[None] | None:
     """Expire ``deadline`` once a handshake was refused; return entry's supervisor."""
     await a_handshake_was_refused(server)
@@ -398,7 +396,7 @@ async def expire_on_first_refusal(
 
 
 async def time_out_entry_on_first_refusal(
-    server: FakePhoenixServer, client: PHXChannelsClient
+    server: FakePhoenixServer, client: Client
 ) -> asyncio.Task[None] | None:
     """Enter under a deadline that expires on the first refused handshake.
 
@@ -484,4 +482,4 @@ async def test_closing_a_pending_entry_is_silent(
     # The closed entry no longer awaits its outcome; retrieve it here.
     initial_connection = client._initial_connection_future
     assert initial_connection is not None
-    assert isinstance(initial_connection.exception(), PHXConnectionError)
+    assert isinstance(initial_connection.exception(), SocketError)

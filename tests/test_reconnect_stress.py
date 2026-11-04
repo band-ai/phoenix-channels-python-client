@@ -7,10 +7,9 @@ from dataclasses import dataclass
 
 import pytest
 
-from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
-from phoenix_channels_python_client.protocol_handler import (
-    PhoenixChannelsProtocolVersion,
-)
+from phoenix_channels_python_client.client import Client
+from phoenix_channels_python_client.client_types import ReconnectPolicy
+from phoenix_channels_python_client.protocol import ProtocolVersion
 from tests.fake_server import FakePhoenixServer
 from tests.support import ASYNC_TIMEOUT_S, STOP_REASON, TOPIC, make_client
 
@@ -84,7 +83,7 @@ async def contending_clients(
     """Run ``clients_n`` clients that share one session, then shut them all down."""
     policy = _stress_policy()
     async with AsyncExitStack() as stack:
-        clients: list[PHXChannelsClient] = []
+        clients: list[Client] = []
         # Each joins before the next connects and takes over the shared session.
         for idx in range(clients_n):
             client = await stack.enter_async_context(
@@ -173,7 +172,7 @@ CONTENTION_WINDOW_S = 1.2
 
 
 # V2 runs in the duplicate-session stress tests above.
-@pytest.mark.parametrize("protocol", [PhoenixChannelsProtocolVersion.V1])
+@pytest.mark.parametrize("protocol", [ProtocolVersion.V1])
 async def test_two_clients_contending_for_one_session_reconnect_at_a_bounded_fair_rate(
     phoenix_server: FakePhoenixServer,
 ) -> None:

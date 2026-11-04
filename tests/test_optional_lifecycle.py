@@ -7,7 +7,7 @@ from contextlib import suppress
 
 import pytest
 
-from phoenix_channels_python_client.exceptions import PHXTopicError
+from phoenix_channels_python_client.exceptions import ChannelError
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer, ReplyStatus, WireEvent
@@ -286,7 +286,7 @@ class TestOptionalLifecycle:
             await push(phoenix_server, current)
             await replacement.delivered.get()
             assert len(losses) == 1
-            assert isinstance(losses[0], PHXTopicError)
+            assert isinstance(losses[0], ChannelError)
             assert original.order == [{}]
 
     @pytest.mark.clock
@@ -528,7 +528,7 @@ class TestOptionalLifecycle:
             await reply(phoenix_server, pending)
             await push(phoenix_server, pending, WireEvent.CLOSE)
             lost_topic, error = await losses.get()
-            assert (lost_topic, type(error)) == (TOPIC, PHXTopicError)
+            assert (lost_topic, type(error)) == (TOPIC, ChannelError)
             assert TOPIC not in client.get_current_subscriptions()
             assert probe.order == [{}, None]
 
@@ -577,6 +577,6 @@ class TestOptionalLifecycle:
             await push(phoenix_server, pending, WireEvent.CLOSE)
             await reply(phoenix_server, pending)
             lost_topic, error = await losses.get()
-            assert (lost_topic, type(error)) == (TOPIC, PHXTopicError)
+            assert (lost_topic, type(error)) == (TOPIC, ChannelError)
             assert TOPIC not in client.get_current_subscriptions()
             assert probe.order == [{}]

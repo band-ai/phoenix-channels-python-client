@@ -9,8 +9,8 @@ from contextlib import asynccontextmanager, contextmanager
 
 from websockets import ClientConnection
 
-from phoenix_channels_python_client import PHXChannelsClient
-from phoenix_channels_python_client.phx_messages import ChannelMessage
+from phoenix_channels_python_client import Client
+from phoenix_channels_python_client.messages import Message
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from tests.fake_server import FakePhoenixServer, Frame, ReplyStatus, WireEvent
 from tests.scheduling import TaskLifecycleGate
@@ -18,13 +18,13 @@ from tests.support import ASYNC_TIMEOUT_S, EVENT, TOPIC
 
 
 class JoinProbe:
-    def __init__(self, client: PHXChannelsClient, topic: str = TOPIC) -> None:
+    def __init__(self, client: Client, topic: str = TOPIC) -> None:
         self.client = client
         self.topic = topic
         self.state: object = None
         self.order: list[object] = []
         self.installed: asyncio.Queue[object] = asyncio.Queue()
-        self.delivered: asyncio.Queue[ChannelMessage] = asyncio.Queue()
+        self.delivered: asyncio.Queue[Message] = asyncio.Queue()
 
     def install(self, response: object) -> None:
         assert not self.client.is_topic_joined(self.topic)
@@ -32,7 +32,7 @@ class JoinProbe:
         self.order.append(response)
         self.installed.put_nowait(response)
 
-    async def receive(self, message: ChannelMessage) -> None:
+    async def receive(self, message: Message) -> None:
         assert self.client.is_topic_joined(self.topic)
         self.order.append(message.payload)
         self.delivered.put_nowait(message)
@@ -40,7 +40,7 @@ class JoinProbe:
 
 @asynccontextmanager
 async def pending_subscribe(
-    client: PHXChannelsClient, probe: JoinProbe, *, blocks_reconnect: bool = True
+    client: Client, probe: JoinProbe, *, blocks_reconnect: bool = True
 ) -> AsyncIterator[asyncio.Task[None]]:
     task = asyncio.create_task(
         client.subscribe_to_topic(

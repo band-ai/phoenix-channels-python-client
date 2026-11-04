@@ -18,12 +18,12 @@ from phoenix_channels_python_client.default_decider import (
     equal_jitter,
     exponential_delay,
 )
-from phoenix_channels_python_client.exceptions import PHXConnectionError
+from phoenix_channels_python_client.exceptions import SocketError
 
 
 def _decider_failure(message: str, cause: Exception | None = None) -> ReconnectDecision:
     """A stop for a broken decider; never the built-in policy deciding instead."""
-    error = PHXConnectionError(message)
+    error = SocketError(message)
     error.__cause__ = cause
     return ReconnectDecision(should_reconnect=False, terminal_error=error)
 

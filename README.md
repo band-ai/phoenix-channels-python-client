@@ -46,17 +46,42 @@ uv run pytest
 - `pydantic>=2.8`
 - `websockets>=14.2`
 
+## Public API migration
+
+The public names have changed without compatibility aliases:
+
+| Previous name | Current name |
+| --- | --- |
+| `PHXChannelsClient` | `Client` |
+| `PHXClientError` | `ClientError` |
+| `PHXTopicError` | `ChannelError` |
+| `PHXConnectionError` | `SocketError` |
+| `PhoenixChannelsProtocolVersion` | `ProtocolVersion` |
+| `PHXEvent` | `SystemEvent` |
+| `ChannelMessage` | `Message` |
+| `Client(url, key)` | `Client(url, api_key=key)` |
+| `setup_logging(level)` | Standard-library logging configuration (see [Logging](#logging)) |
+
+Import public types from `phoenix_channels_python_client`. Message types now live
+in `messages` rather than `phx_messages`; `Message` is an annotation/result union,
+not a model constructor. The installed package ships `py.typed` for type checkers.
+`SystemEvent` is a `StrEnum`, so members compare directly with their wire strings.
+
+`PHXProtocolHandler`, `get_protocol_handler()`, `Event`, and `__author__` are no
+longer public API. Protocol parsing and serialization remain internal. Topic
+subscription and handler methods are unchanged in this cleanup.
+
 ## Quick Start
 
 Here's a minimal example to get you started:
 
 ```python
 import asyncio
-from phoenix_channels_python_client import PHXChannelsClient
+from phoenix_channels_python_client import Client
 
 async def main():
     # Connect to Phoenix WebSocket server
-    async with PHXChannelsClient(
+    async with Client(
         websocket_url="ws://localhost:4000/socket/websocket",
         api_key="your-api-key"
     ) as client:
@@ -116,8 +141,8 @@ Phoenix reserves `phx_join`, `phx_reply`, `phx_leave`, `phx_close` and
 - The client handles `phx_error` and `phx_close` itself, and neither reaches
   your handlers: a crashed channel is rejoined, and a channel the server
   closes loses its topic (see [Channel recovery](#channel-recovery)).
-- `add_event_handler` raises `ValueError` for `PHXEvent.error` and
-  `PHXEvent.close`. Use `on_topic_lost` and `is_topic_joined()` instead.
+- `add_event_handler` raises `ValueError` for `SystemEvent.error` and
+  `SystemEvent.close`. Use `on_topic_lost` and `is_topic_joined()` instead.
 
 ## Protocol Versions
 
@@ -125,9 +150,9 @@ Phoenix Channels supports two protocol versions. Choose based on your Phoenix se
 
 ### Protocol v2.0 (Default)
 ```python
-from phoenix_channels_python_client import PHXChannelsClient
+from phoenix_channels_python_client import Client
 
-async with PHXChannelsClient(
+async with Client(
     websocket_url="ws://localhost:4000/socket/websocket",
     api_key="your-api-key"
     # protocol_version defaults to v2.0
@@ -137,17 +162,19 @@ async with PHXChannelsClient(
 
 ### Protocol v1.0
 ```python
-from phoenix_channels_python_client import PHXChannelsClient, PhoenixChannelsProtocolVersion
+from phoenix_channels_python_client import Client, ProtocolVersion
 
-async with PHXChannelsClient(
+async with Client(
     websocket_url="ws://localhost:4000/socket/websocket", 
     api_key="your-api-key",
-    protocol_version=PhoenixChannelsProtocolVersion.V1
+    protocol_version=ProtocolVersion.V1
 ) as client:
     ...  # your code here
 ```
 
-The client adds `vsn=2.0.0` (V2) or `vsn=1.0.0` (V1) to the socket URL.
+The client accepts `ProtocolVersion.V1`, `ProtocolVersion.V2`, or their exact
+string values `"1.0"` and `"2.0"`. Other values raise `ValueError`. It adds
+`vsn=2.0.0` (V2) or `vsn=1.0.0` (V1) to the socket URL.
 
 ## Usage Examples
 
@@ -155,7 +182,7 @@ The client adds `vsn=2.0.0` (V2) or `vsn=1.0.0` (V1) to the socket URL.
 
 ```python
 import asyncio
-from phoenix_channels_python_client import PHXChannelsClient
+from phoenix_channels_python_client import Client
 
 async def message_handler(message):
     print(f"Topic: {message.topic}")
@@ -163,7 +190,7 @@ async def message_handler(message):
     print(f"Payload: {message.payload}")
 
 async def main():
-    async with PHXChannelsClient("ws://localhost:4000/socket/websocket", "api-key") as client:
+    async with Client("ws://localhost:4000/socket/websocket", api_key="api-key") as client:
         await client.subscribe_to_topic("chat:general", message_handler)
         
         # Use built-in method to keep connection alive
@@ -198,7 +225,7 @@ You can register handlers for specific events on a topic:
 
 ```python
 import asyncio
-from phoenix_channels_python_client import PHXChannelsClient
+from phoenix_channels_python_client import Client
 
 async def handle_user_join(payload):
     print(f"User joined: {payload}")
@@ -207,7 +234,7 @@ async def handle_user_leave(payload):
     print(f"User left: {payload}")
 
 async def main():
-    async with PHXChannelsClient("ws://localhost:4000/socket/websocket", "api-key") as client:
+    async with Client("ws://localhost:4000/socket/websocket", api_key="api-key") as client:
         # Subscribe to topic first
         await client.subscribe_to_topic("room:lobby")
         
@@ -227,13 +254,13 @@ You can unsubscribe from topics to stop receiving messages and clean up resource
 
 ```python
 import asyncio
-from phoenix_channels_python_client import PHXChannelsClient
+from phoenix_channels_python_client import Client
 
 async def on_message(msg):
     print(f"Message: {msg.payload}")
 
 async def main():
-    async with PHXChannelsClient("ws://localhost:4000/socket/websocket", "api-key") as client:
+    async with Client("ws://localhost:4000/socket/websocket", api_key="api-key") as client:
         # Subscribe to a topic
         await client.subscribe_to_topic("room:lobby", on_message)
         
@@ -253,11 +280,11 @@ asyncio.run(main())
 **Notes on unsubscription:**
 - Removes all handlers (both message and event-specific) for that topic
 - Sends `phx_leave` and waits for the reply (`leave_timeout_s`, default 5 s)
-- Raises `PHXTopicError` if the topic isn't subscribed or the leave times out, and `PHXConnectionError` while disconnected
+- Raises `ChannelError` if the topic isn't subscribed or the leave times out, and `SocketError` while disconnected
 
 ## Configuration
 
-`api_key` defaults to `None` and can still be passed positionally. Without an
+`api_key` is keyword-only and defaults to `None`. Without an
 authentication header, a supplied key replaces any `api_key` in the URL; omitting
 it (or passing `None`) keeps the URL credential, if present. An empty argument
 (`api_key=""`) raises `ValueError`.
@@ -265,16 +292,16 @@ it (or passing `None`) keeps the URL credential, if present. An empty argument
 Connect without a credential, or keep one already in the URL:
 
 ```python
-async with PHXChannelsClient("ws://localhost:4000/socket/websocket") as client:
+async with Client("ws://localhost:4000/socket/websocket") as client:
     ...
 
-async with PHXChannelsClient(
+async with Client(
     "wss://server.com/socket/websocket?api_key=your-api-key"
 ) as client:
     ...
 ```
 
-Everything after `api_key` is keyword-only:
+Only `websocket_url` may be positional; all other constructor options are keyword-only:
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -299,24 +326,29 @@ Join-response installation failures instead fail the join (see below).
 
 ## Connection Lifecycle and Errors
 
-- `async with` waits for the first connection. With `auto_reconnect=True` it keeps retrying, except after a refused handshake with HTTP 403, which raises `PHXConnectionError`; with `auto_reconnect=False` a failed first connection raises `PHXConnectionError`.
-- `run_forever()` returns `None` after `shutdown()`, a signal, or a close that doesn't reconnect. It raises `PHXConnectionError` on a terminal close, a refused handshake with HTTP 403, after repeated rapid disconnects, or when the client has never entered `async with`.
-- `subscribe_to_topic()` raises `PHXTopicError` on a rejected join, a join timeout or a duplicate subscription, and `PHXConnectionError` while disconnected or if the connection drops before the join completes.
+- `async with` waits for the first connection. With `auto_reconnect=True` it keeps retrying, except after a refused handshake with HTTP 403, which raises `SocketError`; with `auto_reconnect=False` a failed first connection raises `SocketError`.
+- `run_forever()` returns `None` after `shutdown()`, a signal, or a close that doesn't reconnect. It raises `SocketError` on a terminal close, a refused handshake with HTTP 403, after repeated rapid disconnects, or when the client has never entered `async with`.
+- `subscribe_to_topic()` raises `ChannelError` on a rejected join, a join timeout or a duplicate subscription, and `SocketError` while disconnected or if the connection drops before the join completes.
 - `await client.close_connection(reason)` force-closes the current connection; the client then reconnects if `auto_reconnect` is on. It does nothing if the client isn't connected or the connection is already closing.
-- Exceptions live in `phoenix_channels_python_client.exceptions`.
+- `await client.shutdown()` uses the default reason `"Client shutdown"`; pass a
+  reason to describe an explicit stop.
+- `ClientError`, `ChannelError`, `SocketError` and `PushTimeoutError` are exported
+  from the package and defined in `phoenix_channels_python_client.exceptions`.
+  `ChannelError` and `SocketError` derive from `ClientError`; `PushTimeoutError`
+  derives from `ChannelError`.
 
 ### Reconnects
 
 | Close code or handshake | Behaviour (defaults) |
 |---|---|
 | 1000, 1001 | Reconnect (Phoenix ≥ 1.8.8 sends 1001 for "reconnect expected"); stop with `reconnect_on_normal_close=False` |
-| 1008 | Stop with `PHXConnectionError` (`policy_violation_is_terminal=True`) |
-| Handshake refused with HTTP 403 | Stop with `PHXConnectionError`; other statuses (401, 5xx, …) retry with the backoff below |
+| 1008 | Stop with `SocketError` (`policy_violation_is_terminal=True`) |
+| Handshake refused with HTTP 403 | Stop with `SocketError`; other statuses (401, 5xx, …) retry with the backoff below |
 | 1012 | Reconnect after at least a random 1–5 s |
 | 1013 | Reconnect after at least a random 30–60 s |
 | Anything else, or no close frame | Reconnect with jittered backoff: 0.5 s × 2ⁿ, capped at 30 s, reset after 60 s of uptime |
 
-Disconnects within 5 s of connecting count as rapid and get longer minimum delays; ten within 60 s stop the client with `PHXConnectionError`. Tune all of this with `ReconnectPolicy`.
+Disconnects within 5 s of connecting count as rapid and get longer minimum delays; ten within 60 s stop the client with `SocketError`. Tune all of this with `ReconnectPolicy`.
 
 A `ReconnectPolicy` is validated when it is built: an out-of-range or unknown field raises `pydantic.ValidationError`, which is a `ValueError`. To derive one policy from another, validate the merged fields:
 
@@ -336,17 +368,17 @@ Pass `reconnect_decider` to make every reconnect decision yourself. While `auto_
 
 It returns a `ReconnectDecision`:
 
-- `ReconnectDecision(should_reconnect=True, delay_s=2.0)` after `Disconnected` or `ConnectFailed` waits exactly 2 s before the next attempt; `delay_s` defaults to `0`. `Connecting` and `Connected` only proceed or stop, and a delay there stops the client with `PHXConnectionError`.
-- `ReconnectDecision(should_reconnect=False)` stops; `run_forever()` returns `None`, and before the first connection `async with` raises `PHXConnectionError`. A stop at `Connected` closes that socket before any rejoin.
-- `ReconnectDecision(should_reconnect=False, terminal_error=PHXConnectionError(...))` stops; `run_forever()` (or `async with`, before the first connection) raises that error.
+- `ReconnectDecision(should_reconnect=True, delay_s=2.0)` after `Disconnected` or `ConnectFailed` waits exactly 2 s before the next attempt; `delay_s` defaults to `0`. `Connecting` and `Connected` only proceed or stop, and a delay there stops the client with `SocketError`.
+- `ReconnectDecision(should_reconnect=False)` stops; `run_forever()` returns `None`, and before the first connection `async with` raises `SocketError`. A stop at `Connected` closes that socket before any rejoin.
+- `ReconnectDecision(should_reconnect=False, terminal_error=SocketError(...))` stops; `run_forever()` (or `async with`, before the first connection) raises that error.
 
-The decider replaces the whole built-in policy above, rapid-disconnect suppression included; the built-in policy is itself a decider over the same events. It runs inline on the client's supervisor task, so keep it fast and never block. The client calls the same decider on every `async with` entry, so reset any per-run state yourself; the built-in one is rebuilt each time. If it raises, the client stops with a `PHXConnectionError` whose `__cause__` is that exception; if it returns anything but a `ReconnectDecision` (an `async def` decider returns a coroutine), the client stops with a `PHXConnectionError` too. It is not asked once `shutdown()` has begun. To end a live connection, call `close_connection()` and stop at the next decision.
+The decider replaces the whole built-in policy above, rapid-disconnect suppression included; the built-in policy is itself a decider over the same events. It runs inline on the client's supervisor task, so keep it fast and never block. The client calls the same decider on every `async with` entry, so reset any per-run state yourself; the built-in one is rebuilt each time. If it raises, the client stops with a `SocketError` whose `__cause__` is that exception; if it returns anything but a `ReconnectDecision` (an `async def` decider returns a coroutine), the client stops with a `SocketError` too. It is not asked once `shutdown()` has begun. To end a live connection, call `close_connection()` and stop at the next decision.
 
 ```python
 def decide(event: ReconnectEvent) -> ReconnectDecision:
     match event:
         case ConnectFailed(error=InvalidStatus(response=response)) if response.status_code == 403:
-            return ReconnectDecision(should_reconnect=False, terminal_error=PHXConnectionError("refused"))
+            return ReconnectDecision(should_reconnect=False, terminal_error=SocketError("refused"))
         case Disconnected() | ConnectFailed():
             return ReconnectDecision(should_reconnect=True, delay_s=1.0)
         case _:
@@ -368,8 +400,8 @@ The client sends a `heartbeat` on the `phoenix` topic every `heartbeat_interval_
 Set `heartbeat_dead_threshold_s` to enable closure after acknowledgement silence:
 
 ```python
-client = PHXChannelsClient(
-    websocket_url, api_key,
+client = Client(
+    websocket_url, api_key=api_key,
     heartbeat_interval_s=30.0,
     heartbeat_dead_threshold_s=60.0,
 )
@@ -381,11 +413,14 @@ Expiry or heartbeat send failure force-closes that socket; the supervisor handle
 
 ## Logging
 
+The library uses loggers under `phoenix_channels_python_client`. Configure
+logging in your application; importing the package does not configure it:
+
 ```python
 import logging
-from phoenix_channels_python_client import setup_logging
 
-setup_logging(logging.DEBUG)  # loggers live under "phoenix_channels_python_client"
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("phoenix_channels_python_client").setLevel(logging.DEBUG)
 ```
 
 ## Examples
@@ -413,7 +448,7 @@ Pass `additional_headers={"x-api-key": key}` or `{"x-auth-token": jwt}` to use h
 No `api_key` argument is needed for header authentication:
 
 ```python
-async with PHXChannelsClient(
+async with Client(
     "wss://server.com/socket/websocket",
     additional_headers={"x-api-key": "your-api-key"},
 ) as client:
@@ -473,7 +508,7 @@ Hooks must be short, nonblocking and return `None`. Do not await, perform I/O,
 wait on locks, defer installation, or change task/client lifecycle inside them.
 Async callables, awaitable results and other non-`None` results fail admission.
 The join timeout bounds reply waiting and cannot preempt synchronous code. Hook
-exceptions (including directly raised `CancelledError`) fail with `PHXTopicError`
+exceptions (including directly raised `CancelledError`) fail with `ChannelError`
 and preserve their cause; arbitrary prior hook effects are not rolled back.
 Initial failure belongs to the caller. An established subscription whose installer
 fails is removed and reported once through `on_topic_lost`.

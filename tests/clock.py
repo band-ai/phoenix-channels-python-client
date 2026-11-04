@@ -9,9 +9,7 @@ import looptime
 import pytest
 import pytest_asyncio
 
-from phoenix_channels_python_client.protocol_handler import (
-    PhoenixChannelsProtocolVersion,
-)
+from phoenix_channels_python_client.protocol import ProtocolVersion
 from tests.fake_server import FakePhoenixServer
 
 CLOCK_RESOLUTION = 2**-16
@@ -64,7 +62,7 @@ async def clock() -> AsyncIterator[Clock]:
 
 @pytest_asyncio.fixture
 async def clocked_peer(
-    clock: Clock, protocol: PhoenixChannelsProtocolVersion
+    clock: Clock, protocol: ProtocolVersion
 ) -> AsyncIterator[FakePhoenixServer]:
     del clock
     async with FakePhoenixServer(protocol) as server:

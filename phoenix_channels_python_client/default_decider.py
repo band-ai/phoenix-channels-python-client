@@ -20,7 +20,7 @@ from phoenix_channels_python_client.client_types import (
     ReconnectEvent,
     ReconnectPolicy,
 )
-from phoenix_channels_python_client.exceptions import PHXConnectionError
+from phoenix_channels_python_client.exceptions import SocketError
 
 # The Band platform answers every auth refusal with 403, and its websocket spec
 # (thenvoi-platform spec/websocket-api.draft.md) makes a rejected reconnect terminal.
@@ -59,9 +59,7 @@ def _now() -> float:
 def _terminal_decision(cause: str) -> ReconnectDecision:
     return ReconnectDecision(
         should_reconnect=False,
-        terminal_error=PHXConnectionError(
-            f"Reconnect disabled due to terminal {cause}"
-        ),
+        terminal_error=SocketError(f"Reconnect disabled due to terminal {cause}"),
     )
 
 
@@ -183,7 +181,7 @@ class DefaultReconnectDecider:
     def _suppression(self) -> ReconnectDecision:
         return ReconnectDecision(
             should_reconnect=False,
-            terminal_error=PHXConnectionError(
+            terminal_error=SocketError(
                 "Reconnect suppressed after repeated rapid disconnects. "
                 "Likely duplicate connection or unstable endpoint."
             ),

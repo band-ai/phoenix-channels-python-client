@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Self
@@ -15,9 +15,17 @@ from pydantic import (
     model_validator,
 )
 
-from phoenix_channels_python_client.exceptions import PHXConnectionError
+from phoenix_channels_python_client.exceptions import SocketError
 
 JoinResponseCallback = Callable[[Any], None]
+
+ReconnectCallback = Callable[[], Awaitable[None]]
+DisconnectCallback = Callable[[Exception | None], Awaitable[None]]
+# Must be synchronous and fast: unlike the callbacks above, this runs inline
+# on the message-routing hot path, so blocking work here stalls heartbeat
+# sends and message routing for every connection.
+HeartbeatAckCallback = Callable[[], None]
+TopicLostCallback = Callable[[str, Exception], Awaitable[None]]
 
 
 class ClientState(StrEnum):
@@ -83,7 +91,7 @@ class ReconnectDecision:
 
     should_reconnect: bool
     delay_s: float = 0.0
-    terminal_error: PHXConnectionError | None = None
+    terminal_error: SocketError | None = None
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.delay_s) or self.delay_s < 0:
