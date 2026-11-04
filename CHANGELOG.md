@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.4.4...phoenix-channels-python-client-v0.5.0) (2026-11-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** add channel handles and join params ([#97](https://github.com/band-ai/phoenix-channels-python-client/issues/97))
+* **client:** clean up the public API ([#96](https://github.com/band-ai/phoenix-channels-python-client/issues/96))
+
+### Features
+
+* **client:** add channel handles and join params ([#97](https://github.com/band-ai/phoenix-channels-python-client/issues/97)) ([d3af4e7](https://github.com/band-ai/phoenix-channels-python-client/commit/d3af4e710692d7fd81da38fbdecef72c5d346537))
+* **client:** add correlated pushes and replies ([#98](https://github.com/band-ai/phoenix-channels-python-client/issues/98)) ([b97344a](https://github.com/band-ai/phoenix-channels-python-client/commit/b97344a0ef94209d932cad9718f864fdf2c97afc))
+* **protocol:** support Phoenix V2 binary frames ([bb99fd8](https://github.com/band-ai/phoenix-channels-python-client/commit/bb99fd89c3b78a12b546bc9a8a6a73d649fd6534))
+
+
+### Bug Fixes
+
+* **client:** make api_key optional and keep a URL credential ([#94](https://github.com/band-ai/phoenix-channels-python-client/issues/94)) ([22d9252](https://github.com/band-ai/phoenix-channels-python-client/commit/22d92527a6d25cfbda772a633706d5fe1ab048b4))
+* **protocol:** accept V2 messages without a join_ref ([#91](https://github.com/band-ai/phoenix-channels-python-client/issues/91)) ([a1f0620](https://github.com/band-ai/phoenix-channels-python-client/commit/a1f06203943d61d220ede3f67cafffc8bf423219))
+
+
+### Documentation
+
+* Thanks to Antonio ([@atoncetti](https://github.com/atoncetti)) for the original binary-frame, push and join-parameter design and protobuf use case. ([bb99fd8](https://github.com/band-ai/phoenix-channels-python-client/commit/bb99fd89c3b78a12b546bc9a8a6a73d649fd6534))
+
+
+### Miscellaneous Chores
+
+* adopt agent skills from band-sdk-python ([#92](https://github.com/band-ai/phoenix-channels-python-client/issues/92)) ([b7e5729](https://github.com/band-ai/phoenix-channels-python-client/commit/b7e57298aecb7ec43a44d9a1110d50c7b18db0ec))
+* use the band- prefix for agent skills ([#95](https://github.com/band-ai/phoenix-channels-python-client/issues/95)) ([4e09c92](https://github.com/band-ai/phoenix-channels-python-client/commit/4e09c92f2a41c57a54f908df51138aff95f93f81))
+
+
+### Code Refactoring
+
+* **client:** clean up the public API ([#96](https://github.com/band-ai/phoenix-channels-python-client/issues/96)) ([539bffb](https://github.com/band-ai/phoenix-channels-python-client/commit/539bffb5c52feea812ccb1a08518bd8f522ba2b8))
+
 ## [0.4.4](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.4.3...phoenix-channels-python-client-v0.4.4) (2026-11-02)
 
 
