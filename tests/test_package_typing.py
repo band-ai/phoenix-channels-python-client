@@ -103,6 +103,7 @@ def test_the_installed_wheel_exposes_checked_public_types(tmp_path: Path) -> Non
         "    await client.shutdown()\n",
         encoding="utf-8",
     )
+    diagnostics = tmp_path / "diagnostics.json"
     command = (
         str(executable),
         "-I",
@@ -111,6 +112,8 @@ def test_the_installed_wheel_exposes_checked_public_types(tmp_path: Path) -> Non
         "check",
         str(consumer),
         "--output-format=json",
+        "--output",
+        str(diagnostics),
         "--search-path",
         str(tmp_path),
         "--disable-search-path-heuristics",
@@ -127,7 +130,7 @@ def test_the_installed_wheel_exposes_checked_public_types(tmp_path: Path) -> Non
     )
     rejected = run(*command, cwd=tmp_path)
     assert rejected.returncode == 1, rejected.stdout + rejected.stderr
-    errors = json.loads(rejected.stdout)["errors"]
+    errors = json.loads(diagnostics.read_text(encoding="utf-8"))["errors"]
     assert [(error["line"], error["name"]) for error in errors] == [
         (2, "bad-argument-type"),
         (3, "bad-argument-count"),
