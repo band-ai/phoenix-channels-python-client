@@ -120,7 +120,9 @@ def _decode_binary(raw: bytes) -> DecodedMessage:
         raise ValueError("Empty binary frame")
     kind = BinaryKind(raw[0])
     fields, payload = _binary_fields(raw, SERVER_HEADER_FIELDS[kind])
-    status = None
+    join_ref: str | None
+    ref: str | None
+    status: str | None = None
     match kind:
         case BinaryKind.PUSH:
             join_ref, topic, event = fields

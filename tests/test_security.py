@@ -15,6 +15,7 @@ from phoenix_channels_python_client import Client
 from phoenix_channels_python_client.client_types import ReconnectPolicy
 from phoenix_channels_python_client.diagnostics import ConnectionLogger
 from phoenix_channels_python_client.exceptions import SocketError
+from phoenix_channels_python_client.messages import SystemEvent
 from tests.fake_server import FakePhoenixServer
 
 URL_CREDENTIAL = "url/private+ credential?x=1&z=#[]"
@@ -198,6 +199,45 @@ class TestConnectionSecurity:
         finally:
             target.disabled = previous_disabled
             target.removeFilter(reject)
+
+    @pytest.mark.parametrize(
+        ("message", "args", "rendered"),
+        [
+            (
+                "No handler found for event %s on topic %s",
+                ("user_join", "room:42"),
+                "No handler found for event <omitted> on topic <omitted>",
+            ),
+            (
+                "Channel %s is %s after %d attempts",
+                (SystemEvent.join, True, 3),
+                "Channel phx_join is True after <omitted> attempts",
+            ),
+            ("100%% of %s", ("room:42",), "100% of <omitted>"),
+            ("%s and %s", ("only-one",), "<omitted> and <omitted>"),
+            ("%d with text", ("not-a-number",), "<omitted> with text"),
+            ("%(topic)s by name", ({"topic": "room:42"},), "<omitted> by name"),
+        ],
+        ids=[
+            "strings",
+            "enum-bool-number",
+            "escape",
+            "too-few",
+            "type-mismatch",
+            "mapping",
+        ],
+    )
+    def test_placeholders_render_without_exposing_arguments(
+        self, message: str, args: tuple[object, ...], rendered: str
+    ) -> None:
+        client = Client("ws://127.0.0.1:1/socket", api_key="synthetic-key")
+        collector = BufferingHandler(10)
+        client.logger.addHandler(collector)
+        client.logger.setLevel(logging.WARNING)
+
+        client.logger.warning(message, *args)
+
+        assert [record.getMessage() for record in collector.buffer] == [rendered]
 
     @pytest.mark.parametrize(
         "header_names",
@@ -395,6 +435,9 @@ class TestConnectionSecurity:
             "Parsing raw message:" in record.getMessage() for record in collector.buffer
         )
         assert any("OPEN" in record.getMessage() for record in collector.buffer)
+        messages = [record.getMessage() for record in collector.buffer]
+        assert "Connection callback failed: <omitted> [RuntimeError]" in messages
+        assert "Untrusted numeric identity: <omitted> <omitted> <omitted>" in messages
         for record in collector.buffer:
             assert identity not in repr(record.__dict__)
             assert session not in repr(record.__dict__)

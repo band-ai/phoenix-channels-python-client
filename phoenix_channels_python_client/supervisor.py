@@ -27,6 +27,7 @@ from phoenix_channels_python_client.messages import (
     Message,
 )
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
+from phoenix_channels_python_client.send_session import SessionSends
 from phoenix_channels_python_client.shutdown_signals import handle_shutdown_signals
 from phoenix_channels_python_client.topic_subscription import (
     ChannelState,
@@ -102,6 +103,7 @@ class SupervisorMixin:
     heartbeat_interval_s: float | None
     heartbeat_task: asyncio.Task[None] | None
     pending_heartbeat_ref: str | None
+    send_session: SessionSends | None
     on_reconnect: Callable[[], Awaitable[None]] | None
     on_disconnect: Callable[[Exception | None], Awaitable[None]] | None
     on_heartbeat_ack: Callable[[], None] | None

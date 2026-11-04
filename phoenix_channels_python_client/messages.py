@@ -14,7 +14,7 @@ class SystemEvent(StrEnum):
     close = "phx_close"
     error = "phx_error"
     # The protocol event intentionally shadows str.join.
-    join = "phx_join"  # type: ignore[bad-override]
+    join = "phx_join"  # type: ignore[bad-override, assignment]
     reply = "phx_reply"
     leave = "phx_leave"
 
