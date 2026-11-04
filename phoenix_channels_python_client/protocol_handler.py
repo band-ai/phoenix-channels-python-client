@@ -186,6 +186,14 @@ class PHXProtocolHandler:
         self.logger.debug("Sending as TEXT frame: %s", text_message)
         await websocket.send(text_message)
 
+    def is_stale_join(self, message: ChannelMessage, current_join_ref: str) -> bool:
+        # Phoenix broadcasts have no join_ref to compare against the current join.
+        return (
+            self.protocol_version == PhoenixChannelsProtocolVersion.V2
+            and message.join_ref is not None
+            and message.join_ref != current_join_ref
+        )
+
     async def process_websocket_messages(
         self,
         connection: ClientConnection,
@@ -220,10 +228,7 @@ class PHXProtocolHandler:
                 )
                 continue
 
-            if (
-                self.protocol_version == PhoenixChannelsProtocolVersion.V2
-                and topic_subscription.join_ref != phx_message.join_ref
-            ):
+            if self.is_stale_join(phx_message, topic_subscription.join_ref):
                 self.logger.debug(
                     "Dropping message with stale join_ref on topic %s. got=%s "
                     "expected=%s",

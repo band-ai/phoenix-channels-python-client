@@ -21,10 +21,7 @@ from phoenix_channels_python_client.phx_messages import (
     ChannelMessage,
     PHXEvent,
 )
-from phoenix_channels_python_client.protocol_handler import (
-    PhoenixChannelsProtocolVersion,
-    PHXProtocolHandler,
-)
+from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.topic_subscription import (
     TopicProcessingState,
     TopicSubscription,
@@ -133,11 +130,7 @@ class TopicRuntimeMixin:
                     )
                     return
 
-                if (
-                    self._protocol_handler.protocol_version
-                    == PhoenixChannelsProtocolVersion.V2
-                    and message.join_ref != topic.join_ref
-                ):
+                if self._protocol_handler.is_stale_join(message, topic.join_ref):
                     self.logger.debug(
                         "Dropping stale queued message for topic %s. got=%s "
                         "expected=%s",

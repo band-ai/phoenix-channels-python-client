@@ -276,9 +276,9 @@ async def deliver(
     payload: Mapping[str, object] | None = None,
     event: str = EVENT,
 ) -> None:
-    """Push one server event on the client's current join of ``topic``."""
-    join_ref = client.get_current_subscriptions()[topic].join_ref
-    await server.simulate_server_event(topic, event, payload or {}, join_ref=join_ref)
+    """Broadcast one server event without a join_ref."""
+    del client
+    await server.simulate_server_event(topic, event, payload or {})
 
 
 async def expect_message(received: asyncio.Queue[T]) -> T:

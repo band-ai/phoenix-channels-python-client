@@ -23,6 +23,7 @@ from tests.support import (
     each_protocol,
     expect_message,
     make_client,
+    only_client_id,
     start_server_close,
     wait_for_condition,
 )
@@ -142,6 +143,52 @@ async def test_a_subscribed_topic_receives_server_events(
     assert message.topic == TOPIC
     assert message.event == EVENT
     assert message.payload == payload
+
+
+async def test_a_v2_broadcast_without_join_ref_reaches_handlers(
+    phoenix_server: FakePhoenixServer,
+    client: PHXChannelsClient,
+    received: asyncio.Queue[ChannelMessage],
+) -> None:
+    payload = {"message": "broadcast"}
+    handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    await client.subscribe_to_topic(TOPIC, received.put)
+    client.add_event_handler(TOPIC, Event(EVENT), handled_payloads.put)
+
+    await phoenix_server.simulate_server_event(TOPIC, EVENT, payload)
+
+    message = await expect_message(received)
+    assert message.topic == TOPIC
+    assert message.event == EVENT
+    assert message.payload == payload
+    assert message.join_ref is None
+    assert message.ref is None
+    assert await expect_message(handled_payloads) == payload
+
+
+@each_protocol
+async def test_a_channel_push_with_current_join_ref_reaches_handlers(
+    phoenix_server: FakePhoenixServer,
+    client: PHXChannelsClient,
+    received: asyncio.Queue[ChannelMessage],
+) -> None:
+    payload = {"message": "channel push"}
+    handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    await client.subscribe_to_topic(TOPIC, received.put)
+    client.add_event_handler(TOPIC, Event(EVENT), handled_payloads.put)
+
+    await phoenix_server.simulate_channel_push(TOPIC, EVENT, payload)
+
+    message = await expect_message(received)
+    assert message.topic == TOPIC
+    assert message.event == EVENT
+    assert message.payload == payload
+    assert (
+        message.join_ref
+        == phoenix_server.members[(only_client_id(phoenix_server), TOPIC)]
+    )
+    assert message.ref is None
+    assert await expect_message(handled_payloads) == payload
 
 
 @each_protocol
@@ -423,7 +470,7 @@ async def test_a_message_from_an_older_join_is_not_delivered(
     await phoenix_server.simulate_server_event(
         TOPIC, EVENT, {"join": "older"}, join_ref="older-join"
     )
-    await deliver(phoenix_server, client, payload={"join": "current"})
+    await phoenix_server.simulate_channel_push(TOPIC, EVENT, {"join": "current"})
 
     assert (await expect_message(received)).payload == {"join": "current"}
 
