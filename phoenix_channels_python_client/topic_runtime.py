@@ -67,23 +67,23 @@ def _channel_failure(topic: TopicSubscription, event: ChannelEvent) -> Exception
 class TopicRuntimeMixin:
     logger: logging.Logger
     connection: ClientConnection | None
-    _state: ClientState
-    _ref_counter: int
-    _conn_generation: int
-    _topic_subscriptions: dict[str, TopicSubscription]
-    _protocol_handler: PHXProtocolHandler
-    _topics_lock: asyncio.Lock
-    _shutdown_event: asyncio.Event
+    state: ClientState
+    ref_counter: int
+    conn_generation: int
+    topic_subscriptions: dict[str, TopicSubscription]
+    protocol_handler: PHXProtocolHandler
+    topics_lock: asyncio.Lock
+    shutdown_event: asyncio.Event
     join_timeout_s: float
     leave_timeout_s: float
     max_topic_queue_size: int
     callback_drain_timeout_s: float
-    _on_topic_lost: Callable[[str, Exception], Awaitable[None]] | None
-    _lifecycle_tasks: set[asyncio.Task[None]]
-    _cleanup_tasks: set[asyncio.Task[None]]
+    on_topic_lost: Callable[[str, Exception], Awaitable[None]] | None
+    lifecycle_tasks: set[asyncio.Task[None]]
+    cleanup_tasks: set[asyncio.Task[None]]
 
     @property
-    def _runtime_deps(self) -> TopicRuntimeDeps:
+    def runtime_deps(self) -> TopicRuntimeDeps:
         return cast(TopicRuntimeDeps, self)
 
     def _set_subscription_ready(self, topic_subscription: TopicSubscription) -> None:
@@ -113,7 +113,7 @@ class TopicRuntimeMixin:
         return TopicProcessingState.NORMAL_PROCESSING
 
     async def _process_topic_messages(self, topic_name: str) -> None:
-        topic = self._topic_subscriptions.get(topic_name)
+        topic = self.topic_subscriptions.get(topic_name)
         if topic is None:
             return
 
@@ -130,7 +130,7 @@ class TopicRuntimeMixin:
                     )
                     return
 
-                if self._protocol_handler.is_stale_join(message, topic.join_ref):
+                if self.protocol_handler.is_stale_join(message, topic.join_ref):
                     self.logger.debug(
                         "Dropping stale queued message for topic %s. got=%s "
                         "expected=%s",
@@ -193,7 +193,7 @@ class TopicRuntimeMixin:
             or not self._is_registered(topic)
             or not self._is_on_current_connection(topic)
             or topic.leave_requested.is_set()
-            or self._shutdown_event.is_set()
+            or self.shutdown_event.is_set()
         ):
             return
 
@@ -280,10 +280,10 @@ class TopicRuntimeMixin:
     def _is_connected(self) -> bool:
         # The state stays CONNECTED while _cleanup_connection runs, but it
         # clears the connection at once.
-        return self._state == ClientState.CONNECTED and self.connection is not None
+        return self.state == ClientState.CONNECTED and self.connection is not None
 
     def _is_on_current_connection(self, topic: TopicSubscription) -> bool:
-        return self._is_connected() and topic.conn_generation == self._conn_generation
+        return self._is_connected() and topic.conn_generation == self.conn_generation
 
     def _is_recovering(self, topic: TopicSubscription) -> bool:
         return topic.recovery_task is not None and not topic.recovery_task.done()
@@ -291,7 +291,7 @@ class TopicRuntimeMixin:
     def _channel_recoveries(self) -> list[asyncio.Task[None]]:
         return [
             topic.recovery_task
-            for topic in self._topic_subscriptions.values()
+            for topic in self.topic_subscriptions.values()
             if topic.recovery_task is not None
         ]
 
@@ -299,12 +299,12 @@ class TopicRuntimeMixin:
         self, work: Coroutine[Any, Any, None]
     ) -> asyncio.Task[None]:
         task = asyncio.create_task(work)
-        self._lifecycle_tasks.add(task)
+        self.lifecycle_tasks.add(task)
         task.add_done_callback(self._finish_lifecycle_task)
         return task
 
     def _finish_lifecycle_task(self, task: asyncio.Task[None]) -> None:
-        self._lifecycle_tasks.discard(task)
+        self.lifecycle_tasks.discard(task)
         # Nothing awaits these tasks, so an unexpected failure is reported here.
         if not task.cancelled() and (error := task.exception()):
             self.logger.error("Channel lifecycle task failed", exc_info=error)
@@ -313,9 +313,7 @@ class TopicRuntimeMixin:
         self, topic: TopicSubscription, *, generation: int | None = None
     ) -> None:
         # A socket rejoin supplies its new generation for an immediate attempt.
-        recovery_generation = (
-            self._conn_generation if generation is None else generation
-        )
+        recovery_generation = self.conn_generation if generation is None else generation
         if (
             self._is_recovering(topic)
             or not self._can_recover(topic, recovery_generation)
@@ -341,10 +339,10 @@ class TopicRuntimeMixin:
 
     def _can_recover(self, topic: TopicSubscription, generation: int) -> bool:
         return (
-            not self._shutdown_event.is_set()
+            not self.shutdown_event.is_set()
             and self._should_rejoin(topic)
             and self._is_connected()
-            and generation == self._conn_generation
+            and generation == self.conn_generation
         )
 
     async def _recover_channel(
@@ -362,8 +360,8 @@ class TopicRuntimeMixin:
             if immediate:
                 immediate = False
             else:
-                await self._runtime_deps._wait_for_shutdown_or_timeout(
-                    self._runtime_deps._channel_rejoin_delay(attempt)
+                await self.runtime_deps._wait_for_shutdown_or_timeout(
+                    self.runtime_deps._channel_rejoin_delay(attempt)
                 )
                 attempt += 1
             if not self._can_recover(topic, generation):
@@ -408,9 +406,9 @@ class TopicRuntimeMixin:
         self, topic: TopicSubscription, error: Exception
     ) -> None:
         self.logger.warning("Lost topic %s: %s", topic.name, error)
-        if self._on_topic_lost is not None:
-            await self._runtime_deps._invoke_callback_safely(
-                "on_topic_lost", self._on_topic_lost, topic.name, error
+        if self.on_topic_lost is not None:
+            await self.runtime_deps._invoke_callback_safely(
+                "on_topic_lost", self.on_topic_lost, topic.name, error
             )
 
     def _snapshot_handlers(
@@ -491,7 +489,7 @@ class TopicRuntimeMixin:
             self._set_future_exception(topic_subscription.unsubscribe_completed, error)
 
     def _fail_pending_joins(self, error: Exception) -> None:
-        for topic_subscription in self._topic_subscriptions.values():
+        for topic_subscription in self.topic_subscriptions.values():
             self._set_future_exception(topic_subscription.current_join_ready, error)
 
     def _set_future_exception(
@@ -511,17 +509,17 @@ class TopicRuntimeMixin:
         *,
         only: TopicSubscription | None = None,
     ) -> TopicSubscription | None:
-        async with self._topics_lock:
-            current = self._topic_subscriptions.get(topic_name)
+        async with self.topics_lock:
+            current = self.topic_subscriptions.get(topic_name)
             if current is None:
                 self.logger.debug(
-                    "Topic %s not found in _topic_subscriptions", topic_name
+                    "Topic %s not found in topic_subscriptions", topic_name
                 )
                 return None
             # A loss names its subscription, so it can't drop a replacement.
             if only is not None and current is not only:
                 return None
-            topic_subscription = self._topic_subscriptions.pop(topic_name)
+            topic_subscription = self.topic_subscriptions.pop(topic_name)
 
         unregister_error = error or SocketError(f"Topic {topic_name} was unregistered")
         self._complete_pending_futures(topic_subscription, unregister_error)
@@ -529,7 +527,7 @@ class TopicRuntimeMixin:
         cleanup = asyncio.create_task(
             self._cleanup_subscription(topic_subscription, asyncio.current_task())
         )
-        self._cleanup_tasks.add(cleanup)
+        self.cleanup_tasks.add(cleanup)
         cleanup.add_done_callback(self._finish_cleanup_task)
         await asyncio.shield(cleanup)
         self.logger.info("Unregistered topic %s", topic_name)
@@ -545,16 +543,16 @@ class TopicRuntimeMixin:
             await self._stop_topic_task(topic)
 
     def _finish_cleanup_task(self, task: asyncio.Task[None]) -> None:
-        self._cleanup_tasks.discard(task)
+        self.cleanup_tasks.discard(task)
         if not task.cancelled() and (error := task.exception()):
             self.logger.error("Topic cleanup failed", exc_info=error)
 
     def get_current_subscriptions(self) -> dict[str, TopicSubscription]:
-        return self._topic_subscriptions.copy()
+        return self.topic_subscriptions.copy()
 
     def is_topic_joined(self, topic: str) -> bool:
         """Whether ``topic``'s channel is joined now, not just subscribed."""
-        subscription = self._topic_subscriptions.get(topic)
+        subscription = self.topic_subscriptions.get(topic)
         return (
             subscription is not None
             and self._is_on_current_connection(subscription)
@@ -562,20 +560,20 @@ class TopicRuntimeMixin:
         )
 
     def _generate_ref(self) -> str:
-        self._ref_counter += 1
-        return str(self._ref_counter)
+        self.ref_counter += 1
+        return str(self.ref_counter)
 
     def _ensure_can_send(self, operation: str) -> None:
         if not self._is_connected():
             raise SocketError(
-                f"Cannot {operation} while client is {self._state}. Wait for "
+                f"Cannot {operation} while client is {self.state}. Wait for "
                 "reconnection."
             )
 
     async def _send(self, connection: ClientConnection, message: Message) -> None:
         """Send ``message``; a socket already closing raises SocketError."""
         try:
-            await self._protocol_handler.send_message(connection, message)
+            await self.protocol_handler.send_message(connection, message)
         except ConnectionClosed as exc:
             raise SocketError(
                 f"Connection lost before {message.event} could be sent"
@@ -625,16 +623,16 @@ class TopicRuntimeMixin:
             queue=topic_queue,
             join_ref=join_ref,
             process_topic_messages_task=None,
-            conn_generation=self._conn_generation,
+            conn_generation=self.conn_generation,
             on_join_response=on_join_response,
             blocks_reconnect=blocks_reconnect,
         )
 
-        async with self._topics_lock:
+        async with self.topics_lock:
             self._ensure_can_send("subscribe")
-            if topic in self._topic_subscriptions:
+            if topic in self.topic_subscriptions:
                 raise ChannelError(f"Topic {topic} already subscribed")
-            self._topic_subscriptions[topic] = topic_subscription
+            self.topic_subscriptions[topic] = topic_subscription
 
         topic_subscription.process_topic_messages_task = asyncio.create_task(
             self._process_topic_messages(topic)
@@ -654,17 +652,17 @@ class TopicRuntimeMixin:
             raise
 
     async def unsubscribe_from_topic(
-        self, topic: str, *, _allow_disconnected: bool = False
+        self, topic: str, *, allow_disconnected: bool = False
     ) -> None:
-        async with self._topics_lock:
-            topic_subscription = self._topic_subscriptions.get(topic)
+        async with self.topics_lock:
+            topic_subscription = self.topic_subscriptions.get(topic)
 
         if topic_subscription is None:
             raise ChannelError(f"Topic {topic} not subscribed")
 
-        if not _allow_disconnected:
+        if not allow_disconnected:
             self._ensure_can_send("unsubscribe")
-        connection = self.connection if self._state == ClientState.CONNECTED else None
+        connection = self.connection if self.state == ClientState.CONNECTED else None
         # Pending/recovering processors cannot dispatch a leave acknowledgement.
         complete_locally = (
             connection is None
@@ -707,78 +705,78 @@ class TopicRuntimeMixin:
         event: ChannelEvent,
         handler: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> None:
-        if topic not in self._topic_subscriptions:
+        if topic not in self.topic_subscriptions:
             raise ChannelError(f"Topic {topic} not subscribed")
 
-        topic_subscription = self._topic_subscriptions[topic]
+        topic_subscription = self.topic_subscriptions[topic]
         topic_subscription.add_event_handler(event, handler)
         self.logger.debug("Added event handler for %s on topic %s", event, topic)
 
     def remove_event_handler(self, topic: str, event: ChannelEvent) -> None:
-        if topic not in self._topic_subscriptions:
+        if topic not in self.topic_subscriptions:
             raise ChannelError(f"Topic {topic} not subscribed")
 
-        topic_subscription = self._topic_subscriptions[topic]
+        topic_subscription = self.topic_subscriptions[topic]
         topic_subscription.remove_event_handler(event)
         self.logger.debug("Removed event handler for %s on topic %s", event, topic)
 
     def get_event_handler(
         self, topic: str, event: ChannelEvent
     ) -> Callable[[dict[str, Any]], Awaitable[None]] | None:
-        if topic not in self._topic_subscriptions:
+        if topic not in self.topic_subscriptions:
             raise ChannelError(f"Topic {topic} not subscribed")
 
-        topic_subscription = self._topic_subscriptions[topic]
+        topic_subscription = self.topic_subscriptions[topic]
         return topic_subscription.get_event_handler(event)
 
     def has_event_handler(self, topic: str, event: ChannelEvent) -> bool:
-        if topic not in self._topic_subscriptions:
+        if topic not in self.topic_subscriptions:
             return False
 
-        topic_subscription = self._topic_subscriptions[topic]
+        topic_subscription = self.topic_subscriptions[topic]
         return topic_subscription.has_event_handler(event)
 
     def list_event_handlers(
         self, topic: str
     ) -> dict[ChannelEvent, Callable[[dict[str, Any]], Awaitable[None]]]:
-        if topic not in self._topic_subscriptions:
+        if topic not in self.topic_subscriptions:
             raise ChannelError(f"Topic {topic} not subscribed")
 
-        topic_subscription = self._topic_subscriptions[topic]
+        topic_subscription = self.topic_subscriptions[topic]
         return topic_subscription.event_handlers.copy()
 
     def set_message_handler(
         self, topic: str, handler: Callable[[Message], Awaitable[None]]
     ) -> None:
-        if topic not in self._topic_subscriptions:
+        if topic not in self.topic_subscriptions:
             raise ChannelError(f"Topic {topic} not subscribed")
 
-        topic_subscription = self._topic_subscriptions[topic]
+        topic_subscription = self.topic_subscriptions[topic]
         topic_subscription.async_callback = handler
         self.logger.debug("Set message handler for topic %s", topic)
 
     def remove_message_handler(self, topic: str) -> None:
-        if topic not in self._topic_subscriptions:
+        if topic not in self.topic_subscriptions:
             raise ChannelError(f"Topic {topic} not subscribed")
 
-        topic_subscription = self._topic_subscriptions[topic]
+        topic_subscription = self.topic_subscriptions[topic]
         topic_subscription.async_callback = None
         self.logger.debug("Removed message handler for topic %s", topic)
 
     def get_message_handler(
         self, topic: str
     ) -> Callable[[Message], Awaitable[None]] | None:
-        if topic not in self._topic_subscriptions:
+        if topic not in self.topic_subscriptions:
             raise ChannelError(f"Topic {topic} not subscribed")
 
-        topic_subscription = self._topic_subscriptions[topic]
+        topic_subscription = self.topic_subscriptions[topic]
         return topic_subscription.async_callback
 
     def has_message_handler(self, topic: str) -> bool:
-        if topic not in self._topic_subscriptions:
+        if topic not in self.topic_subscriptions:
             return False
 
-        topic_subscription = self._topic_subscriptions[topic]
+        topic_subscription = self.topic_subscriptions[topic]
         return topic_subscription.async_callback is not None
 
     async def _drain_callback(self, topic_subscription: TopicSubscription) -> None:
@@ -798,8 +796,8 @@ class TopicRuntimeMixin:
             await cancel_and_wait(callback_task)
 
     async def _rejoin_topics(self, generation: int) -> None:
-        async with self._topics_lock:
-            subscriptions = list(self._topic_subscriptions.values())
+        async with self.topics_lock:
+            subscriptions = list(self.topic_subscriptions.values())
 
         for topic_subscription in subscriptions:
             if not topic_subscription.blocks_reconnect:
@@ -831,7 +829,7 @@ class TopicRuntimeMixin:
 
     def _is_registered(self, topic_subscription: TopicSubscription) -> bool:
         return (
-            self._topic_subscriptions.get(topic_subscription.name) is topic_subscription
+            self.topic_subscriptions.get(topic_subscription.name) is topic_subscription
         )
 
     def _should_rejoin(self, topic_subscription: TopicSubscription) -> bool:
@@ -862,7 +860,7 @@ class TopicRuntimeMixin:
     async def _handle_rejoin_failure(
         self, topic: TopicSubscription, exc: Exception
     ) -> None:
-        if self._shutdown_event.is_set() or self._state == ClientState.SHUTTING_DOWN:
+        if self.shutdown_event.is_set() or self.state == ClientState.SHUTTING_DOWN:
             self.logger.debug(
                 "Ignoring rejoin failure for topic %s during shutdown: %s",
                 topic.name,

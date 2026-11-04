@@ -23,11 +23,11 @@ class TaskWakeupGate:
     def __init__(self, task: asyncio.Task[None]) -> None:
         self.task = task
         self.held = asyncio.Event()
-        self._callback: Callable[..., object] | None = None
-        self._args: tuple[object, ...] = ()
-        self._context: Context | None = None
-        self._handle: asyncio.Handle | None = None
-        self._released = False
+        self.callback: Callable[..., object] | None = None
+        self.args: tuple[object, ...] = ()
+        self.context: Context | None = None
+        self.handle: asyncio.Handle | None = None
+        self.released = False
 
     @contextmanager
     def installed(self) -> Iterator[None]:
@@ -39,18 +39,13 @@ class TaskWakeupGate:
             *args: object,
             context: Context | None = None,
         ) -> asyncio.Handle:
-            if (
-                self._handle is None
-                and getattr(callback, "__self__", None) is self.task
-            ):
-                self._callback = callback
-                self._args = args
-                self._context = context if context is not None else copy_context()
-                self._handle = asyncio.Handle(
-                    callback, args, loop, context=self._context
-                )
+            if self.handle is None and getattr(callback, "__self__", None) is self.task:
+                self.callback = callback
+                self.args = args
+                self.context = context if context is not None else copy_context()
+                self.handle = asyncio.Handle(callback, args, loop, context=self.context)
                 self.held.set()
-                return self._handle
+                return self.handle
             return schedule(callback, *args, context=context)
 
         try:
@@ -60,15 +55,15 @@ class TaskWakeupGate:
             self.release()
 
     def release(self) -> None:
-        if self._released or self._handle is None:
+        if self.released or self.handle is None:
             return
-        self._released = True
-        asyncio.get_running_loop().call_soon(self._invoke, context=self._context)
+        self.released = True
+        asyncio.get_running_loop().call_soon(self._invoke, context=self.context)
 
     def _invoke(self) -> None:
-        if self._handle is not None and not self._handle.cancelled():
-            assert self._callback is not None
-            self._callback(*self._args)
+        if self.handle is not None and not self.handle.cancelled():
+            assert self.callback is not None
+            self.callback(*self.args)
 
 
 class TaskTimerObserver:
@@ -118,7 +113,7 @@ class TaskLifecycleGate:
         if not hold_exit:
             self.finish.set()
         self.task: asyncio.Task[None] | None = None
-        self._used = False
+        self.used = False
 
     @contextmanager
     def installed(self) -> Iterator[None]:
@@ -133,11 +128,11 @@ class TaskLifecycleGate:
             context: Context | None = None,
         ) -> asyncio.Future[Any]:
             if (
-                not self._used
+                not self.used
                 and inspect.iscoroutine(work)
                 and work.cr_code is self.code
             ):
-                self._used = True
+                self.used = True
                 self.task = asyncio.Task(self._run(work), loop=loop, context=context)
                 return self.task
             if previous is not None:

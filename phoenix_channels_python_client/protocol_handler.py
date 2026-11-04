@@ -85,7 +85,7 @@ class ProtocolSpec(NamedTuple):
     decode: Callable[[object, str], RawFrame]
 
 
-_PROTOCOL_SPECS = {
+PROTOCOL_SPECS = {
     ProtocolVersion.V1: ProtocolSpec("v1", _decode_v1),
     ProtocolVersion.V2: ProtocolSpec("v2", _decode_v2),
 }
@@ -121,7 +121,7 @@ class PHXProtocolHandler:
     def _decode_message(self, raw_message: str | bytes) -> Message:
         parsed_data = json.loads(raw_message)
         self.logger.debug("Decoded data: %s", parsed_data)
-        spec = _PROTOCOL_SPECS[self.protocol_version]
+        spec = PROTOCOL_SPECS[self.protocol_version]
         return _to_message(spec.label, spec.decode(parsed_data, spec.label))
 
     def serialize_message(self, message: Message) -> str:

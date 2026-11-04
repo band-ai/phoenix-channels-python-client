@@ -7,10 +7,10 @@ class ProtocolVersion(StrEnum):
 
     @property
     def vsn(self) -> str:
-        return _PROTOCOL_VSN[self]
+        return PROTOCOL_VSN[self]
 
 
-_PROTOCOL_VSN = {
+PROTOCOL_VSN = {
     ProtocolVersion.V1: "1.0.0",
     ProtocolVersion.V2: "2.0.0",
 }

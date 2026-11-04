@@ -411,7 +411,7 @@ class TestJoinLifecycle:
                 held.release.set()
                 await held.finished.wait()
                 await shutdown
-                assert not client._cleanup_tasks
+                assert not client.cleanup_tasks
                 assert not client.get_current_subscriptions()
             finally:
                 held.release.set()
@@ -444,7 +444,7 @@ class TestJoinLifecycle:
                 await unwound.wait()
                 await run
                 assert not client.get_current_subscriptions()
-                assert not client._cleanup_tasks
+                assert not client.cleanup_tasks
             finally:
                 run.cancel()
                 await asyncio.gather(run, return_exceptions=True)
@@ -501,7 +501,7 @@ class TestJoinLifecycle:
                 await unwound.wait()
                 await run
                 assert not client.get_current_subscriptions()
-                assert not client._cleanup_tasks
+                assert not client.cleanup_tasks
             finally:
                 run.cancel()
                 await asyncio.gather(run, return_exceptions=True)

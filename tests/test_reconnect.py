@@ -123,7 +123,7 @@ def rejoin_outcome(client: Client) -> RejoinOutcome | None:
         return RejoinOutcome.UNREGISTERED
 
     join_ready = subscription.current_join_ready
-    if subscription.conn_generation != client._conn_generation or not join_ready.done():
+    if subscription.conn_generation != client.conn_generation or not join_ready.done():
         return None
     if join_ready.exception() is not None:
         return RejoinOutcome.JOIN_FAILED
@@ -378,7 +378,7 @@ async def test_a_send_failure_during_rejoin_keeps_the_topic_and_recovers(
 
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         await client.subscribe_to_topic(TOPIC, received.put)
-        handler = client._protocol_handler
+        handler = client.protocol_handler
         original_send = handler.send_message
 
         async def fail_one_join(websocket: ClientConnection, message: Message) -> None:
@@ -523,7 +523,7 @@ async def test_a_subscribe_during_a_rejoin_fails_fast_when_the_socket_drops(
         )
         assert not subscribe.done()
 
-        dropped_on = client._conn_generation
+        dropped_on = client.conn_generation
         await phoenix_server.close_all_clients()
 
         with pytest.raises(
@@ -531,7 +531,7 @@ async def test_a_subscribe_during_a_rejoin_fails_fast_when_the_socket_drops(
         ):
             await asyncio.wait_for(subscribe, ASYNC_TIMEOUT_S)
         assert OTHER_TOPIC not in client.get_current_subscriptions()
-        assert await wait_for_condition(lambda: client._conn_generation > dropped_on)
+        assert await wait_for_condition(lambda: client.conn_generation > dropped_on)
 
 
 async def test_shutdown_during_a_rejoin_does_not_report_a_reconnect(

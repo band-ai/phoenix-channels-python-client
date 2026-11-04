@@ -71,16 +71,16 @@ class DefaultReconnectDecider:
     """
 
     def __init__(self, policy: ReconnectPolicy, logger: logging.Logger) -> None:
-        self._policy = policy
-        self._logger = logger
-        self._attempt = 0
-        self._rapid_disconnects: deque[float] = deque()
-        self._connected_at = 0.0
+        self.policy = policy
+        self.logger = logger
+        self.attempt = 0
+        self.rapid_disconnects: deque[float] = deque()
+        self.connected_at = 0.0
 
     def __call__(self, event: ReconnectEvent) -> ReconnectDecision:
         match event:
             case Connected():
-                self._connected_at = _now()
+                self.connected_at = _now()
                 return PROCEED
             case Disconnected():
                 return self._after_close(event.close_code, event.close_reason)
@@ -95,15 +95,15 @@ class DefaultReconnectDecider:
         stop = self._stop_for_close(close_code, close_reason)
         if stop is not None:
             return stop
-        uptime_s = _now() - self._connected_at
+        uptime_s = _now() - self.connected_at
         if self._suppressed(uptime_s):
             return self._suppression()
-        if uptime_s >= self._policy.stable_reset_s:
-            self._attempt = 0
-            self._rapid_disconnects.clear()
+        if uptime_s >= self.policy.stable_reset_s:
+            self.attempt = 0
+            self.rapid_disconnects.clear()
         else:
-            self._attempt += 1
-        delay = self._backoff(self._attempt)
+            self.attempt += 1
+        delay = self._backoff(self.attempt)
         delay_range = self._delay_range_for_close(close_code)
         if delay_range is not None:
             delay = max(delay, random_between(*delay_range))
@@ -120,8 +120,8 @@ class DefaultReconnectDecider:
             )
         if self._suppressed(0.0):
             return self._suppression()
-        delay = self._backoff(self._attempt)
-        self._attempt += 1
+        delay = self._backoff(self.attempt)
+        self.attempt += 1
         return ReconnectDecision(should_reconnect=True, delay_s=delay)
 
     def _stop_for_close(
@@ -129,12 +129,12 @@ class DefaultReconnectDecider:
     ) -> ReconnectDecision | None:
         if (
             close_code in {CloseCode.NORMAL_CLOSURE, CloseCode.GOING_AWAY}
-            and not self._policy.reconnect_on_normal_close
+            and not self.policy.reconnect_on_normal_close
         ):
             return ReconnectDecision(should_reconnect=False)
         if (
             close_code == CloseCode.POLICY_VIOLATION
-            and self._policy.policy_violation_is_terminal
+            and self.policy.policy_violation_is_terminal
         ):
             reason = close_reason or "policy violation"
             return _terminal_decision(
@@ -143,7 +143,7 @@ class DefaultReconnectDecider:
         return None
 
     def _delay_range_for_close(self, close_code: int | None) -> DelayRange | None:
-        policy = self._policy
+        policy = self.policy
         match close_code:
             case CloseCode.SERVICE_RESTART:
                 return (
@@ -161,16 +161,16 @@ class DefaultReconnectDecider:
     def _suppressed(self, uptime_s: float) -> bool:
         """Record a disconnect after ``uptime_s``; whether churn now stops us."""
         now = _now()
-        if uptime_s < self._policy.rapid_disconnect_uptime_s:
-            self._rapid_disconnects.append(now)
+        if uptime_s < self.policy.rapid_disconnect_uptime_s:
+            self.rapid_disconnects.append(now)
         while (
-            self._rapid_disconnects
-            and now - self._rapid_disconnects[0] > self._policy.rapid_window_s
+            self.rapid_disconnects
+            and now - self.rapid_disconnects[0] > self.policy.rapid_window_s
         ):
-            self._rapid_disconnects.popleft()
-        threshold = self._policy.rapid_suppress_disconnect_count
-        rapid_count = len(self._rapid_disconnects)
-        self._logger.debug(
+            self.rapid_disconnects.popleft()
+        threshold = self.policy.rapid_suppress_disconnect_count
+        rapid_count = len(self.rapid_disconnects)
+        self.logger.debug(
             "Recorded disconnect. uptime_s=%s rapid_count=%s threshold=%s",
             uptime_s,
             rapid_count,
@@ -191,33 +191,33 @@ class DefaultReconnectDecider:
         """The floor for each rapid-disconnect count before the cooldown starts."""
         return (
             0.0,
-            self._policy.rapid_first_min_delay_s,
-            self._policy.rapid_second_min_delay_s,
+            self.policy.rapid_first_min_delay_s,
+            self.policy.rapid_second_min_delay_s,
         )
 
     def _backoff(self, attempt: int) -> float:
         """The jittered wait for ``attempt``, raised to the rapid-disconnect floor."""
-        rapid_count = len(self._rapid_disconnects)
+        rapid_count = len(self.rapid_disconnects)
         cooldown_steps = rapid_count - len(self._rapid_floors())
         if cooldown_steps < 0:
             floor = self._rapid_floors()[rapid_count]
         else:
             floor = min(
-                self._policy.rapid_cooldown_base_s
-                + (self._policy.rapid_cooldown_step_s * cooldown_steps),
-                self._policy.rapid_cooldown_max_s,
+                self.policy.rapid_cooldown_base_s
+                + (self.policy.rapid_cooldown_step_s * cooldown_steps),
+                self.policy.rapid_cooldown_max_s,
             )
-        delay = max(exponential_delay(self._policy, attempt), floor)
+        delay = max(exponential_delay(self.policy, attempt), floor)
         if delay <= 0:
             return 0.0
         if cooldown_steps < 0:
             computed = equal_jitter(delay)
         else:
             computed = random_between(
-                delay * self._policy.rapid_hold_down_jitter_low_ratio,
-                delay * self._policy.rapid_hold_down_jitter_high_ratio,
+                delay * self.policy.rapid_hold_down_jitter_low_ratio,
+                delay * self.policy.rapid_hold_down_jitter_high_ratio,
             )
-        self._logger.debug(
+        self.logger.debug(
             "Computed reconnect delay. attempt=%s rapid_count=%s computed_delay_s=%s",
             attempt,
             rapid_count,

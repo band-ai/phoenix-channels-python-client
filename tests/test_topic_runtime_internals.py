@@ -84,13 +84,13 @@ async def test_unregistering_an_unknown_topic_does_nothing() -> None:
 
     await runtime._unregister_topic("missing-topic")
 
-    assert runtime._topic_subscriptions == {}
+    assert runtime.topic_subscriptions == {}
 
 
 async def test_a_connection_lost_before_the_join_is_sent_fails_the_subscribe() -> None:
     runtime = TopicRuntimeHarness()
     # An uncontended lock doesn't yield, so holding it opens the window.
-    async with runtime._topics_lock:
+    async with runtime.topics_lock:
         subscribe = asyncio.create_task(runtime.subscribe_to_topic(TOPIC))
         await asyncio.sleep(0)
         assert not subscribe.done()
@@ -98,7 +98,7 @@ async def test_a_connection_lost_before_the_join_is_sent_fails_the_subscribe() -
 
     with pytest.raises(SocketError, match="Cannot subscribe"):
         await asyncio.wait_for(subscribe, ASYNC_TIMEOUT_S)
-    assert TOPIC not in runtime._topic_subscriptions
+    assert TOPIC not in runtime.topic_subscriptions
     assert runtime.fake_handler.sent == []
 
 
@@ -109,19 +109,19 @@ async def test_a_rejoin_without_a_connection_keeps_the_topic() -> None:
 
     await runtime._rejoin_topics(generation=2)
 
-    assert topic.name in runtime._topic_subscriptions
+    assert topic.name in runtime.topic_subscriptions
 
 
 async def test_a_rejoin_failing_during_shutdown_keeps_the_topic() -> None:
     runtime = TopicRuntimeHarness()
     topic = runtime.register(make_subscription())
     runtime.fake_handler.raise_on_send = RuntimeError("send fail")
-    runtime._shutdown_event.set()
-    runtime._state = ClientState.SHUTTING_DOWN
+    runtime.shutdown_event.set()
+    runtime.state = ClientState.SHUTTING_DOWN
 
     await runtime._rejoin_topics(generation=2)
 
-    assert topic.name in runtime._topic_subscriptions
+    assert topic.name in runtime.topic_subscriptions
 
 
 async def test_a_rejoin_skips_a_topic_being_left() -> None:
@@ -143,7 +143,7 @@ async def test_a_rejoin_skips_a_topic_unregistered_while_its_task_stops() -> Non
         try:
             await wait_forever()
         finally:
-            runtime._topic_subscriptions.pop(topic.name)
+            runtime.topic_subscriptions.pop(topic.name)
 
     task = asyncio.create_task(unregister_when_stopped())
     topic.process_topic_messages_task = task
@@ -229,7 +229,7 @@ async def test_a_processor_error_drops_the_topic_and_reports_it_lost(
     await asyncio.wait({processor})
 
     assert unregisters == 1
-    assert TOPIC not in runtime._topic_subscriptions
+    assert TOPIC not in runtime.topic_subscriptions
     assert topic.current_join_ready.exception() is failure
     assert lost.lost == [(TOPIC, failure)]
 
@@ -237,14 +237,12 @@ async def test_a_processor_error_drops_the_topic_and_reports_it_lost(
 async def test_each_channel_rejoin_attempt_backs_off_further() -> None:
     timed_out_rejoins = 3
     runtime = TopicRuntimeHarness(waits_before_stop=timed_out_rejoins + 1)
-    topic = runtime.register(
-        make_subscription(conn_generation=runtime._conn_generation)
-    )
+    topic = runtime.register(make_subscription(conn_generation=runtime.conn_generation))
     runtime._mark_channel_errored(topic)
 
     try:
         await asyncio.wait_for(
-            runtime._recover_channel(topic, generation=runtime._conn_generation),
+            runtime._recover_channel(topic, generation=runtime.conn_generation),
             ASYNC_TIMEOUT_S,
         )
     finally:

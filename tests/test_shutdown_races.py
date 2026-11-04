@@ -97,7 +97,7 @@ async def shut_down_during_a_held_reconnect(
 
     run = asyncio.create_task(client.run_forever(install_signal_handlers=False))
     stop = asyncio.create_task(client.shutdown(STOP_REASON))
-    assert await wait_for_condition(lambda: client._state is ClientState.SHUTTING_DOWN)
+    assert await wait_for_condition(lambda: client.state is ClientState.SHUTTING_DOWN)
     return run, stop
 
 
@@ -139,7 +139,7 @@ async def test_a_connect_failure_during_shutdown_closes_cleanly(
                 assert await asyncio.wait_for(run, ASYNC_TIMEOUT_S) is None
 
         await asyncio.wait_for(stop, ASYNC_TIMEOUT_S)
-        assert client._state is ClientState.CLOSED
+        assert client.state is ClientState.CLOSED
 
 
 async def test_a_refusal_is_ignored_from_the_moment_shutdown_is_called(
@@ -150,9 +150,9 @@ async def test_a_refusal_is_ignored_from_the_moment_shutdown_is_called(
         # shutdown() has run to its first await; the task it created has not started.
         await asyncio.sleep(0)
 
-        assert client._state is ClientState.SHUTTING_DOWN
+        assert client.state is ClientState.SHUTTING_DOWN
         assert client._retry_after_connect_failure(refused(TERMINAL_REFUSAL)) is None
-        assert client._terminal_error is None
+        assert client.terminal_error is None
 
         await asyncio.wait_for(stop, ASYNC_TIMEOUT_S)
 
@@ -166,7 +166,7 @@ async def test_shutdown_during_the_reconnect_backoff_makes_no_new_connection(
         await phoenix_server.close_all_clients(code=CloseCode.GOING_AWAY)
         # The supervisor enters the backoff wait straight after this transition.
         assert await wait_for_condition(
-            lambda: client._state is ClientState.RECONNECTING
+            lambda: client.state is ClientState.RECONNECTING
         )
 
         await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
@@ -274,7 +274,7 @@ async def test_cancelling_one_caller_does_not_abort_the_shared_shutdown(
 
         await asyncio.wait_for(waiting, ASYNC_TIMEOUT_S)
         assert client.connection is None
-        assert client._state is ClientState.CLOSED
+        assert client.state is ClientState.CLOSED
 
 
 async def test_reentering_during_a_shutdown_raises(
@@ -285,7 +285,7 @@ async def test_reentering_during_a_shutdown_raises(
         with HeldCallback() as held:
             await run_held_callback(phoenix_server, client, held)
             await phoenix_server.close_all_clients(code=CloseCode.NORMAL_CLOSURE)
-            assert await wait_for_condition(lambda: client._state is ClientState.CLOSED)
+            assert await wait_for_condition(lambda: client.state is ClientState.CLOSED)
 
             stop = asyncio.create_task(client.shutdown(STOP_REASON))
             await asyncio.wait_for(held.cancelled.wait(), ASYNC_TIMEOUT_S)
@@ -314,7 +314,7 @@ async def test_shutdown_from_a_topic_callback_cancels_the_callback(
         await deliver(phoenix_server, client)
 
         await asyncio.wait_for(callback_cancelled.wait(), ASYNC_TIMEOUT_S)
-        assert await wait_for_condition(lambda: client._state is ClientState.CLOSED)
+        assert await wait_for_condition(lambda: client.state is ClientState.CLOSED)
         assert client.connection is None
 
 
@@ -390,7 +390,7 @@ async def expire_on_first_refusal(
 ) -> asyncio.Task[None] | None:
     """Expire ``deadline`` once a handshake was refused; return entry's supervisor."""
     await a_handshake_was_refused(server)
-    supervisor = client._supervisor_task
+    supervisor = client.supervisor_task
     deadline.reschedule(asyncio.get_running_loop().time())
     return supervisor
 
@@ -430,7 +430,7 @@ async def test_a_timed_out_entry_stops_connecting(
 
             assert supervisor is not None
             assert supervisor.done()
-            assert client._state is ClientState.CLOSED
+            assert client.state is ClientState.CLOSED
 
         async with client:  # the stopped client enters again once the server accepts
             assert client.connection is not None
@@ -446,12 +446,12 @@ async def test_a_second_cancel_during_entry_cleanup_still_stops_connecting(
         with phoenix_server.refusing(REFUSE_EVERY_HANDSHAKE):
             entering = asyncio.create_task(client.__aenter__())
             await a_handshake_was_refused(phoenix_server)
-            supervisor = client._supervisor_task
+            supervisor = client.supervisor_task
             assert supervisor is not None
 
             entering.cancel()
             await asyncio.sleep(0)  # the cancelled entry starts its cleanup shutdown
-            assert client._state is ClientState.SHUTTING_DOWN
+            assert client.state is ClientState.SHUTTING_DOWN
 
             entering.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -460,7 +460,7 @@ async def test_a_second_cancel_during_entry_cleanup_still_stops_connecting(
             # Joins the cleanup the entry started; it was not abandoned.
             await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
             assert supervisor.done()
-            assert client._state is ClientState.CLOSED
+            assert client.state is ClientState.CLOSED
             assert client.connection is None
     finally:
         await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
@@ -480,6 +480,6 @@ async def test_closing_a_pending_entry_is_silent(
         await asyncio.wait_for(client.shutdown(STOP_REASON), ASYNC_TIMEOUT_S)
 
     # The closed entry no longer awaits its outcome; retrieve it here.
-    initial_connection = client._initial_connection_future
+    initial_connection = client.initial_connection_future
     assert initial_connection is not None
     assert isinstance(initial_connection.exception(), SocketError)

@@ -37,7 +37,7 @@ class ClientState(StrEnum):
 
 
 # Each (low, high) pair of fields where high must not be below low.
-_ORDERED_POLICY_FIELDS = (
+ORDERED_POLICY_FIELDS = (
     ("service_restart_min_delay_s", "service_restart_max_delay_s"),
     ("try_again_later_min_delay_s", "try_again_later_max_delay_s"),
     ("rapid_cooldown_base_s", "rapid_cooldown_max_s"),
@@ -74,7 +74,7 @@ class ReconnectPolicy(BaseModel):
 
     @model_validator(mode="after")
     def _check_ordering(self) -> Self:
-        for low, high in _ORDERED_POLICY_FIELDS:
+        for low, high in ORDERED_POLICY_FIELDS:
             if getattr(self, high) < getattr(self, low):
                 raise ValueError(f"{high} must be >= {low}")
         return self

@@ -50,7 +50,7 @@ class QueueEmptiedWhileFull(asyncio.Queue[Message]):
         raise asyncio.QueueEmpty
 
     async def put(self, item: Message) -> None:
-        cast(Any, self)._queue.append(item)
+        self._put(item)
 
 
 def v2_frame(join_ref: str, payload: dict[str, object] | None = None) -> str:

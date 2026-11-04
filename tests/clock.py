@@ -28,15 +28,15 @@ def controlled_loop() -> asyncio.AbstractEventLoop:
 class Clock:
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         self.loop = loop
-        self._stationary: asyncio.Handle | None = None
+        self.stationary: asyncio.Handle | None = None
         self.freeze()
 
     def freeze(self) -> None:
-        self._stationary = self.loop.call_soon(self.freeze)
+        self.stationary = self.loop.call_soon(self.freeze)
 
     def stop(self) -> None:
-        if self._stationary is not None:
-            self._stationary.cancel()
+        if self.stationary is not None:
+            self.stationary.cancel()
 
     def jump(self, seconds: float) -> None:
         assert isinstance(self.loop, looptime.LoopTimeEventLoop)

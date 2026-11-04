@@ -265,7 +265,7 @@ async def test_a_signal_never_stops_a_client_waiting_off_the_main_thread(
             run = await start(client)
             main_loop.call_soon_threadsafe(worker_waiting.set)
             await asyncio.to_thread(release_worker.wait, ASYNC_TIMEOUT_S)
-            still_connected = client._state is ClientState.CONNECTED
+            still_connected = client.state is ClientState.CONNECTED
             await client.shutdown(STOP_REASON)
             await asyncio.wait_for(run, ASYNC_TIMEOUT_S)
             return still_connected

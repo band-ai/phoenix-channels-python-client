@@ -237,11 +237,11 @@ class RecordingDecider:
             ConnectFailed: RECONNECT_NOW,
         }
         self.seen: list[ReconnectEvent] = []
-        self._decided: asyncio.Queue[tuple[ReconnectEvent, float]] = asyncio.Queue()
+        self.decided: asyncio.Queue[tuple[ReconnectEvent, float]] = asyncio.Queue()
 
     def __call__(self, event: ReconnectEvent) -> ReconnectDecision:
         self.seen.append(event)
-        self._decided.put_nowait((event, asyncio.get_running_loop().time()))
+        self.decided.put_nowait((event, asyncio.get_running_loop().time()))
         answer = self.answers[type(event)]
         if isinstance(answer, Exception):
             raise answer
@@ -250,7 +250,7 @@ class RecordingDecider:
     async def next_of(self, kind: type[E]) -> tuple[E, float]:
         """The next decided event of ``kind`` and the loop time it was decided."""
         while True:
-            event, at = await asyncio.wait_for(self._decided.get(), ASYNC_TIMEOUT_S)
+            event, at = await asyncio.wait_for(self.decided.get(), ASYNC_TIMEOUT_S)
             if isinstance(event, kind):
                 return event, at
 
@@ -327,9 +327,9 @@ async def expect_message(received: asyncio.Queue[T]) -> T:
 
 async def reconnect_after(client: Client, drop_connection: Awaitable[None]) -> None:
     """Run ``drop_connection`` and wait until the client holds a new connection."""
-    generation = client._conn_generation
+    generation = client.conn_generation
     await asyncio.wait_for(drop_connection, ASYNC_TIMEOUT_S)
-    assert await wait_for_condition(lambda: client._conn_generation > generation)
+    assert await wait_for_condition(lambda: client.conn_generation > generation)
 
 
 async def reconnect(
@@ -364,7 +364,7 @@ def rejoin_settled(client: Client, topic: str = TOPIC) -> Callable[[], bool]:
     def settled() -> bool:
         subscription = client.get_current_subscriptions().get(topic)
         return subscription is None or (
-            subscription.conn_generation == client._conn_generation
+            subscription.conn_generation == client.conn_generation
             and subscription.current_join_ready.done()
         )
 

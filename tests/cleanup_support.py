@@ -64,4 +64,4 @@ async def terminal_cleanup(peer: FakePhoenixServer) -> AsyncIterator[HeldCleanup
             await asyncio.gather(leave, return_exceptions=True)
         await client.shutdown(STOP_REASON)
         # Also completes teardown when testing the original premature-close bug.
-        await asyncio.gather(*client._cleanup_tasks)
+        await asyncio.gather(*client.cleanup_tasks)

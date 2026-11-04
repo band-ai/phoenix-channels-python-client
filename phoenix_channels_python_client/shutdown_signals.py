@@ -4,7 +4,7 @@ Handlers are installed with ``signal.signal`` and the previous handler is put
 back exactly, as ``asyncio.Runner`` does. Signal handlers interrupt main-thread
 code between bytecodes, so nothing here takes a lock: the OS handler table
 decides ownership, the handler never iterates a live container or removes
-entries, and ``_previous`` entries are only ever overwritten.
+entries, and ``previous`` entries are only ever overwritten.
 """
 
 from __future__ import annotations
@@ -36,8 +36,8 @@ class Waiter(NamedTuple):
 
 
 # Each waiter maps to the last signal it took, if any.
-_waiters: dict[Waiter, int | None] = {}
-_previous: dict[int, Handler] = {}
+waiters: dict[Waiter, int | None] = {}
+previous: dict[int, Handler] = {}
 
 
 def _on_main_thread() -> bool:
@@ -50,9 +50,9 @@ def _owned(sig: int) -> bool:
 
 def _on_shutdown_signal(signum: int, frame: FrameType | None) -> None:
     del frame
-    live = [waiter for waiter in tuple(_waiters) if waiter.live]
+    live = [waiter for waiter in tuple(waiters) if waiter.live]
     for waiter in live:
-        _waiters[waiter] = signum
+        waiters[waiter] = signum
         waiter.loop.call_soon_threadsafe(waiter.event.set)
     # Every waiting loop closed without unwinding: hand the signal back. If a
     # newer handler chained to this one instead, that handler already has it.
@@ -66,7 +66,7 @@ def _install() -> bool:
         for sig in SHUTDOWN_SIGNALS:
             # None means a handler set outside Python, which can't be restored.
             if not _owned(sig) and signal.getsignal(sig) is not None:
-                _previous[sig] = signal.signal(sig, _on_shutdown_signal)
+                previous[sig] = signal.signal(sig, _on_shutdown_signal)
     except ValueError:
         # The main thread can't take signals (embedded interpreter, gh-91880).
         return False
@@ -76,7 +76,7 @@ def _install() -> bool:
 def _restore() -> None:
     for sig in SHUTDOWN_SIGNALS:
         if _owned(sig):  # never overwrite a handler installed after ours
-            signal.signal(sig, _previous[sig])
+            signal.signal(sig, previous[sig])
 
 
 def _unregister(waiter: Waiter) -> int | None:
@@ -84,12 +84,12 @@ def _unregister(waiter: Waiter) -> int | None:
 
     Returns the last signal it took, if any.
     """
-    received = _waiters.pop(waiter, None)
-    for orphan in [other for other in tuple(_waiters) if not other.live]:
-        _waiters.pop(orphan, None)  # a closed loop never blocks a restore
+    received = waiters.pop(waiter, None)
+    for orphan in [other for other in tuple(waiters) if not other.live]:
+        waiters.pop(orphan, None)  # a closed loop never blocks a restore
     # GC may finalize an orphaned body off the main thread, where
     # signal.signal raises.
-    if not _waiters and _on_main_thread():
+    if not waiters and _on_main_thread():
         _restore()
     return received
 
@@ -109,7 +109,7 @@ def handle_shutdown_signals(event: asyncio.Event) -> Generator[None, None, None]
     consumed = False
     try:
         # Register before installing so a signal mid-install is never dropped.
-        _waiters[waiter] = None
+        waiters[waiter] = None
         if not _install():
             logger.debug("Signal handlers not available in this interpreter")
         yield

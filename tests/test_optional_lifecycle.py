@@ -93,7 +93,7 @@ class TestOptionalLifecycle:
                     await leaving
                     assert recovery.done()
                 await phoenix_server.left.get()
-                assert not client._cleanup_tasks
+                assert not client.cleanup_tasks
                 phoenix_server.defer_join_targets.clear()
                 fresh = JoinProbe(client)
                 phoenix_server.defer_join_targets.add(
@@ -121,9 +121,10 @@ class TestOptionalLifecycle:
         async with subscribed_optional_pair(phoenix_server) as (
             client,
             original,
-            _required,
+            required,
             reconnects,
         ):
+            del required
             gate = TaskLifecycleGate(
                 TopicRuntimeMixin._recover_channel.__code__, hold_exit=True
             )
@@ -151,7 +152,7 @@ class TestOptionalLifecycle:
                     await stopping
                     assert recovery.done()
                 await client.__aenter__()
-                assert not client._cleanup_tasks
+                assert not client.cleanup_tasks
                 phoenix_server.defer_join_targets.clear()
                 fresh = JoinProbe(client)
                 phoenix_server.defer_join_targets.add(
@@ -350,7 +351,8 @@ class TestOptionalLifecycle:
     ) -> None:
         async with subscribed_optional_pair(
             phoenix_server, heartbeat_interval_s=None, join_timeout_s=JOIN_DEADLINE
-        ) as (client, optional, _required, reconnects):
+        ) as (client, optional, required, reconnects):
+            del required
             phoenix_server.defer_join_targets.add(
                 (phoenix_server.next_client_id, TOPIC)
             )
@@ -433,7 +435,8 @@ class TestOptionalLifecycle:
     ) -> None:
         async with subscribed_optional_pair(
             phoenix_server, heartbeat_interval_s=None, join_timeout_s=JOIN_DEADLINE
-        ) as (client, optional, _required, reconnects):
+        ) as (client, optional, required, reconnects):
+            del required
             gate = TaskLifecycleGate(
                 TopicRuntimeMixin._recover_channel.__code__, hold_exit=True
             )

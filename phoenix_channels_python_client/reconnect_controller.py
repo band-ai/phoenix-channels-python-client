@@ -35,19 +35,19 @@ class ReconnectControllerMixin:
         raise NotImplementedError
 
     reconnect_policy: ReconnectPolicy
-    _reconnect_decider: ReconnectDecider | None
-    _decider: ReconnectDecider
+    reconnect_decider: ReconnectDecider | None
+    decider: ReconnectDecider
 
     def _new_decider(self) -> ReconnectDecider:
         """The consumer's decider, or a fresh built-in one for this run."""
-        if self._reconnect_decider is not None:
-            return self._reconnect_decider
+        if self.reconnect_decider is not None:
+            return self.reconnect_decider
         return DefaultReconnectDecider(self.reconnect_policy, self.logger)
 
     def _decide(self, event: ReconnectEvent) -> ReconnectDecision:
         """The decider's answer to ``event``; a broken answer stops the client."""
         try:
-            decision = self._decider(event)
+            decision = self.decider(event)
         except Exception as exc:
             self.logger.exception("reconnect_decider failed; stopping the client")
             return _decider_failure("reconnect_decider failed", exc)

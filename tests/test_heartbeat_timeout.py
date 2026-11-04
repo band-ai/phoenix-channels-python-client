@@ -79,13 +79,13 @@ async def monitored(peer: FakePhoenixServer, **options: Any) -> AsyncIterator[Cl
         **options,
     ) as client:
         yield client
-    assert client._heartbeat_timeout is None
-    assert client._heartbeat_task is None
+    assert client.heartbeat_timeout is None
+    assert client.heartbeat_task is None
     assert client.connection is None
 
 
 def timer(client: Client) -> asyncio.Timeout:
-    active = client._heartbeat_timeout
+    active = client.heartbeat_timeout
     assert active is not None
     return active
 
@@ -147,7 +147,7 @@ async def test_delayed_reply_keeps_its_reference_across_send_ticks(
         await clock.advance(INTERVAL)
         connection, frame = await clocked_peer.heartbeats.get()
         await clock.advance(INTERVAL)
-        assert client._pending_heartbeat_ref == frame.ref
+        assert client.pending_heartbeat_ref == frame.ref
         await clocked_peer.reply_heartbeat(connection, frame)
         await acknowledged.wait()
         assert clocked_peer.heartbeats.empty()
@@ -184,7 +184,7 @@ async def test_pong_and_topic_traffic_do_not_renew_and_recovery_delivers(
         on_disconnect=on_disconnect,
     ) as client:
         await client.subscribe_to_topic(TOPIC, received.put)
-        old_task = client._heartbeat_task
+        old_task = client.heartbeat_task
         old_socket = client.connection
         await clock.advance(INTERVAL)
         connection, stale = await peer.heartbeats.get()
@@ -206,7 +206,7 @@ async def test_pong_and_topic_traffic_do_not_renew_and_recovery_delivers(
         # The existing backoff is smaller than an interval; only time advances here.
         await clock.advance(INTERVAL)
         await reconnected.wait()
-        assert client._heartbeat_task is not old_task
+        assert client.heartbeat_task is not old_task
         await old_socket.wait_closed()
         fresh_deadline = timer(client).when()
         assert fresh_deadline is not None
@@ -220,7 +220,7 @@ async def test_pong_and_topic_traffic_do_not_renew_and_recovery_delivers(
         )
         await verify_delivery(peer, client, received)
         assert timer(client).when() == fresh_deadline
-        assert client._pending_heartbeat_ref == pending.ref
+        assert client.pending_heartbeat_ref == pending.ref
         assert client.is_topic_joined(TOPIC)
         await peer.reply_heartbeat(new_connection, pending)
         await verify_delivery(peer, client, received)
@@ -294,7 +294,7 @@ async def test_disabling_heartbeats_disables_enforcement(
         clocked_peer, heartbeat_interval_s=None, heartbeat_dead_threshold_s=THRESHOLD
     ) as client:
         await clock.advance(THRESHOLD * WINDOWS)
-        assert client._heartbeat_task is None
+        assert client.heartbeat_task is None
         assert client.connection is not None
         assert client.connection.state is State.OPEN
         assert clocked_peer.heartbeats.empty()
@@ -312,7 +312,7 @@ def hold_send(
     client: Client, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[HeldOperation]:
     held = HeldOperation(asyncio.Event(), asyncio.Event(), asyncio.Event())
-    send = client._protocol_handler.send_message
+    send = client.protocol_handler.send_message
 
     async def sending(connection: ClientConnection, message: Message) -> None:
         await send(connection, message)
@@ -325,7 +325,7 @@ def hold_send(
             raise
 
     with monkeypatch.context() as patch:
-        patch.setattr(client._protocol_handler, "send_message", sending)
+        patch.setattr(client.protocol_handler, "send_message", sending)
         try:
             yield held
         finally:
@@ -372,7 +372,7 @@ async def test_deadline_covers_blocked_send_and_shutdown_joins_it(
     peer.answer_heartbeats = False
     acknowledged = asyncio.Event()
     async with monitored(peer, on_heartbeat_ack=acknowledged.set) as client:
-        old_task = client._heartbeat_task
+        old_task = client.heartbeat_task
         old_socket = client.connection
         with hold_send(client, monkeypatch) as held:
             await clock.advance(INTERVAL)
@@ -407,7 +407,7 @@ async def test_deadline_covers_blocked_send_and_shutdown_joins_it(
         assert old_task.done()
         assert old_socket is not None
         assert old_socket.state is State.CLOSED
-        assert client._heartbeat_timeout is None
+        assert client.heartbeat_timeout is None
 
 
 @pytest.mark.clock
@@ -426,12 +426,12 @@ async def test_send_failure_closes_instead_of_disabling_monitoring(
             del connection, message
             raise error
 
-        monkeypatch.setattr(client._protocol_handler, "send_message", failed_send)
+        monkeypatch.setattr(client.protocol_handler, "send_message", failed_send)
         await clock.advance(INTERVAL)
         await socket.wait_closed()
         await client.run_forever(install_signal_handlers=False)
         assert socket.state is State.CLOSED
-        assert client._heartbeat_timeout is None
+        assert client.heartbeat_timeout is None
 
 
 @pytest.mark.clock
@@ -502,14 +502,15 @@ async def test_monitoring_runs_during_reconnect_setup(
         join_timeout_s=THRESHOLD * WINDOWS,
     ) as client:
         await client.subscribe_to_topic(TOPIC, received.put)
-        old_task = client._heartbeat_task
+        old_task = client.heartbeat_task
         if held_stage == "rejoin":
             peer.defer_join_targets.add((peer.next_client_id, TOPIC))
         await peer.close_all_clients()
         await disconnected.wait()
         await clock.advance(INTERVAL)
         if held_stage == "rejoin":
-            connection, _join = await peer.deferred_joins.get()
+            connection, join_request = await peer.deferred_joins.get()
+            del join_request
         else:
             await entered.wait()
             [connection] = peer.list_client_connections()
@@ -612,7 +613,7 @@ async def test_matching_reply_at_or_after_deadline_cannot_revive_it(
         await client.run_forever(install_signal_handlers=False)
         assert not acknowledged.is_set()
         assert active.expired()
-        assert client._heartbeat_timeout is None
+        assert client.heartbeat_timeout is None
         # An already parsed reply cannot re-enter a cleared timer either.
         client._handle_heartbeat_response(
             make_message(
@@ -628,13 +629,13 @@ async def test_public_shutdown_releases_the_waiting_heartbeat(
 ) -> None:
     async with monitored(clocked_peer) as client:
         socket = client.connection
-        task = client._heartbeat_task
+        task = client.heartbeat_task
         assert socket is not None
         assert task is not None
         await client.shutdown(STOP_REASON)
         assert task.done()
         assert socket.state is State.CLOSED
-        assert client._heartbeat_timeout is None
+        assert client.heartbeat_timeout is None
 
 
 @pytest.mark.clock
@@ -658,7 +659,7 @@ async def test_heartbeat_close_failure_aborts_the_captured_socket(
             await socket.wait_closed()
             await client.run_forever(install_signal_handlers=False)
         assert socket.state is State.CLOSED
-        assert client._heartbeat_timeout is None
+        assert client.heartbeat_timeout is None
 
 
 @pytest.mark.clock
@@ -690,8 +691,8 @@ async def test_replacement_waits_for_old_operation_cancellation_to_finish(
         on_reconnect=on_reconnect,
     ) as client:
         old_socket = client.connection
-        old_task = client._heartbeat_task
-        initial_generation = client._conn_generation
+        old_task = client.heartbeat_task
+        initial_generation = client.conn_generation
         with operation(client, monkeypatch) as held:
             peer.answer_heartbeats = False
             await clock.advance(INTERVAL if operation is hold_send else THRESHOLD)
@@ -699,7 +700,7 @@ async def test_replacement_waits_for_old_operation_cancellation_to_finish(
             if operation is hold_send:
                 await peer.close_all_clients()
             await held.cancelled.wait()
-            assert client._conn_generation == 1
+            assert client.conn_generation == 1
             assert not disconnected.is_set()
             assert old_task is not None
             assert not old_task.done()
@@ -709,5 +710,5 @@ async def test_replacement_waits_for_old_operation_cancellation_to_finish(
         assert old_socket.state is State.CLOSED
         await clock.advance(INTERVAL)
         await reconnected.wait()
-        assert client._conn_generation == initial_generation + 1
+        assert client.conn_generation == initial_generation + 1
         assert client.connection is not old_socket

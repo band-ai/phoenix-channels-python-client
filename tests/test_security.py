@@ -178,7 +178,8 @@ class TestConnectionSecurity:
         client.logger.setLevel(logging.WARNING)
         previous_disabled = target.disabled
 
-        def reject(_record: logging.LogRecord) -> bool:
+        def reject(record: logging.LogRecord) -> bool:
+            del record
             return False
 
         try:
@@ -349,8 +350,9 @@ class TestConnectionSecurity:
         delivered = asyncio.Event()
 
         def response(
-            _connection: ServerConnection, _request: Request, reply: Response
+            connection: ServerConnection, request: Request, reply: Response
         ) -> Response:
+            del connection, request
             reply.headers["Set-Cookie"] = "session=" + session + "; HttpOnly"
             return reply
 
