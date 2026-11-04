@@ -1,0 +1,18 @@
+from typing import assert_type
+
+from phoenix_channels_python_client import Client, Message, ProtocolVersion
+
+client = Client(
+    "ws://localhost/socket", api_key=None, protocol_version=ProtocolVersion.V2
+)
+assert_type(client, Client)
+assert_type(client.channel_socket_url, str)
+assert_type(ProtocolVersion.V2.vsn, str)
+
+
+def receive(message: Message) -> str:
+    return message.topic
+
+
+async def stop() -> None:
+    await client.shutdown()

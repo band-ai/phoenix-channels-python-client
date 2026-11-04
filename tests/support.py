@@ -15,7 +15,7 @@ from websockets.frames import CloseCode
 from websockets.http11 import Response
 from websockets.protocol import State
 
-from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
+from phoenix_channels_python_client.client import Client
 from phoenix_channels_python_client.client_types import (
     PROCEED,
     Connected,
@@ -24,12 +24,11 @@ from phoenix_channels_python_client.client_types import (
     Disconnected,
     ReconnectDecision,
     ReconnectEvent,
+    ReconnectPolicy,
 )
-from phoenix_channels_python_client.exceptions import PHXTopicError
-from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
-from phoenix_channels_python_client.protocol_handler import (
-    PhoenixChannelsProtocolVersion,
-)
+from phoenix_channels_python_client.exceptions import ChannelError
+from phoenix_channels_python_client.messages import Message
+from phoenix_channels_python_client.protocol import ProtocolVersion
 from tests.fake_server import FakePhoenixServer
 
 API_KEY = "test_key"
@@ -123,7 +122,7 @@ def refused(status: HTTPStatus) -> InvalidStatus:
 # Runs the test once per protocol version, through the `protocol` fixture.
 each_protocol = pytest.mark.parametrize(
     "protocol",
-    list(PhoenixChannelsProtocolVersion),
+    list(ProtocolVersion),
     ids=lambda version: f"v{version.value}",
 )
 
@@ -132,11 +131,9 @@ def make_client(
     server: FakePhoenixServer,
     path: str = FakePhoenixServer.SOCKET_PATH,
     **options: Any,
-) -> PHXChannelsClient:
+) -> Client:
     options.setdefault("api_key", API_KEY)
-    return PHXChannelsClient(
-        server.url_for(path), protocol_version=server.protocol, **options
-    )
+    return Client(server.url_for(path), protocol_version=server.protocol, **options)
 
 
 async def wait_for_condition(
@@ -181,25 +178,25 @@ class LostTopics:
     async def __call__(self, topic: str, error: Exception) -> None:
         self.lost.append((topic, error))
 
-    def only_error(self, topic: str = TOPIC) -> PHXTopicError:
+    def only_error(self, topic: str = TOPIC) -> ChannelError:
         """The error of the one loss recorded, which must be ``topic``'s."""
         [(lost_topic, error)] = self.lost
         assert lost_topic == topic
-        assert isinstance(error, PHXTopicError)
+        assert isinstance(error, ChannelError)
         return error
 
 
 class TopicRecorder:
     """Record callback readiness before the client can catch callback failures."""
 
-    def __init__(self, client: PHXChannelsClient, topic: str = TOPIC) -> None:
+    def __init__(self, client: Client, topic: str = TOPIC) -> None:
         self.client = client
         self.topic = topic
-        self.messages: asyncio.Queue[ChannelMessage] = asyncio.Queue()
+        self.messages: asyncio.Queue[Message] = asyncio.Queue()
         self.event_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
         self.deliveries: list[tuple[dict[str, object], bool]] = []
 
-    async def receive(self, message: ChannelMessage) -> None:
+    async def receive(self, message: Message) -> None:
         self.deliveries.append(
             (message.payload, self.client.is_topic_joined(self.topic))
         )
@@ -207,11 +204,11 @@ class TopicRecorder:
 
 
 async def subscribe_with_handlers(
-    client: PHXChannelsClient, topic: str = TOPIC, event: str = EVENT
+    client: Client, topic: str = TOPIC, event: str = EVENT
 ) -> TopicRecorder:
     recorder = TopicRecorder(client, topic)
     await client.subscribe_to_topic(topic, recorder.receive)
-    client.add_event_handler(topic, Event(event), recorder.event_payloads.put)
+    client.add_event_handler(topic, event, recorder.event_payloads.put)
     return recorder
 
 
@@ -240,11 +237,11 @@ class RecordingDecider:
             ConnectFailed: RECONNECT_NOW,
         }
         self.seen: list[ReconnectEvent] = []
-        self._decided: asyncio.Queue[tuple[ReconnectEvent, float]] = asyncio.Queue()
+        self.decided: asyncio.Queue[tuple[ReconnectEvent, float]] = asyncio.Queue()
 
     def __call__(self, event: ReconnectEvent) -> ReconnectDecision:
         self.seen.append(event)
-        self._decided.put_nowait((event, asyncio.get_running_loop().time()))
+        self.decided.put_nowait((event, asyncio.get_running_loop().time()))
         answer = self.answers[type(event)]
         if isinstance(answer, Exception):
             raise answer
@@ -253,7 +250,7 @@ class RecordingDecider:
     async def next_of(self, kind: type[E]) -> tuple[E, float]:
         """The next decided event of ``kind`` and the loop time it was decided."""
         while True:
-            event, at = await asyncio.wait_for(self._decided.get(), ASYNC_TIMEOUT_S)
+            event, at = await asyncio.wait_for(self.decided.get(), ASYNC_TIMEOUT_S)
             if isinstance(event, kind):
                 return event, at
 
@@ -265,7 +262,7 @@ class BusyCallback:
         self.running = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def __call__(self, message: ChannelMessage) -> None:
+    async def __call__(self, message: Message) -> None:
         del message
         self.running.set()
         await self.release.wait()
@@ -281,9 +278,7 @@ def only_client_id(server: FakePhoenixServer) -> int:
     return client_id
 
 
-async def crash_with_rejoin_in_flight(
-    server: FakePhoenixServer, client: PHXChannelsClient
-) -> int:
+async def crash_with_rejoin_in_flight(server: FakePhoenixServer, client: Client) -> int:
     """Crash TOPIC's channel, leaving the client's joins unanswered; return its id.
 
     Returns once the recovery's rejoin is sent and waiting for its reply.
@@ -316,7 +311,7 @@ async def deferred_channel_rejoin(
 
 async def deliver(
     server: FakePhoenixServer,
-    client: PHXChannelsClient,
+    client: Client,
     topic: str = TOPIC,
     payload: Mapping[str, object] | None = None,
     event: str = EVENT,
@@ -330,18 +325,16 @@ async def expect_message(received: asyncio.Queue[T]) -> T:
     return await asyncio.wait_for(received.get(), ASYNC_TIMEOUT_S)
 
 
-async def reconnect_after(
-    client: PHXChannelsClient, drop_connection: Awaitable[None]
-) -> None:
+async def reconnect_after(client: Client, drop_connection: Awaitable[None]) -> None:
     """Run ``drop_connection`` and wait until the client holds a new connection."""
-    generation = client._conn_generation
+    generation = client.conn_generation
     await asyncio.wait_for(drop_connection, ASYNC_TIMEOUT_S)
-    assert await wait_for_condition(lambda: client._conn_generation > generation)
+    assert await wait_for_condition(lambda: client.conn_generation > generation)
 
 
 async def reconnect(
     server: FakePhoenixServer,
-    client: PHXChannelsClient,
+    client: Client,
     code: int = CloseCode.SERVICE_RESTART,
 ) -> None:
     """Close every connection with ``code`` and wait for the client to reconnect."""
@@ -350,7 +343,7 @@ async def reconnect(
 
 async def start_server_close(
     server: FakePhoenixServer,
-    client: PHXChannelsClient,
+    client: Client,
     code: int = CloseCode.SERVICE_RESTART,
 ) -> asyncio.Task[None]:
     """Start closing the client's socket; return while it is still closing.
@@ -365,13 +358,13 @@ async def start_server_close(
     return closing
 
 
-def rejoin_settled(client: PHXChannelsClient, topic: str = TOPIC) -> Callable[[], bool]:
+def rejoin_settled(client: Client, topic: str = TOPIC) -> Callable[[], bool]:
     """True once the topic's current join has an outcome, or the topic is gone."""
 
     def settled() -> bool:
         subscription = client.get_current_subscriptions().get(topic)
         return subscription is None or (
-            subscription.conn_generation == client._conn_generation
+            subscription.conn_generation == client.conn_generation
             and subscription.current_join_ready.done()
         )
 

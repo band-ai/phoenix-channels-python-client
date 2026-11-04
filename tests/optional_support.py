@@ -12,7 +12,7 @@ from tests.support import FAST_RECONNECT, OTHER_TOPIC, TOPIC, make_client
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Coroutine
 
-    from phoenix_channels_python_client.client import PHXChannelsClient
+    from phoenix_channels_python_client.client import Client
     from tests.fake_server import FakePhoenixServer
 
 
@@ -25,7 +25,7 @@ async def subscribed_optional(
     **options: Any,
 ) -> AsyncIterator[
     tuple[
-        PHXChannelsClient,
+        Client,
         JoinProbe,
         asyncio.Queue[None],
         asyncio.Queue[tuple[str, Exception]],
@@ -63,7 +63,7 @@ async def subscribed_optional(
 async def subscribed_optional_pair(
     server: FakePhoenixServer,
     **options: Any,
-) -> AsyncIterator[tuple[PHXChannelsClient, JoinProbe, JoinProbe, asyncio.Queue[None]]]:
+) -> AsyncIterator[tuple[Client, JoinProbe, JoinProbe, asyncio.Queue[None]]]:
     async with subscribed_optional(server, **options) as (
         client,
         optional,

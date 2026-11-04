@@ -9,18 +9,19 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from websockets.frames import CloseCode
 
-from phoenix_channels_python_client.client import PHXChannelsClient, ReconnectPolicy
+from phoenix_channels_python_client.client import Client
 from phoenix_channels_python_client.client_types import (
     Connected,
     ConnectFailed,
     Disconnected,
     ReconnectDecision,
+    ReconnectPolicy,
 )
 from phoenix_channels_python_client.default_decider import (
     DefaultReconnectDecider,
     exponential_delay,
 )
-from phoenix_channels_python_client.exceptions import PHXConnectionError
+from phoenix_channels_python_client.exceptions import SocketError
 from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
@@ -86,7 +87,7 @@ def random_draw(monkeypatch: pytest.MonkeyPatch) -> Callable[[float], None]:
     return draw
 
 
-def _make_client(policy: ReconnectPolicy | None = None) -> PHXChannelsClient:
+def _make_client(policy: ReconnectPolicy | None = None) -> Client:
     """A client that is never connected; these tests call its reconnect logic."""
     return make_client(FakePhoenixServer(), reconnect_policy=policy)
 
@@ -146,7 +147,7 @@ async def test_a_policy_violation_close_is_terminal() -> None:
     decision = _close(_decider(), CloseCode.POLICY_VIOLATION)
 
     assert decision.should_reconnect is False
-    assert isinstance(decision.terminal_error, PHXConnectionError)
+    assert isinstance(decision.terminal_error, SocketError)
 
 
 @pytest.mark.parametrize(
@@ -190,7 +191,7 @@ async def test_a_forbidden_handshake_is_a_terminal_connect_failure() -> None:
     decision = _decider()(ConnectFailed(refused(TERMINAL_REFUSAL)))
 
     assert decision.should_reconnect is False
-    assert isinstance(decision.terminal_error, PHXConnectionError)
+    assert isinstance(decision.terminal_error, SocketError)
 
 
 @each_retried_refusal
@@ -217,7 +218,7 @@ async def test_repeated_rapid_disconnects_stop_with_a_terminal_error() -> None:
     ]
 
     assert [decision.should_reconnect for decision in decisions] == [True, True, False]
-    assert isinstance(decisions[-1].terminal_error, PHXConnectionError)
+    assert isinstance(decisions[-1].terminal_error, SocketError)
 
 
 @pytest.mark.clock

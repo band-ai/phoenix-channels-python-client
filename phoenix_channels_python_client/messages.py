@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from enum import Enum, unique
+from enum import StrEnum, unique
 from functools import cached_property
-from typing import Annotated, Any, NewType
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -10,32 +10,26 @@ PHOENIX_TOPIC = "phoenix"
 
 
 @unique
-class PHXEvent(Enum):
+class SystemEvent(StrEnum):
     close = "phx_close"
     error = "phx_error"
-    join = "phx_join"
+    # The protocol event intentionally shadows str.join.
+    join = "phx_join"  # type: ignore[bad-override]
     reply = "phx_reply"
     leave = "phx_leave"
 
-    def __str__(self) -> str:
-        return self.value
-
 
 # The client handles these itself: a crash rejoins, a close loses the topic.
-CLIENT_LIFECYCLE_EVENTS = frozenset({PHXEvent.error, PHXEvent.close})
+CLIENT_LIFECYCLE_EVENTS = frozenset({SystemEvent.error, SystemEvent.close})
 
-UserEvent = NewType("UserEvent", str)
-# Compatibility alias for existing imports and call sites.
-Event = UserEvent
-# Not a PHXEvent member: that would reroute make_message and change a public enum.
-HEARTBEAT_EVENT = Event("heartbeat")
-ChannelEvent = PHXEvent | UserEvent
+HEARTBEAT_EVENT = "heartbeat"
+ChannelEvent = str | SystemEvent
 
 # Servers may send a ref as a JSON number; the client matches refs as strings.
 Ref = Annotated[str | None, Field(coerce_numbers_to_str=True)]
 
 
-class BasePHXMessage(BaseModel):
+class BaseMessage(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     topic: str
@@ -50,16 +44,14 @@ class BasePHXMessage(BaseModel):
         return subtopic
 
 
-class PHXMessage(BasePHXMessage):
-    event: Event
+class UserMessage(BaseMessage):
+    event: str
     join_ref: Ref = None
 
 
-class PHXEventMessage(BasePHXMessage):
-    event: PHXEvent
+class SystemMessage(BaseMessage):
+    event: SystemEvent
     join_ref: Ref = None
 
 
-ChannelMessage = PHXMessage | PHXEventMessage
-# Compatibility alias for existing tests and call sites.
-Message = ChannelMessage
+Message = UserMessage | SystemMessage

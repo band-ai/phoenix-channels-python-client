@@ -11,8 +11,8 @@ from typing import Any, cast
 import pytest
 
 from phoenix_channels_python_client import JoinResponseCallback
-from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from phoenix_channels_python_client.phx_messages import ChannelMessage
+from phoenix_channels_python_client.exceptions import ChannelError, SocketError
+from phoenix_channels_python_client.messages import Message
 from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer, ReplyStatus
 from tests.join_hooks import AsyncInstaller
@@ -66,7 +66,7 @@ class TestJoinInstallation:
             deadline(),
             make_client(phoenix_server, on_topic_lost=on_lost) as client,
         ):
-            with pytest.raises(PHXTopicError) as caught:
+            with pytest.raises(ChannelError) as caught:
                 await client.subscribe_to_topic(
                     TOPIC, on_join_response=throwing_hook(error)
                 )
@@ -100,7 +100,7 @@ class TestJoinInstallation:
 
         hook = asynchronous
         async with deadline(), make_client(phoenix_server) as client:
-            with pytest.raises(PHXTopicError):
+            with pytest.raises(ChannelError):
                 await client.subscribe_to_topic(
                     TOPIC, on_join_response=cast("JoinResponseCallback", hook)
                 )
@@ -125,7 +125,7 @@ class TestJoinInstallation:
 
         try:
             async with deadline(), make_client(phoenix_server) as client:
-                with pytest.raises(PHXTopicError):
+                with pytest.raises(ChannelError):
                     await client.subscribe_to_topic(
                         TOPIC, on_join_response=cast("JoinResponseCallback", hook)
                     )
@@ -141,7 +141,7 @@ class TestJoinInstallation:
     ) -> None:
         hook = AsyncInstaller()
         async with deadline(), make_client(phoenix_server) as client:
-            with pytest.raises(PHXTopicError):
+            with pytest.raises(ChannelError):
                 await client.subscribe_to_topic(
                     TOPIC, on_join_response=cast("JoinResponseCallback", hook)
                 )
@@ -154,7 +154,7 @@ class TestJoinInstallation:
     ) -> None:
         hook = cast("JoinResponseCallback", lambda _: "invalid return")
         async with deadline(), make_client(phoenix_server) as client:
-            with pytest.raises(PHXTopicError):
+            with pytest.raises(ChannelError):
                 await client.subscribe_to_topic(TOPIC, on_join_response=hook)
             assert not client.get_current_subscriptions()
 
@@ -164,7 +164,7 @@ class TestJoinInstallation:
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         hook = cast("JoinResponseCallback", lambda _: future)
         async with deadline(), make_client(phoenix_server) as client:
-            with pytest.raises(PHXTopicError):
+            with pytest.raises(ChannelError):
                 await client.subscribe_to_topic(TOPIC, on_join_response=hook)
             assert not future.cancelled()
             assert not client.get_current_subscriptions()
@@ -185,7 +185,7 @@ class TestJoinInstallation:
         try:
             async with deadline(), make_client(phoenix_server) as client:
                 await started.wait()
-                with pytest.raises(PHXTopicError):
+                with pytest.raises(ChannelError):
                     await client.subscribe_to_topic(TOPIC, on_join_response=hook)
                 assert not task.done()
                 assert not client.get_current_subscriptions()
@@ -221,8 +221,8 @@ class TestJoinInstallation:
             await client.subscribe_to_topic(TOPIC, on_join_response=install)
             await phoenix_server.close_all_clients()
             error = await lost.get()
-            assert isinstance(error, PHXTopicError)
-            assert isinstance(error.__cause__, PHXTopicError)
+            assert isinstance(error, ChannelError)
+            assert isinstance(error.__cause__, ChannelError)
             assert error.__cause__.__cause__ is failure
             assert not client.get_current_subscriptions()
             probe = JoinProbe(client)
@@ -256,8 +256,8 @@ class TestJoinInstallation:
             await client.subscribe_to_topic(TOPIC, on_join_response=install)
             await phoenix_server.crash_channel(TOPIC)
             error = await lost.get()
-            assert isinstance(error, PHXTopicError)
-            assert isinstance(error.__cause__, PHXTopicError)
+            assert isinstance(error, ChannelError)
+            assert isinstance(error.__cause__, ChannelError)
             assert error.__cause__.__cause__ is failure
             assert not client.get_current_subscriptions()
             probe = JoinProbe(client)
@@ -276,7 +276,7 @@ class TestJoinInstallation:
             make_client(phoenix_server, max_topic_queue_size=capacity) as client,
         ):
             # This independent topic proves the router has consumed the burst.
-            async def routed(message: ChannelMessage) -> None:
+            async def routed(message: Message) -> None:
                 del message
                 barrier.set()
 
@@ -312,7 +312,7 @@ class TestJoinInstallation:
             make_client(phoenix_server, max_topic_queue_size=capacity) as client,
         ):
             # This independent topic proves the router has consumed the burst.
-            async def routed(message: ChannelMessage) -> None:
+            async def routed(message: Message) -> None:
                 del message
                 barrier.set()
 
@@ -332,7 +332,7 @@ class TestJoinInstallation:
                     await push(phoenix_server, independent)
                     await barrier.wait()
                     gate.start.set()
-                    with pytest.raises(PHXConnectionError, match="Messages lost"):
+                    with pytest.raises(SocketError, match="Messages lost"):
                         await admission
                     assert probe.order == []
                     assert not client.is_topic_joined(TOPIC)
@@ -344,7 +344,7 @@ class TestJoinInstallation:
         barrier: asyncio.Queue[None] = asyncio.Queue()
         gate = ProcessorGate(hold_start=True)
 
-        async def routed(message: ChannelMessage) -> None:
+        async def routed(message: Message) -> None:
             del message
             await barrier.put(None)
 
@@ -398,7 +398,7 @@ class TestJoinInstallation:
         barrier = asyncio.Event()
         gate = ProcessorGate(hold_start=True)
 
-        async def routed(message: ChannelMessage) -> None:
+        async def routed(message: Message) -> None:
             del message
             barrier.set()
 
@@ -422,7 +422,7 @@ class TestJoinInstallation:
                     await barrier.wait()
                     gate.start.set()
                     await clock.advance(join_deadline)
-                    with pytest.raises(PHXTopicError, match="Timed out"):
+                    with pytest.raises(ChannelError, match="Timed out"):
                         await admission
                 assert probe.order == []
                 assert TOPIC not in client.get_current_subscriptions()

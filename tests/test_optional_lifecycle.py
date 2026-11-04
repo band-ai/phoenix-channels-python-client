@@ -7,7 +7,7 @@ from contextlib import suppress
 
 import pytest
 
-from phoenix_channels_python_client.exceptions import PHXTopicError
+from phoenix_channels_python_client.exceptions import ChannelError
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer, ReplyStatus, WireEvent
@@ -93,7 +93,7 @@ class TestOptionalLifecycle:
                     await leaving
                     assert recovery.done()
                 await phoenix_server.left.get()
-                assert not client._cleanup_tasks
+                assert not client.cleanup_tasks
                 phoenix_server.defer_join_targets.clear()
                 fresh = JoinProbe(client)
                 phoenix_server.defer_join_targets.add(
@@ -121,9 +121,10 @@ class TestOptionalLifecycle:
         async with subscribed_optional_pair(phoenix_server) as (
             client,
             original,
-            _required,
+            required,
             reconnects,
         ):
+            del required
             gate = TaskLifecycleGate(
                 TopicRuntimeMixin._recover_channel.__code__, hold_exit=True
             )
@@ -151,7 +152,7 @@ class TestOptionalLifecycle:
                     await stopping
                     assert recovery.done()
                 await client.__aenter__()
-                assert not client._cleanup_tasks
+                assert not client.cleanup_tasks
                 phoenix_server.defer_join_targets.clear()
                 fresh = JoinProbe(client)
                 phoenix_server.defer_join_targets.add(
@@ -286,7 +287,7 @@ class TestOptionalLifecycle:
             await push(phoenix_server, current)
             await replacement.delivered.get()
             assert len(losses) == 1
-            assert isinstance(losses[0], PHXTopicError)
+            assert isinstance(losses[0], ChannelError)
             assert original.order == [{}]
 
     @pytest.mark.clock
@@ -350,7 +351,8 @@ class TestOptionalLifecycle:
     ) -> None:
         async with subscribed_optional_pair(
             phoenix_server, heartbeat_interval_s=None, join_timeout_s=JOIN_DEADLINE
-        ) as (client, optional, _required, reconnects):
+        ) as (client, optional, required, reconnects):
+            del required
             phoenix_server.defer_join_targets.add(
                 (phoenix_server.next_client_id, TOPIC)
             )
@@ -433,7 +435,8 @@ class TestOptionalLifecycle:
     ) -> None:
         async with subscribed_optional_pair(
             phoenix_server, heartbeat_interval_s=None, join_timeout_s=JOIN_DEADLINE
-        ) as (client, optional, _required, reconnects):
+        ) as (client, optional, required, reconnects):
+            del required
             gate = TaskLifecycleGate(
                 TopicRuntimeMixin._recover_channel.__code__, hold_exit=True
             )
@@ -528,7 +531,7 @@ class TestOptionalLifecycle:
             await reply(phoenix_server, pending)
             await push(phoenix_server, pending, WireEvent.CLOSE)
             lost_topic, error = await losses.get()
-            assert (lost_topic, type(error)) == (TOPIC, PHXTopicError)
+            assert (lost_topic, type(error)) == (TOPIC, ChannelError)
             assert TOPIC not in client.get_current_subscriptions()
             assert probe.order == [{}, None]
 
@@ -577,6 +580,6 @@ class TestOptionalLifecycle:
             await push(phoenix_server, pending, WireEvent.CLOSE)
             await reply(phoenix_server, pending)
             lost_topic, error = await losses.get()
-            assert (lost_topic, type(error)) == (TOPIC, PHXTopicError)
+            assert (lost_topic, type(error)) == (TOPIC, ChannelError)
             assert TOPIC not in client.get_current_subscriptions()
             assert probe.order == [{}]

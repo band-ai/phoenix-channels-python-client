@@ -9,9 +9,7 @@ import looptime
 import pytest
 import pytest_asyncio
 
-from phoenix_channels_python_client.protocol_handler import (
-    PhoenixChannelsProtocolVersion,
-)
+from phoenix_channels_python_client.protocol import ProtocolVersion
 from tests.fake_server import FakePhoenixServer
 
 CLOCK_RESOLUTION = 2**-16
@@ -30,15 +28,15 @@ def controlled_loop() -> asyncio.AbstractEventLoop:
 class Clock:
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         self.loop = loop
-        self._stationary: asyncio.Handle | None = None
+        self.stationary: asyncio.Handle | None = None
         self.freeze()
 
     def freeze(self) -> None:
-        self._stationary = self.loop.call_soon(self.freeze)
+        self.stationary = self.loop.call_soon(self.freeze)
 
     def stop(self) -> None:
-        if self._stationary is not None:
-            self._stationary.cancel()
+        if self.stationary is not None:
+            self.stationary.cancel()
 
     def jump(self, seconds: float) -> None:
         assert isinstance(self.loop, looptime.LoopTimeEventLoop)
@@ -64,7 +62,7 @@ async def clock() -> AsyncIterator[Clock]:
 
 @pytest_asyncio.fixture
 async def clocked_peer(
-    clock: Clock, protocol: PhoenixChannelsProtocolVersion
+    clock: Clock, protocol: ProtocolVersion
 ) -> AsyncIterator[FakePhoenixServer]:
     del clock
     async with FakePhoenixServer(protocol) as server:

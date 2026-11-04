@@ -11,13 +11,13 @@ from phoenix_channels_python_client.client_types import (
     Disconnected,
     ReconnectDecision,
 )
-from phoenix_channels_python_client.exceptions import PHXConnectionError
-from phoenix_channels_python_client.phx_messages import (
+from phoenix_channels_python_client.exceptions import SocketError
+from phoenix_channels_python_client.messages import (
     PHOENIX_TOPIC,
-    ChannelMessage,
-    PHXEvent,
+    Message,
+    SystemEvent,
 )
-from phoenix_channels_python_client.supervisor import _FORCED_CLOSE_CODE
+from phoenix_channels_python_client.supervisor import FORCED_CLOSE_CODE
 from phoenix_channels_python_client.utils import make_message
 from tests.harness import (
     HARNESS_RECONNECT_DELAY_S,
@@ -30,12 +30,14 @@ from tests.support import wait_forever
 HEARTBEAT_REF = "5"
 
 
-def heartbeat_reply(ref: str) -> ChannelMessage:
-    return make_message(topic=PHOENIX_TOPIC, event=PHXEvent.reply, payload={}, ref=ref)
+def heartbeat_reply(ref: str) -> Message:
+    return make_message(
+        topic=PHOENIX_TOPIC, event=SystemEvent.reply, payload={}, ref=ref
+    )
 
 
 async def test_a_terminal_connect_failure_ends_the_loop_with_its_error() -> None:
-    terminal = PHXConnectionError("refused for good")
+    terminal = SocketError("refused for good")
     harness = SupervisorHarness(connect_failures=1)
     harness.connect_failure_decision = ReconnectDecision(
         should_reconnect=False, terminal_error=terminal
@@ -44,10 +46,10 @@ async def test_a_terminal_connect_failure_ends_the_loop_with_its_error() -> None
     await harness._supervisor_loop()
 
     assert harness.connect_attempts == 1
-    assert harness._terminal_error is terminal
-    assert harness._initial_connection_future is not None
-    assert harness._initial_connection_future.exception() is terminal
-    assert harness._state is ClientState.CLOSED
+    assert harness.terminal_error is terminal
+    assert harness.initial_connection_future is not None
+    assert harness.initial_connection_future.exception() is terminal
+    assert harness.state is ClientState.CLOSED
 
 
 async def test_the_initial_connect_retries_before_succeeding() -> None:
@@ -60,8 +62,8 @@ async def test_the_initial_connect_retries_before_succeeding() -> None:
     await harness._supervisor_loop()
 
     assert harness.connect_attempts == failures + 1
-    assert harness._initial_connection_future is not None
-    assert harness._initial_connection_future.result() is None
+    assert harness.initial_connection_future is not None
+    assert harness.initial_connection_future.result() is None
 
 
 async def test_a_rejoin_error_does_not_stop_the_supervisor() -> None:
@@ -70,45 +72,41 @@ async def test_a_rejoin_error_does_not_stop_the_supervisor() -> None:
 
     await harness._supervisor_loop()
 
-    assert harness._initial_connection_future is not None
-    assert harness._initial_connection_future.result() is None
+    assert harness.initial_connection_future is not None
+    assert harness.initial_connection_future.result() is None
     assert harness.wait_delays == [HARNESS_RECONNECT_DELAY_S]
 
 
 async def test_a_forced_close_is_decided_without_the_echoed_close_code() -> None:
     # The code websockets reports back for a forced close, which must not be decided on.
-    harness = SupervisorHarness(
-        forced_close_pending=True, close_code=_FORCED_CLOSE_CODE
-    )
+    harness = SupervisorHarness(forced_close_pending=True, close_code=FORCED_CLOSE_CODE)
 
     await harness._supervisor_loop()
 
     assert Disconnected(close_code=None, close_reason="") in harness.decided_events
     assert harness.wait_delays == [HARNESS_RECONNECT_DELAY_S]
-    assert harness._forced_close_pending is False
+    assert harness.forced_close_pending is False
 
 
 async def test_shutdown_before_connecting_fails_the_initial_connection() -> None:
     harness = SupervisorHarness()
-    harness._shutdown_event.set()
+    harness.shutdown_event.set()
 
     await harness._supervisor_loop()
 
-    assert harness._initial_connection_future is not None
-    assert isinstance(
-        harness._initial_connection_future.exception(), PHXConnectionError
-    )
+    assert harness.initial_connection_future is not None
+    assert isinstance(harness.initial_connection_future.exception(), SocketError)
 
 
 async def test_cleanup_survives_a_socket_that_fails_to_close() -> None:
     harness = SupervisorHarness()
     harness.connection = fake_connection(FakeSocket(close_raises=True))
-    harness._message_routing_task = asyncio.create_task(wait_forever())
+    harness.message_routing_task = asyncio.create_task(wait_forever())
 
     await harness._cleanup_connection()
 
     assert harness.connection is None
-    assert harness._message_routing_task is None
+    assert harness.message_routing_task is None
 
 
 @pytest.mark.parametrize("install_signal_handlers", [True, False])
@@ -121,7 +119,7 @@ async def test_run_forever_raises_the_supervisors_failure(
         raise failure
 
     harness = SupervisorHarness()
-    harness._supervisor_task = asyncio.create_task(fail())
+    harness.supervisor_task = asyncio.create_task(fail())
 
     with pytest.raises(RuntimeError) as raised:
         await harness.run_forever(install_signal_handlers=install_signal_handlers)
@@ -131,23 +129,23 @@ async def test_run_forever_raises_the_supervisors_failure(
 async def test_a_heartbeat_reply_fires_the_ack_callback() -> None:
     harness = SupervisorHarness(pending_heartbeat_ref=HEARTBEAT_REF)
     acks: list[None] = []
-    harness._on_heartbeat_ack = lambda: acks.append(None)
+    harness.on_heartbeat_ack = lambda: acks.append(None)
 
     harness._handle_heartbeat_response(heartbeat_reply(HEARTBEAT_REF))
 
     assert len(acks) == 1
-    assert harness._pending_heartbeat_ref is None
+    assert harness.pending_heartbeat_ref is None
 
 
 async def test_a_reply_to_another_heartbeat_is_ignored() -> None:
     harness = SupervisorHarness(pending_heartbeat_ref=HEARTBEAT_REF)
     acks: list[None] = []
-    harness._on_heartbeat_ack = lambda: acks.append(None)
+    harness.on_heartbeat_ack = lambda: acks.append(None)
 
     harness._handle_heartbeat_response(heartbeat_reply(f"not-{HEARTBEAT_REF}"))
 
     assert acks == []
-    assert harness._pending_heartbeat_ref == HEARTBEAT_REF
+    assert harness.pending_heartbeat_ref == HEARTBEAT_REF
 
 
 async def test_a_raising_ack_callback_still_clears_the_heartbeat() -> None:
@@ -156,11 +154,11 @@ async def test_a_raising_ack_callback_still_clears_the_heartbeat() -> None:
     def bad_heartbeat_ack() -> None:
         raise ValueError("callback boom")
 
-    harness._on_heartbeat_ack = bad_heartbeat_ack
+    harness.on_heartbeat_ack = bad_heartbeat_ack
 
     harness._handle_heartbeat_response(heartbeat_reply(HEARTBEAT_REF))
 
-    assert harness._pending_heartbeat_ref is None
+    assert harness.pending_heartbeat_ref is None
 
 
 async def test_an_async_ack_callback_is_not_run() -> None:
@@ -170,9 +168,9 @@ async def test_an_async_ack_callback_is_not_run() -> None:
     async def async_on_heartbeat_ack() -> None:
         ran.append(True)
 
-    harness._on_heartbeat_ack = async_on_heartbeat_ack  # type: ignore[assignment]
+    harness.on_heartbeat_ack = async_on_heartbeat_ack  # type: ignore[assignment]
 
     harness._handle_heartbeat_response(heartbeat_reply(HEARTBEAT_REF))
 
-    assert harness._pending_heartbeat_ref is None
+    assert harness.pending_heartbeat_ref is None
     assert ran == []

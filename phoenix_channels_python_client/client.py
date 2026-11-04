@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Awaitable, Callable
 from types import TracebackType
 from typing import Self, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -20,19 +19,23 @@ from phoenix_channels_python_client.authentication import (
 from phoenix_channels_python_client.client_state_machine import transition_client_state
 from phoenix_channels_python_client.client_types import (
     ClientState,
+    DisconnectCallback,
+    HeartbeatAckCallback,
+    ReconnectCallback,
     ReconnectDecider,
     ReconnectPolicy,
+    TopicLostCallback,
 )
 from phoenix_channels_python_client.diagnostics import (
     ConnectionLogger,
     diagnostic_secrets,
 )
-from phoenix_channels_python_client.exceptions import PHXConnectionError
-from phoenix_channels_python_client.protocol_handler import (
+from phoenix_channels_python_client.exceptions import SocketError
+from phoenix_channels_python_client.protocol import (
     DEFAULT_PROTOCOL_VERSION,
-    PhoenixChannelsProtocolVersion,
-    PHXProtocolHandler,
+    ProtocolVersion,
 )
+from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.reconnect_controller import ReconnectControllerMixin
 from phoenix_channels_python_client.supervisor import SupervisorMixin
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
@@ -40,14 +43,6 @@ from phoenix_channels_python_client.topic_subscription import TopicSubscription
 from phoenix_channels_python_client.utils import cancel_and_wait
 
 logger = logging.getLogger(__name__)
-
-ReconnectCallback = Callable[[], Awaitable[None]]
-DisconnectCallback = Callable[[Exception | None], Awaitable[None]]
-# Must be synchronous and fast: unlike the callbacks above, this runs inline
-# on the message-routing hot path, so blocking work here stalls heartbeat
-# sends and message routing for every connection.
-HeartbeatAckCallback = Callable[[], None]
-TopicLostCallback = Callable[[str, Exception], Awaitable[None]]
 
 
 def _build_channel_socket_urls(
@@ -118,14 +113,13 @@ def _validate_heartbeat_threshold(
         )
 
 
-class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
+class Client(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerMixin):
     def __init__(  # noqa: PLR0913, PLR0915  # the public options
         self,
         websocket_url: str,
-        api_key: str | None = None,
         *,
-        protocol_version: PhoenixChannelsProtocolVersion
-        | str = DEFAULT_PROTOCOL_VERSION,
+        api_key: str | None = None,
+        protocol_version: ProtocolVersion | str = DEFAULT_PROTOCOL_VERSION,
         auto_reconnect: bool = True,
         reconnect_policy: ReconnectPolicy | None = None,
         join_timeout_s: float = 10.0,
@@ -162,13 +156,13 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         if callback_drain_timeout_s <= 0:
             raise ValueError("callback_drain_timeout_s must be > 0")
 
-        self._protocol_handler = PHXProtocolHandler(
+        self.protocol_handler = PHXProtocolHandler(
             protocol_version, diagnostic_logger=self.logger
         )
         connect_url, redacted_url = _build_channel_socket_urls(
             websocket_url=websocket_url,
             api_key=api_key,
-            vsn=self._protocol_handler.protocol_version.vsn,
+            vsn=self.protocol_handler.protocol_version.vsn,
             header_auth=select_authentication_header(self.additional_headers),
         )
         self.channel_socket_url = connect_url
@@ -182,69 +176,69 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         self.callback_drain_timeout_s = callback_drain_timeout_s
 
         self.connection: ClientConnection | None = None
-        self._topic_subscriptions: dict[str, TopicSubscription] = {}
-        self._ref_counter = 0
-        self._state = ClientState.CLOSED
-        self._topics_lock = asyncio.Lock()
-        self._shutdown_event = asyncio.Event()
-        self._connected_event = asyncio.Event()
-        self._conn_generation = 0
-        self._supervisor_task: asyncio.Task[None] | None = None
-        self._shutdown_task: asyncio.Task[None] | None = None
-        self._message_routing_task: asyncio.Task[None] | None = None
-        self._initial_connection_future: asyncio.Future[None] | None = None
-        self._terminal_error: Exception | None = None
-        self._heartbeat_dead_threshold_s = heartbeat_dead_threshold_s
-        self._heartbeat_deadline: float | None = None
-        self._heartbeat_timeout: asyncio.Timeout | None = None
-        self._heartbeat_interval_s = heartbeat_interval_s
-        self._heartbeat_task: asyncio.Task[None] | None = None
-        self._pending_heartbeat_ref: str | None = None
-        self._on_reconnect = on_reconnect
-        self._on_disconnect = on_disconnect
-        self._on_heartbeat_ack = on_heartbeat_ack
-        self._on_topic_lost = on_topic_lost
-        self._reconnect_decider = reconnect_decider
-        self._decider = self._new_decider()
-        self._lifecycle_tasks: set[asyncio.Task[None]] = set()
-        self._cleanup_tasks: set[asyncio.Task[None]] = set()
-        self._forced_close_pending = False
+        self.topic_subscriptions: dict[str, TopicSubscription] = {}
+        self.ref_counter = 0
+        self.state = ClientState.CLOSED
+        self.topics_lock = asyncio.Lock()
+        self.shutdown_event = asyncio.Event()
+        self.connected_event = asyncio.Event()
+        self.conn_generation = 0
+        self.supervisor_task: asyncio.Task[None] | None = None
+        self.shutdown_task: asyncio.Task[None] | None = None
+        self.message_routing_task: asyncio.Task[None] | None = None
+        self.initial_connection_future: asyncio.Future[None] | None = None
+        self.terminal_error: Exception | None = None
+        self.heartbeat_dead_threshold_s = heartbeat_dead_threshold_s
+        self.heartbeat_deadline: float | None = None
+        self.heartbeat_timeout: asyncio.Timeout | None = None
+        self.heartbeat_interval_s = heartbeat_interval_s
+        self.heartbeat_task: asyncio.Task[None] | None = None
+        self.pending_heartbeat_ref: str | None = None
+        self.on_reconnect = on_reconnect
+        self.on_disconnect = on_disconnect
+        self.on_heartbeat_ack = on_heartbeat_ack
+        self.on_topic_lost = on_topic_lost
+        self.reconnect_decider = reconnect_decider
+        self.decider = self._new_decider()
+        self.lifecycle_tasks: set[asyncio.Task[None]] = set()
+        self.cleanup_tasks: set[asyncio.Task[None]] = set()
+        self.forced_close_pending = False
 
     def redact_diagnostic(self, text: str) -> str:
         """Sanitize untrusted transport error text using this connection's policy."""
         return cast(ConnectionLogger, self.logger).redact(text)
 
     @property
-    def _active_shutdown(self) -> asyncio.Task[None] | None:
-        task = self._shutdown_task
+    def active_shutdown(self) -> asyncio.Task[None] | None:
+        task = self.shutdown_task
         return task if task is not None and not task.done() else None
 
     @property
-    def _is_fully_closed(self) -> bool:
+    def is_fully_closed(self) -> bool:
         return (
-            self._state == ClientState.CLOSED
-            and not self._topic_subscriptions
+            self.state == ClientState.CLOSED
+            and not self.topic_subscriptions
             and self.connection is None
-            and not self._cleanup_tasks
+            and not self.cleanup_tasks
         )
 
     async def __aenter__(self) -> Self:
-        self.logger.debug("Entering PHXChannelsClient context")
-        if self._state != ClientState.CLOSED or self._active_shutdown is not None:
-            raise PHXConnectionError("Client is already running")
+        self.logger.debug("Entering Client context")
+        if self.state != ClientState.CLOSED or self.active_shutdown is not None:
+            raise SocketError("Client is already running")
 
-        self._shutdown_event.clear()
-        self._connected_event.clear()
-        self._decider = self._new_decider()
-        self._terminal_error = None
-        self._conn_generation = 0
-        self._initial_connection_future = asyncio.get_running_loop().create_future()
+        self.shutdown_event.clear()
+        self.connected_event.clear()
+        self.decider = self._new_decider()
+        self.terminal_error = None
+        self.conn_generation = 0
+        self.initial_connection_future = asyncio.get_running_loop().create_future()
         self._transition_state(ClientState.CONNECTING)
 
-        self._supervisor_task = asyncio.create_task(self._supervisor_loop())
+        self.supervisor_task = asyncio.create_task(self._supervisor_loop())
 
         try:
-            await self._initial_connection_future
+            await self.initial_connection_future
         except (Exception, asyncio.CancelledError):
             # Not BaseException: awaiting cleanup on GeneratorExit raises RuntimeError.
             await self.shutdown("Initial connection failed")
@@ -258,16 +252,16 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
         exc_value: BaseException | None = None,
         traceback: TracebackType | None = None,
     ) -> None:
-        self.logger.debug("Leaving PHXChannelsClient context")
-        await self.shutdown("Leaving PHXChannelsClient context")
+        self.logger.debug("Leaving Client context")
+        await self.shutdown("Leaving Client context")
 
-    async def shutdown(self, reason: str) -> None:
-        task = self._active_shutdown
+    async def shutdown(self, reason: str = "Client shutdown") -> None:
+        task = self.active_shutdown
         if task is None:
-            if self._is_fully_closed:
+            if self.is_fully_closed:
                 return
             self._request_stop()
-            task = self._shutdown_task = asyncio.create_task(self._shutdown(reason))
+            task = self.shutdown_task = asyncio.create_task(self._shutdown(reason))
         # Every caller waits for the same shutdown, and one caller's
         # cancellation never aborts it.
         await asyncio.shield(task)
@@ -275,28 +269,28 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
     def _request_stop(self) -> None:
         # Runs inside the shutdown() call, not in its task: a refusal or close landing
         # before the task's first step must already see the stop.
-        if self._state not in (ClientState.SHUTTING_DOWN, ClientState.CLOSED):
+        if self.state not in (ClientState.SHUTTING_DOWN, ClientState.CLOSED):
             self._transition_state(ClientState.SHUTTING_DOWN)
-        self._shutdown_event.set()
+        self.shutdown_event.set()
 
     async def _shutdown(self, reason: str) -> None:
         self.logger.info("Event loop shutting down! reason=%s", reason)
 
         await self._unsubscribe_all()
         # Includes on_topic_lost callbacks still running for topics already gone.
-        await cancel_and_wait(*self._lifecycle_tasks)
-        if self._cleanup_tasks:
-            await asyncio.gather(*self._cleanup_tasks)
+        await cancel_and_wait(*self.lifecycle_tasks)
+        if self.cleanup_tasks:
+            await asyncio.gather(*self.cleanup_tasks)
         await self._stop_supervisor()
         await self._cleanup_connection()
-        self._connected_event.clear()
+        self.connected_event.clear()
         self._transition_state(ClientState.CLOSED)
 
     async def _unsubscribe_all(self) -> None:
-        topics = list(self._topic_subscriptions)
+        topics = list(self.topic_subscriptions)
         results = await asyncio.gather(
             *(
-                self.unsubscribe_from_topic(topic, _allow_disconnected=True)
+                self.unsubscribe_from_topic(topic, allow_disconnected=True)
                 for topic in topics
             ),
             return_exceptions=True,
@@ -311,14 +305,14 @@ class PHXChannelsClient(SupervisorMixin, TopicRuntimeMixin, ReconnectControllerM
 
     async def _stop_supervisor(self) -> None:
         # Cleared, so run_forever() after the stop reports the client isn't running.
-        supervisor, self._supervisor_task = self._supervisor_task, None
+        supervisor, self.supervisor_task = self.supervisor_task, None
         if supervisor is not None and not supervisor.done():
             await cancel_and_wait(supervisor)
 
     def _transition_state(self, new_state: ClientState) -> None:
-        if self._state == new_state:
+        if self.state == new_state:
             return
 
-        transitioned_state = transition_client_state(self._state, new_state)
-        self.logger.debug("Client state transition: %s -> %s", self._state, new_state)
-        self._state = transitioned_state
+        transitioned_state = transition_client_state(self.state, new_state)
+        self.logger.debug("Client state transition: %s -> %s", self.state, new_state)
+        self.state = transitioned_state

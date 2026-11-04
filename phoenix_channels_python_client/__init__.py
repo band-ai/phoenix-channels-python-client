@@ -1,38 +1,36 @@
-"""Phoenix Channels Python Client.
+"""An async Python client for Phoenix Channels."""
 
-A Python client library for connecting to Phoenix Channels.
-"""
-
-from __future__ import annotations
-
-from phoenix_channels_python_client.client import (
-    DisconnectCallback,
-    HeartbeatAckCallback,
-    PHXChannelsClient,
-    ReconnectCallback,
-    ReconnectPolicy,
-    TopicLostCallback,
-)
+from phoenix_channels_python_client.client import Client
 from phoenix_channels_python_client.client_types import (
     Connected,
     ConnectFailed,
     Connecting,
+    DisconnectCallback,
     Disconnected,
+    HeartbeatAckCallback,
     JoinResponseCallback,
+    ReconnectCallback,
     ReconnectDecider,
     ReconnectDecision,
     ReconnectEvent,
+    ReconnectPolicy,
+    TopicLostCallback,
 )
-from phoenix_channels_python_client.protocol_handler import (
-    PhoenixChannelsProtocolVersion,
-    PHXProtocolHandler,
+from phoenix_channels_python_client.exceptions import (
+    ChannelError,
+    ClientError,
+    PushTimeoutError,
+    SocketError,
 )
-from phoenix_channels_python_client.utils import setup_logging
+from phoenix_channels_python_client.messages import Message, SystemEvent
+from phoenix_channels_python_client.protocol import ProtocolVersion
 
 __version__ = "0.4.4"
-__author__ = "Phoenix Channels Python Client"
 
 __all__ = [
+    "ChannelError",
+    "Client",
+    "ClientError",
     "ConnectFailed",
     "Connected",
     "Connecting",
@@ -40,14 +38,15 @@ __all__ = [
     "Disconnected",
     "HeartbeatAckCallback",
     "JoinResponseCallback",
-    "PHXChannelsClient",
-    "PHXProtocolHandler",
-    "PhoenixChannelsProtocolVersion",
+    "Message",
+    "ProtocolVersion",
+    "PushTimeoutError",
     "ReconnectCallback",
     "ReconnectDecider",
     "ReconnectDecision",
     "ReconnectEvent",
     "ReconnectPolicy",
+    "SocketError",
+    "SystemEvent",
     "TopicLostCallback",
-    "setup_logging",
 ]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Self
@@ -15,9 +15,17 @@ from pydantic import (
     model_validator,
 )
 
-from phoenix_channels_python_client.exceptions import PHXConnectionError
+from phoenix_channels_python_client.exceptions import SocketError
 
 JoinResponseCallback = Callable[[Any], None]
+
+ReconnectCallback = Callable[[], Awaitable[None]]
+DisconnectCallback = Callable[[Exception | None], Awaitable[None]]
+# Must be synchronous and fast: unlike the callbacks above, this runs inline
+# on the message-routing hot path, so blocking work here stalls heartbeat
+# sends and message routing for every connection.
+HeartbeatAckCallback = Callable[[], None]
+TopicLostCallback = Callable[[str, Exception], Awaitable[None]]
 
 
 class ClientState(StrEnum):
@@ -29,7 +37,7 @@ class ClientState(StrEnum):
 
 
 # Each (low, high) pair of fields where high must not be below low.
-_ORDERED_POLICY_FIELDS = (
+ORDERED_POLICY_FIELDS = (
     ("service_restart_min_delay_s", "service_restart_max_delay_s"),
     ("try_again_later_min_delay_s", "try_again_later_max_delay_s"),
     ("rapid_cooldown_base_s", "rapid_cooldown_max_s"),
@@ -66,7 +74,7 @@ class ReconnectPolicy(BaseModel):
 
     @model_validator(mode="after")
     def _check_ordering(self) -> Self:
-        for low, high in _ORDERED_POLICY_FIELDS:
+        for low, high in ORDERED_POLICY_FIELDS:
             if getattr(self, high) < getattr(self, low):
                 raise ValueError(f"{high} must be >= {low}")
         return self
@@ -83,7 +91,7 @@ class ReconnectDecision:
 
     should_reconnect: bool
     delay_s: float = 0.0
-    terminal_error: PHXConnectionError | None = None
+    terminal_error: SocketError | None = None
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.delay_s) or self.delay_s < 0:

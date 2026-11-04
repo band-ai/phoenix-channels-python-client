@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from phoenix_channels_python_client.phx_messages import ChannelMessage
+from phoenix_channels_python_client.exceptions import ChannelError, SocketError
+from phoenix_channels_python_client.messages import Message
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from tests.cleanup_support import HeldCleanup
 from tests.clock import Clock
@@ -117,7 +117,7 @@ class TestJoinLifecycle:
             async with pending_subscribe(client, old) as admission:
                 _, request = await phoenix_server.deferred_joins.get()
                 await client.unsubscribe_from_topic(TOPIC)
-                expected = PHXConnectionError
+                expected = SocketError
                 with pytest.raises(expected):
                     await admission
             assert not client.get_current_subscriptions()
@@ -173,7 +173,7 @@ class TestJoinLifecycle:
             async with pending_subscribe(client, old) as admission:
                 _, request = await phoenix_server.deferred_joins.get()
                 await client.shutdown(STOP_REASON)
-                expected = PHXConnectionError
+                expected = SocketError
                 with pytest.raises(expected):
                     await admission
             assert not client.get_current_subscriptions()
@@ -230,7 +230,7 @@ class TestJoinLifecycle:
             async with pending_subscribe(client, old) as admission:
                 _, request = await phoenix_server.deferred_joins.get()
                 await phoenix_server.close_all_clients()
-                expected = PHXConnectionError
+                expected = SocketError
                 with pytest.raises(expected):
                     await admission
             assert not client.get_current_subscriptions()
@@ -273,7 +273,7 @@ class TestJoinLifecycle:
             async with pending_subscribe(client, probe) as admission:
                 connection, request = await clocked_peer.deferred_joins.get()
                 await clock.advance(JOIN_DEADLINE)
-                with pytest.raises(PHXTopicError, match="Timed out"):
+                with pytest.raises(ChannelError, match="Timed out"):
                     await admission
             assert not client.get_current_subscriptions()
             await clocked_peer.release_join(connection, request)
@@ -282,7 +282,7 @@ class TestJoinLifecycle:
 
     @pytest.mark.parametrize(
         ("event", "error_type"),
-        [(WireEvent.ERROR, PHXConnectionError), (WireEvent.CLOSE, PHXTopicError)],
+        [(WireEvent.ERROR, SocketError), (WireEvent.CLOSE, ChannelError)],
     )
     async def test_lifecycle_loss_before_success_prevents_installation(
         self,
@@ -357,7 +357,7 @@ class TestJoinLifecycle:
                 await admission
             topic, error = await lost.get()
             assert topic == TOPIC
-            assert isinstance(error, PHXTopicError)
+            assert isinstance(error, ChannelError)
             assert not client.is_topic_joined(TOPIC)
             assert not client.get_current_subscriptions()
             assert probe.order == [None]
@@ -411,7 +411,7 @@ class TestJoinLifecycle:
                 held.release.set()
                 await held.finished.wait()
                 await shutdown
-                assert not client._cleanup_tasks
+                assert not client.cleanup_tasks
                 assert not client.get_current_subscriptions()
             finally:
                 held.release.set()
@@ -429,7 +429,7 @@ class TestJoinLifecycle:
         unwound = asyncio.Event()
         async with deadline(), make_client(phoenix_server) as client:
 
-            async def callback(message: ChannelMessage) -> None:
+            async def callback(message: Message) -> None:
                 del message
                 try:
                     await client.shutdown(STOP_REASON)
@@ -444,7 +444,7 @@ class TestJoinLifecycle:
                 await unwound.wait()
                 await run
                 assert not client.get_current_subscriptions()
-                assert not client._cleanup_tasks
+                assert not client.cleanup_tasks
             finally:
                 run.cancel()
                 await asyncio.gather(run, return_exceptions=True)
@@ -455,7 +455,7 @@ class TestJoinLifecycle:
         unwound = asyncio.Event()
         async with deadline(), make_client(phoenix_server) as client:
 
-            async def callback(message: ChannelMessage) -> None:
+            async def callback(message: Message) -> None:
                 del message
                 try:
                     await client.unsubscribe_from_topic(TOPIC)
@@ -501,7 +501,7 @@ class TestJoinLifecycle:
                 await unwound.wait()
                 await run
                 assert not client.get_current_subscriptions()
-                assert not client._cleanup_tasks
+                assert not client.cleanup_tasks
             finally:
                 run.cancel()
                 await asyncio.gather(run, return_exceptions=True)
@@ -585,7 +585,7 @@ class TestJoinLifecycle:
                     assert initial.order == []
                     assert required.order == [{}, {}, {"required": True}]
                     assert lost.empty()
-                with pytest.raises(PHXConnectionError):
+                with pytest.raises(SocketError):
                     await admission
             assert TOPIC not in client.get_current_subscriptions()
             replacement = JoinProbe(client)
@@ -628,7 +628,7 @@ class TestJoinLifecycle:
                     await push(phoenix_server, ordinary, payload={"routed": True})
                     await required.delivered.get()
                     await phoenix_server.close_all_clients()
-                    with pytest.raises(PHXConnectionError):
+                    with pytest.raises(SocketError):
                         await admission
                 await reconnects.get()
             assert initial.order == []

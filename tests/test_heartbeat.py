@@ -32,7 +32,7 @@ async def test_heartbeats_can_be_disabled(phoenix_server: FakePhoenixServer) -> 
     # The heartbeat task starts before the connection is reported ready, so
     # its absence here is final.
     async with make_client(phoenix_server, heartbeat_interval_s=None) as client:
-        assert client._heartbeat_task is None
+        assert client.heartbeat_task is None
 
 
 async def test_the_heartbeat_stops_on_shutdown(
@@ -41,10 +41,10 @@ async def test_the_heartbeat_stops_on_shutdown(
     client = make_client(phoenix_server, heartbeat_interval_s=HEARTBEAT_INTERVAL_S)
 
     async with client:
-        assert await wait_for_condition(lambda: client._heartbeat_task is not None)
+        assert await wait_for_condition(lambda: client.heartbeat_task is not None)
 
-    assert client._heartbeat_task is None
-    assert client._pending_heartbeat_ref is None
+    assert client.heartbeat_task is None
+    assert client.pending_heartbeat_ref is None
 
 
 async def test_the_heartbeat_resumes_after_a_reconnect(

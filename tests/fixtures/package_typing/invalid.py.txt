@@ -1,0 +1,3 @@
+from phoenix_channels_python_client import Client
+Client("ws://localhost/socket", api_key=42)
+Client("ws://localhost/socket", "secret")

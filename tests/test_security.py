@@ -11,10 +11,10 @@ import pytest
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.http11 import Request, Response
 
-from phoenix_channels_python_client import PHXChannelsClient
+from phoenix_channels_python_client import Client
 from phoenix_channels_python_client.client_types import ReconnectPolicy
 from phoenix_channels_python_client.diagnostics import ConnectionLogger
-from phoenix_channels_python_client.exceptions import PHXConnectionError
+from phoenix_channels_python_client.exceptions import SocketError
 from tests.fake_server import FakePhoenixServer
 
 URL_CREDENTIAL = "url/private+ credential?x=1&z=#[]"
@@ -54,7 +54,7 @@ async def test_optional_api_key_credentials_are_redacted(
         url += "?" + urlencode({"api_key": URL_CREDENTIAL})
         credentials.append(URL_CREDENTIAL)
     caplog.set_level(logging.DEBUG, logger="phoenix_channels_python_client.client")
-    client = PHXChannelsClient(url, api_key, additional_headers=headers)
+    client = Client(url, api_key=api_key, additional_headers=headers)
     collector = BufferingHandler(1000)
     client.logger.addHandler(collector)
     try:
@@ -116,15 +116,17 @@ class TestConnectionSecurity:
         self, headers: dict[str, str]
     ) -> None:
         with pytest.raises(ValueError, match="nonempty credential"):
-            PHXChannelsClient(
-                "ws://127.0.0.1:1/socket", "query-secret", additional_headers=headers
+            Client(
+                "ws://127.0.0.1:1/socket",
+                api_key="query-secret",
+                additional_headers=headers,
             )
 
     def test_mixed_authentication_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="token query authentication"):
-            PHXChannelsClient(
+            Client(
                 "ws://127.0.0.1:1/socket?token=jwt",
-                "query-secret",
+                api_key="query-secret",
                 additional_headers={"x-api-key": "header-secret"},
             )
 
@@ -158,8 +160,8 @@ class TestConnectionSecurity:
         ]
 
     def test_connections_keep_independent_diagnostic_policies(self) -> None:
-        first = PHXChannelsClient("ws://127.0.0.1:1/socket", "first-credential")
-        second = PHXChannelsClient("ws://127.0.0.1:1/socket", "second-credential")
+        first = Client("ws://127.0.0.1:1/socket", api_key="first-credential")
+        second = Client("ws://127.0.0.1:1/socket", api_key="second-credential")
         assert first.redact_diagnostic("first-credential") == "[REDACTED]"
         assert second.redact_diagnostic("first-credential") == "first-credential"
         assert second.redact_diagnostic("second-credential") == "[REDACTED]"
@@ -169,14 +171,15 @@ class TestConnectionSecurity:
     def test_connection_records_respect_registered_logger_policy(
         self, policy: str
     ) -> None:
-        client = PHXChannelsClient("ws://127.0.0.1:1/socket", "synthetic-key")
+        client = Client("ws://127.0.0.1:1/socket", api_key="synthetic-key")
         target = logging.getLogger("phoenix_channels_python_client.client")
         collector = BufferingHandler(100)
         client.logger.addHandler(collector)
         client.logger.setLevel(logging.WARNING)
         previous_disabled = target.disabled
 
-        def reject(_record: logging.LogRecord) -> bool:
+        def reject(record: logging.LogRecord) -> bool:
+            del record
             return False
 
         try:
@@ -231,9 +234,9 @@ class TestConnectionSecurity:
                 else ""
             )
             url = f"ws://127.0.0.1:{port}/socket?API%5FKEY=embedded-secret&api_key=embedded-secret&aPi_KeY=embedded-secret&token={token}&keep=one&keep=&vsn=old"
-            async with PHXChannelsClient(
+            async with Client(
                 url,
-                positional,
+                api_key=positional,
                 additional_headers={
                     **dict.fromkeys(header_names, secret),
                     "x-token": "synthetic-additional-token",
@@ -320,13 +323,13 @@ class TestConnectionSecurity:
         caplog.set_level(logging.DEBUG, logger="phoenix_channels_python_client.client")
         async with serve(peer, "127.0.0.1", 0, process_request=refuse) as server:
             port = server.sockets[0].getsockname()[1]
-            client = PHXChannelsClient(
+            client = Client(
                 f"ws://127.0.0.1:{port}/socket?token=old-jwt&api_key=old-key",
-                secret,
+                api_key=secret,
                 additional_headers={"X-Auth-Token": secret},
                 auto_reconnect=False,
             )
-            with pytest.raises(PHXConnectionError, match="401"):
+            with pytest.raises(SocketError, match="401"):
                 await client.__aenter__()
         [request] = requests
         assert parse_qsl(urlsplit(request.path).query) == [("vsn", "2.0.0")]
@@ -347,8 +350,9 @@ class TestConnectionSecurity:
         delivered = asyncio.Event()
 
         def response(
-            _connection: ServerConnection, _request: Request, reply: Response
+            connection: ServerConnection, request: Request, reply: Response
         ) -> Response:
+            del connection, request
             reply.headers["Set-Cookie"] = "session=" + session + "; HttpOnly"
             return reply
 
@@ -362,9 +366,9 @@ class TestConnectionSecurity:
         caplog.set_level(logging.DEBUG, logger="phoenix_channels_python_client.client")
         async with serve(peer, "127.0.0.1", 0, process_response=response) as server:
             port = server.sockets[0].getsockname()[1]
-            client = PHXChannelsClient(
+            client = Client(
                 f"ws://127.0.0.1:{port}/socket?email={identity}",
-                "synthetic-key",
+                api_key="synthetic-key",
                 additional_headers={
                     "x-api-key": "synthetic-key",
                     "Cookie": "session=" + session,

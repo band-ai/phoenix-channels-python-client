@@ -20,11 +20,11 @@ from phoenix_channels_python_client.client_types import (
     ReconnectDecision,
     ReconnectEvent,
 )
-from phoenix_channels_python_client.exceptions import PHXConnectionError
-from phoenix_channels_python_client.phx_messages import (
+from phoenix_channels_python_client.exceptions import SocketError
+from phoenix_channels_python_client.messages import (
     HEARTBEAT_EVENT,
     PHOENIX_TOPIC,
-    ChannelMessage,
+    Message,
 )
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.shutdown_signals import handle_shutdown_signals
@@ -33,27 +33,27 @@ from phoenix_channels_python_client.utils import cancel_and_wait, make_message
 
 # RFC 6455 §7.4.2 private-use range (4000-4999, unregistrable). The decider
 # never sees it: a forced close is decided with close_code=None.
-_FORCED_CLOSE_CODE = 4000
+FORCED_CLOSE_CODE = 4000
 
 # RFC 6455 §5.5.1: control frames (including Close) cap at 125 bytes total;
 # 2 of those bytes are the close code, leaving 123 for the reason.
-_MAX_CLOSE_REASON_BYTES = 123
+MAX_CLOSE_REASON_BYTES = 123
 
 
 def _truncate_close_reason(reason: str) -> str:
     encoded = reason.encode("utf-8")
-    if len(encoded) <= _MAX_CLOSE_REASON_BYTES:
+    if len(encoded) <= MAX_CLOSE_REASON_BYTES:
         return reason
-    return encoded[:_MAX_CLOSE_REASON_BYTES].decode("utf-8", errors="ignore")
+    return encoded[:MAX_CLOSE_REASON_BYTES].decode("utf-8", errors="ignore")
 
 
-class _CloseDetails(NamedTuple):
+class CloseDetails(NamedTuple):
     code: int | None
     reason: str
     forced: bool
 
 
-class _SupervisorRuntimeDeps(Protocol):
+class SupervisorRuntimeDeps(Protocol):
     def redact_diagnostic(self, text: str) -> str: ...
 
     def _generate_ref(self) -> str: ...
@@ -75,45 +75,45 @@ class SupervisorMixin:
     additional_headers: dict[str, str]
     auto_reconnect: bool
     connection: ClientConnection | None
-    _topic_subscriptions: dict[str, TopicSubscription]
-    _protocol_handler: PHXProtocolHandler
-    _shutdown_event: asyncio.Event
-    _connected_event: asyncio.Event
-    _conn_generation: int
-    _state: ClientState
-    _supervisor_task: asyncio.Task[None] | None
-    _message_routing_task: asyncio.Task[None] | None
-    _initial_connection_future: asyncio.Future[None] | None
-    _terminal_error: Exception | None
-    _heartbeat_dead_threshold_s: float | None
-    _heartbeat_deadline: float | None
-    _heartbeat_timeout: asyncio.Timeout | None
-    _heartbeat_interval_s: float | None
-    _heartbeat_task: asyncio.Task[None] | None
-    _pending_heartbeat_ref: str | None
-    _on_reconnect: Callable[[], Awaitable[None]] | None
-    _on_disconnect: Callable[[Exception | None], Awaitable[None]] | None
-    _on_heartbeat_ack: Callable[[], None] | None
-    _forced_close_pending: bool
+    topic_subscriptions: dict[str, TopicSubscription]
+    protocol_handler: PHXProtocolHandler
+    shutdown_event: asyncio.Event
+    connected_event: asyncio.Event
+    conn_generation: int
+    state: ClientState
+    supervisor_task: asyncio.Task[None] | None
+    message_routing_task: asyncio.Task[None] | None
+    initial_connection_future: asyncio.Future[None] | None
+    terminal_error: Exception | None
+    heartbeat_dead_threshold_s: float | None
+    heartbeat_deadline: float | None
+    heartbeat_timeout: asyncio.Timeout | None
+    heartbeat_interval_s: float | None
+    heartbeat_task: asyncio.Task[None] | None
+    pending_heartbeat_ref: str | None
+    on_reconnect: Callable[[], Awaitable[None]] | None
+    on_disconnect: Callable[[Exception | None], Awaitable[None]] | None
+    on_heartbeat_ack: Callable[[], None] | None
+    forced_close_pending: bool
 
     @property
-    def _deps(self) -> _SupervisorRuntimeDeps:
-        return cast(_SupervisorRuntimeDeps, self)
+    def deps(self) -> SupervisorRuntimeDeps:
+        return cast(SupervisorRuntimeDeps, self)
 
     async def _start_processing(
         self, connection: ClientConnection, conn_generation: int
     ) -> None:
-        await self._protocol_handler.process_websocket_messages(
+        await self.protocol_handler.process_websocket_messages(
             connection,
-            self._topic_subscriptions,
+            self.topic_subscriptions,
             conn_generation,
             on_heartbeat_response=self._handle_heartbeat_response,
         )
 
-    def _handle_heartbeat_response(self, message: ChannelMessage) -> None:
-        if message.ref is not None and message.ref == self._pending_heartbeat_ref:
-            if self._heartbeat_dead_threshold_s is not None:
-                timer = self._heartbeat_timeout
+    def _handle_heartbeat_response(self, message: Message) -> None:
+        if message.ref is not None and message.ref == self.pending_heartbeat_ref:
+            if self.heartbeat_dead_threshold_s is not None:
+                timer = self.heartbeat_timeout
                 now = asyncio.get_running_loop().time()
                 if (
                     timer is None
@@ -122,12 +122,12 @@ class SupervisorMixin:
                     or now >= deadline
                 ):
                     return
-                timer.reschedule(now + self._heartbeat_dead_threshold_s)
+                timer.reschedule(now + self.heartbeat_dead_threshold_s)
             self.logger.debug("Heartbeat acknowledged (ref=%s)", message.ref)
-            self._pending_heartbeat_ref = None
-            if self._on_heartbeat_ack is not None:
+            self.pending_heartbeat_ref = None
+            if self.on_heartbeat_ack is not None:
                 try:
-                    result = self._on_heartbeat_ack()
+                    result = self.on_heartbeat_ack()
                 except Exception:
                     self.logger.exception("Error in on_heartbeat_ack callback")
                     return
@@ -166,9 +166,9 @@ class SupervisorMixin:
             return
         reason = _truncate_close_reason(reason)
         self.logger.info("Forcing connection close: %s", reason)
-        self._forced_close_pending = True
+        self.forced_close_pending = True
         try:
-            await connection.close(code=_FORCED_CLOSE_CODE, reason=reason)
+            await connection.close(code=FORCED_CLOSE_CODE, reason=reason)
         except (Exception, asyncio.CancelledError):
             connection.transport.abort()
             raise
@@ -179,49 +179,49 @@ class SupervisorMixin:
         timer = asyncio.timeout_at(deadline)
         try:
             async with timer:
-                self._heartbeat_timeout = timer
+                self.heartbeat_timeout = timer
                 try:
                     await self._send_heartbeats(connection)
                 finally:
-                    self._heartbeat_timeout = None
+                    self.heartbeat_timeout = None
         except TimeoutError:
             if timer.expired():
                 self.logger.warning("Heartbeat acknowledgement deadline expired")
-            elif self._heartbeat_dead_threshold_s is not None:
+            elif self.heartbeat_dead_threshold_s is not None:
                 self.logger.exception("Heartbeat send timed out")
         except Exception:
-            if self._heartbeat_dead_threshold_s is None:
+            if self.heartbeat_dead_threshold_s is None:
                 self.logger.debug("Failed to send heartbeat; connection likely closing")
                 return
             self.logger.exception("Failed to send heartbeat")
         else:
             return
 
-        if self._heartbeat_dead_threshold_s is not None:
+        if self.heartbeat_dead_threshold_s is not None:
             try:
                 await self._force_close_connection(connection, "Heartbeat failed")
             except Exception:
                 self.logger.exception("Failed to close heartbeat connection")
 
     async def _send_heartbeats(self, connection: ClientConnection) -> None:
-        interval = self._heartbeat_interval_s
+        interval = self.heartbeat_interval_s
         if interval is None:
             return
-        while not self._shutdown_event.is_set():
+        while not self.shutdown_event.is_set():
             await self._wait_for_shutdown_or_timeout(interval)
-            if self._shutdown_event.is_set():
+            if self.shutdown_event.is_set():
                 return
-            if self._pending_heartbeat_ref is not None:
-                if self._heartbeat_dead_threshold_s is not None:
+            if self.pending_heartbeat_ref is not None:
+                if self.heartbeat_dead_threshold_s is not None:
                     continue
                 self.logger.warning(
                     "Heartbeat response not received for ref=%s; server may be "
                     "unresponsive",
-                    self._pending_heartbeat_ref,
+                    self.pending_heartbeat_ref,
                 )
-            ref = self._deps._generate_ref()
-            self._pending_heartbeat_ref = ref
-            await self._protocol_handler.send_message(
+            ref = self.deps._generate_ref()
+            self.pending_heartbeat_ref = ref
+            await self.protocol_handler.send_message(
                 connection,
                 make_message(
                     topic=PHOENIX_TOPIC, event=HEARTBEAT_EVENT, payload={}, ref=ref
@@ -231,7 +231,7 @@ class SupervisorMixin:
 
     async def _supervisor_loop(self) -> None:
         try:
-            while not self._shutdown_event.is_set():
+            while not self.shutdown_event.is_set():
                 if self.auto_reconnect and self._proceeds(Connecting()) is None:
                     break
                 try:
@@ -251,7 +251,7 @@ class SupervisorMixin:
                 decision = self._decide_reconnect(close)
                 if decision is None:
                     break
-                self._deps._transition_state(ClientState.RECONNECTING)
+                self.deps._transition_state(ClientState.RECONNECTING)
                 await self._wait_for_shutdown_or_timeout(decision.delay_s)
         finally:
             self._settle_supervisor_exit()
@@ -267,8 +267,8 @@ class SupervisorMixin:
         """The decision to retry after ``exc``, or ``None`` to stop."""
         if not self.auto_reconnect:
             self._settle_initial_connection(
-                PHXConnectionError(
-                    self._deps.redact_diagnostic(
+                SocketError(
+                    self.deps.redact_diagnostic(
                         "Failed to connect to "
                         f"{self.channel_socket_url_redacted}: {exc}"
                     )
@@ -277,66 +277,66 @@ class SupervisorMixin:
             self.logger.error("Connection failed and auto_reconnect=False: %s", exc)
             return None
         # A requested stop outranks a refusal's terminal error.
-        if self._shutdown_event.is_set():
+        if self.shutdown_event.is_set():
             self.logger.debug(
                 "Ignoring a connect failure after shutdown began: %s", exc
             )
             return None
         decision = self._proceeds(ConnectFailed(exc))
         if decision is not None:
-            self._deps._transition_state(ClientState.RECONNECTING)
+            self.deps._transition_state(ClientState.RECONNECTING)
         return decision
 
     async def _adopt_connection(self, connection: ClientConnection) -> bool:
         self.connection = connection
-        if self._shutdown_event.is_set():
+        if self.shutdown_event.is_set():
             # shutdown() began during the handshake; its own cleanup closes
             # this socket.
             return False
-        self._conn_generation += 1
+        self.conn_generation += 1
         if (
             self.auto_reconnect
-            and self._proceeds(Connected(self._conn_generation)) is None
+            and self._proceeds(Connected(self.conn_generation)) is None
         ):
             # Refused before any topic rejoins on it.
             await self._cleanup_connection()
             return False
-        self._heartbeat_deadline = (
-            asyncio.get_running_loop().time() + self._heartbeat_dead_threshold_s
-            if self._heartbeat_interval_s is not None
-            and self._heartbeat_dead_threshold_s is not None
+        self.heartbeat_deadline = (
+            asyncio.get_running_loop().time() + self.heartbeat_dead_threshold_s
+            if self.heartbeat_interval_s is not None
+            and self.heartbeat_dead_threshold_s is not None
             else None
         )
-        self._connected_event.set()
-        self._deps._transition_state(ClientState.CONNECTED)
+        self.connected_event.set()
+        self.deps._transition_state(ClientState.CONNECTED)
         return True
 
     async def _start_session(self, connection: ClientConnection) -> asyncio.Task[None]:
-        generation = self._conn_generation
-        self._pending_heartbeat_ref = None
-        routing = self._message_routing_task = asyncio.create_task(
+        generation = self.conn_generation
+        self.pending_heartbeat_ref = None
+        routing = self.message_routing_task = asyncio.create_task(
             self._start_processing(connection, generation)
         )
         # Join replies arrive only through this task. It can stop while
         # a rejoin is still waiting on one, before cleanup runs.
         routing.add_done_callback(self._fail_joins_when_routing_stops)
-        if self._heartbeat_interval_s is not None:
-            self._heartbeat_task = asyncio.create_task(
-                self._heartbeat_loop(connection, self._heartbeat_deadline)
+        if self.heartbeat_interval_s is not None:
+            self.heartbeat_task = asyncio.create_task(
+                self._heartbeat_loop(connection, self.heartbeat_deadline)
             )
 
         try:
-            await self._deps._rejoin_topics(generation)
+            await self.deps._rejoin_topics(generation)
         except Exception:
             self.logger.exception("Unexpected error while rejoining topics")
 
         self._settle_initial_connection(None)
         if (
             generation > 1
-            and self._on_reconnect is not None
-            and not self._shutdown_event.is_set()
+            and self.on_reconnect is not None
+            and not self.shutdown_event.is_set()
         ):
-            await self._invoke_callback_safely("on_reconnect", self._on_reconnect)
+            await self._invoke_callback_safely("on_reconnect", self.on_reconnect)
         return routing
 
     async def _await_routing(self, routing: asyncio.Task[None]) -> Exception | None:
@@ -356,22 +356,22 @@ class SupervisorMixin:
 
     async def _end_session(
         self, connection: ClientConnection, routing_error: Exception | None
-    ) -> _CloseDetails:
-        code, reason = self._deps._extract_close_details(
+    ) -> CloseDetails:
+        code, reason = self.deps._extract_close_details(
             connection=connection, routing_error=routing_error
         )
-        close = _CloseDetails(code, reason, forced=self._forced_close_pending)
+        close = CloseDetails(code, reason, forced=self.forced_close_pending)
 
         await self._cleanup_connection()
 
-        if self._on_disconnect is not None:
+        if self.on_disconnect is not None:
             await self._invoke_callback_safely(
-                "on_disconnect", self._on_disconnect, routing_error
+                "on_disconnect", self.on_disconnect, routing_error
             )
         return close
 
-    def _decide_reconnect(self, close: _CloseDetails) -> ReconnectDecision | None:
-        if self._shutdown_event.is_set() or not self.auto_reconnect:
+    def _decide_reconnect(self, close: CloseDetails) -> ReconnectDecision | None:
+        if self.shutdown_event.is_set() or not self.auto_reconnect:
             return None
 
         # websockets reports the close code it received, not the one we sent,
@@ -385,7 +385,7 @@ class SupervisorMixin:
 
     def _proceeds(self, event: ReconnectEvent) -> ReconnectDecision | None:
         """The decision to go on after ``event``, or ``None`` when it stops."""
-        decision = self._deps._decide(event)
+        decision = self.deps._decide(event)
         if decision.should_reconnect:
             return decision
         if decision.terminal_error is not None:
@@ -394,15 +394,15 @@ class SupervisorMixin:
             self.logger.info("Reconnect stopped by the reconnect policy")
         return None
 
-    def _record_terminal_error(self, error: PHXConnectionError) -> None:
-        self._terminal_error = error
+    def _record_terminal_error(self, error: SocketError) -> None:
+        self.terminal_error = error
         # Log records stay static: the cause reaches the caller as the raised error.
         self.logger.error("Reconnect stopped by a terminal error")
         self._settle_initial_connection(error)
 
     def _settle_initial_connection(self, error: Exception | None) -> None:
         """Resolve ``__aenter__``'s wait, unless it already ended or was cancelled."""
-        future = self._initial_connection_future
+        future = self.initial_connection_future
         if future is None or future.done():
             return
         if error is None:
@@ -412,15 +412,15 @@ class SupervisorMixin:
 
     def _settle_supervisor_exit(self) -> None:
         self._settle_initial_connection(
-            PHXConnectionError("Connection supervisor stopped before connecting")
+            SocketError("Connection supervisor stopped before connecting")
         )
-        self._connected_event.clear()
-        if self._state != ClientState.SHUTTING_DOWN:
-            self._deps._transition_state(ClientState.CLOSED)
+        self.connected_event.clear()
+        if self.state != ClientState.SHUTTING_DOWN:
+            self.deps._transition_state(ClientState.CLOSED)
 
     async def _wait_for_shutdown_or_timeout(self, delay_s: float) -> None:
         try:
-            await asyncio.wait_for(self._shutdown_event.wait(), timeout=delay_s)
+            await asyncio.wait_for(self.shutdown_event.wait(), timeout=delay_s)
         except TimeoutError:
             return
 
@@ -429,27 +429,27 @@ class SupervisorMixin:
             self._fail_pending_joins_for_lost_connection()
 
     def _fail_pending_joins_for_lost_connection(self) -> None:
-        self._deps._fail_pending_joins(
-            PHXConnectionError("Connection lost before the join completed")
+        self.deps._fail_pending_joins(
+            SocketError("Connection lost before the join completed")
         )
 
     async def _cleanup_connection(self) -> None:
         self._fail_pending_joins_for_lost_connection()
         connection = self.connection
         # The socket rejoin after the reconnect takes over channel recoveries.
-        recoveries = self._deps._channel_recoveries()
+        recoveries = self.deps._channel_recoveries()
         running = [
             task
-            for task in (self._heartbeat_task, self._message_routing_task, *recoveries)
+            for task in (self.heartbeat_task, self.message_routing_task, *recoveries)
             if task is not None and not task.done()
         ]
         self.connection = None
-        self._heartbeat_task = None
-        self._heartbeat_deadline = None
-        self._message_routing_task = None
-        self._pending_heartbeat_ref = None
-        self._connected_event.clear()
-        self._forced_close_pending = False
+        self.heartbeat_task = None
+        self.heartbeat_deadline = None
+        self.message_routing_task = None
+        self.pending_heartbeat_ref = None
+        self.connected_event.clear()
+        self.forced_close_pending = False
 
         try:
             await cancel_and_wait(*running)
@@ -481,9 +481,9 @@ class SupervisorMixin:
         ``False`` and schedule ``shutdown()`` on the client's loop from their
         own handler.
         """
-        supervisor = self._supervisor_task
+        supervisor = self.supervisor_task
         if supervisor is None:
-            raise PHXConnectionError(
+            raise SocketError(
                 "Client is not connected. Use 'async with' context manager."
             )
 
@@ -505,9 +505,9 @@ class SupervisorMixin:
         # No await since leaving the `with`, so this sees `signaled` exactly as
         # handle_shutdown_signals judged it consumed.
         if signaled.is_set():
-            await self._deps.shutdown("Signal received")
-        if self._terminal_error is not None:
-            raise self._terminal_error
-        if supervisor.cancelled() and self._shutdown_event.is_set():
+            await self.deps.shutdown("Signal received")
+        if self.terminal_error is not None:
+            raise self.terminal_error
+        if supervisor.cancelled() and self.shutdown_event.is_set():
             return  # a requested stop
         supervisor.result()

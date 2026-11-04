@@ -2,12 +2,12 @@ import asyncio
 import logging
 from typing import Any
 
-from phoenix_channels_python_client.phx_messages import (
+from phoenix_channels_python_client.messages import (
     ChannelEvent,
-    ChannelMessage,
-    PHXEvent,
-    PHXEventMessage,
-    PHXMessage,
+    Message,
+    SystemEvent,
+    SystemMessage,
+    UserMessage,
 )
 
 logger = logging.getLogger(__name__)
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 def parse_event(event: ChannelEvent) -> ChannelEvent:
     try:
-        return PHXEvent(event)
+        return SystemEvent(event)
     except ValueError:
         return event
 
@@ -26,20 +26,20 @@ def make_message(
     ref: str | None = None,
     payload: dict[str, Any] | None = None,
     join_ref: str | None = None,
-) -> ChannelMessage:
+) -> Message:
     if payload is None:
         payload = {}
 
     processed_event = parse_event(event)
-    if isinstance(processed_event, PHXEvent):
-        return PHXEventMessage(
+    if isinstance(processed_event, SystemEvent):
+        return SystemMessage(
             event=processed_event,
             topic=topic,
             ref=ref,
             payload=payload,
             join_ref=join_ref,
         )
-    return PHXMessage(
+    return UserMessage(
         event=processed_event,
         topic=topic,
         ref=ref,
@@ -62,22 +62,3 @@ async def cancel_and_wait(*futures: asyncio.Future[Any]) -> None:
     for future in futures:
         if not future.cancelled() and (error := future.exception()):
             logger.error("Failed while being cancelled", exc_info=error)
-
-
-def setup_logging(level: int = logging.INFO) -> None:
-    """Configure clean logging with timestamps for Phoenix Channels Python Client.
-
-    Args:
-        level: Logging level (default: logging.INFO for production, use
-            logging.DEBUG for development)
-
-    Example:
-        >>> from phoenix_channels_python_client.utils import setup_logging
-        >>> import logging
-        >>> setup_logging(logging.INFO)
-    """
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )

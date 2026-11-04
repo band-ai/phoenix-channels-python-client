@@ -11,7 +11,7 @@ import pytest
 from websockets.exceptions import InvalidStatus
 from websockets.frames import CloseCode
 
-from phoenix_channels_python_client.client import PHXChannelsClient
+from phoenix_channels_python_client.client import Client
 from phoenix_channels_python_client.client_types import (
     Connected,
     ConnectFailed,
@@ -20,7 +20,7 @@ from phoenix_channels_python_client.client_types import (
     ReconnectDecision,
     ReconnectEvent,
 )
-from phoenix_channels_python_client.exceptions import PHXConnectionError
+from phoenix_channels_python_client.exceptions import SocketError
 from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
@@ -73,9 +73,7 @@ A_DELAY = ReconnectDecision(should_reconnect=True, delay_s=1.0)
 
 
 def terminal(reason: str = "decided terminal") -> ReconnectDecision:
-    return ReconnectDecision(
-        should_reconnect=False, terminal_error=PHXConnectionError(reason)
-    )
+    return ReconnectDecision(should_reconnect=False, terminal_error=SocketError(reason))
 
 
 def attempts(server: FakePhoenixServer) -> int:
@@ -112,7 +110,7 @@ async def test_a_stop_before_the_next_attempt_makes_no_connection(
 
         run = client.run_forever(install_signal_handlers=False)
         if stop_with_error:
-            with pytest.raises(PHXConnectionError) as raised:
+            with pytest.raises(SocketError) as raised:
                 await asyncio.wait_for(run, ASYNC_TIMEOUT_S)
             assert raised.value is stop.terminal_error
         else:
@@ -129,7 +127,7 @@ async def test_a_terminal_stop_before_the_first_attempt_raises_from_entry(
     decider.answers[Connecting] = stop
     client = make_client(phoenix_server, reconnect_decider=decider)
 
-    with pytest.raises(PHXConnectionError) as raised:
+    with pytest.raises(SocketError) as raised:
         await asyncio.wait_for(client.__aenter__(), ASYNC_TIMEOUT_S)
 
     assert raised.value is stop.terminal_error
@@ -143,7 +141,7 @@ async def test_a_plain_stop_before_the_first_attempt_fails_entry(
     decider.answers[Connecting] = STOP
     client = make_client(phoenix_server, reconnect_decider=decider)
 
-    with pytest.raises(PHXConnectionError, match="stopped before connecting"):
+    with pytest.raises(SocketError, match="stopped before connecting"):
         await asyncio.wait_for(client.__aenter__(), ASYNC_TIMEOUT_S)
 
     assert attempts(phoenix_server) == 0
@@ -216,7 +214,7 @@ async def test_a_terminal_close_decision_raises_from_run_forever(
     async with make_client(phoenix_server, reconnect_decider=decider) as client:
         await phoenix_server.close_all_clients(code=CloseCode.GOING_AWAY)
 
-        with pytest.raises(PHXConnectionError) as raised:
+        with pytest.raises(SocketError) as raised:
             await asyncio.wait_for(
                 client.run_forever(install_signal_handlers=False), ASYNC_TIMEOUT_S
             )
@@ -263,7 +261,7 @@ async def test_a_refused_handshake_is_decided_with_the_raw_response(
 
 
 async def run_until_stopped(
-    server: FakePhoenixServer, client: PHXChannelsClient, kind: type[ReconnectEvent]
+    server: FakePhoenixServer, client: Client, kind: type[ReconnectEvent]
 ) -> None:
     """Enter, then close the socket and run, reaching each decision point once."""
     with server.refusing(1 if kind is ConnectFailed else 0):
@@ -283,7 +281,7 @@ async def test_a_failing_decider_stops_the_client_with_its_cause(
     decider.answers[kind] = failure
     client = make_client(phoenix_server, reconnect_decider=decider)
 
-    with pytest.raises(PHXConnectionError) as raised:
+    with pytest.raises(SocketError) as raised:
         await run_until_stopped(phoenix_server, client, kind)
     await client.shutdown(STOP_REASON)
 
@@ -304,7 +302,7 @@ async def test_a_decider_returning_no_decision_stops_the_client(
 
     client = make_client(phoenix_server, reconnect_decider=forgetful)
 
-    with pytest.raises(PHXConnectionError, match="no ReconnectDecision"):
+    with pytest.raises(SocketError, match="no ReconnectDecision"):
         await run_until_stopped(phoenix_server, client, kind)
     await client.shutdown(STOP_REASON)
 
@@ -327,7 +325,7 @@ async def test_an_async_decider_stops_the_client(
 
     client = make_client(phoenix_server, reconnect_decider=mistaken)
 
-    with pytest.raises(PHXConnectionError, match="must be synchronous"):
+    with pytest.raises(SocketError, match="must be synchronous"):
         await run_until_stopped(phoenix_server, client, kind)
     await client.shutdown(STOP_REASON)
 
@@ -417,7 +415,7 @@ async def test_without_auto_reconnect_the_decider_is_not_asked(
         ({"should_reconnect": True, "delay_s": math.inf}, "finite"),
         ({"should_reconnect": False, "delay_s": 1.0}, "no delay_s"),
         (
-            {"should_reconnect": True, "terminal_error": PHXConnectionError()},
+            {"should_reconnect": True, "terminal_error": SocketError()},
             "terminal_error",
         ),
     ],
@@ -435,7 +433,7 @@ async def test_a_delay_for_a_gate_stops_the_client(
     decider.answers[gate] = A_DELAY
     client = make_client(phoenix_server, reconnect_decider=decider)
 
-    with pytest.raises(PHXConnectionError, match="delay for a gate"):
+    with pytest.raises(SocketError, match="delay for a gate"):
         await asyncio.wait_for(client.__aenter__(), ASYNC_TIMEOUT_S)
 
 
@@ -479,7 +477,7 @@ async def test_a_refused_socket_is_closed_without_a_rejoin(
 
         run = client.run_forever(install_signal_handlers=False)
         if stop_with_error:
-            with pytest.raises(PHXConnectionError) as raised:
+            with pytest.raises(SocketError) as raised:
                 await asyncio.wait_for(run, ASYNC_TIMEOUT_S)
             assert raised.value is stop.terminal_error
         else:
@@ -499,7 +497,7 @@ async def test_a_refused_first_socket_fails_entry(
     decider.answers[Connected] = stop
     client = make_client(phoenix_server, reconnect_decider=decider)
 
-    with pytest.raises(PHXConnectionError) as raised:
+    with pytest.raises(SocketError) as raised:
         await asyncio.wait_for(client.__aenter__(), ASYNC_TIMEOUT_S)
 
     assert raised.value is stop.terminal_error

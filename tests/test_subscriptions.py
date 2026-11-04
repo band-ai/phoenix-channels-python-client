@@ -7,9 +7,9 @@ from collections.abc import Callable
 
 import pytest
 
-from phoenix_channels_python_client.client import PHXChannelsClient
-from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
-from phoenix_channels_python_client.phx_messages import ChannelMessage, Event
+from phoenix_channels_python_client.client import Client
+from phoenix_channels_python_client.exceptions import ChannelError, SocketError
+from phoenix_channels_python_client.messages import Message
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     ASYNC_TIMEOUT_S,
@@ -33,7 +33,7 @@ from tests.support import (
 
 @each_protocol
 async def test_subscribing_registers_the_topic_with_its_callback(
-    client: PHXChannelsClient, received: asyncio.Queue[ChannelMessage]
+    client: Client, received: asyncio.Queue[Message]
 ) -> None:
     await client.subscribe_to_topic(TOPIC, received.put)
 
@@ -45,7 +45,7 @@ async def test_subscribing_registers_the_topic_with_its_callback(
 async def test_subscribing_before_connecting_raises(
     phoenix_server: FakePhoenixServer,
 ) -> None:
-    with pytest.raises(PHXConnectionError):
+    with pytest.raises(SocketError):
         await make_client(phoenix_server).subscribe_to_topic(TOPIC)
 
 
@@ -55,16 +55,16 @@ async def test_subscribing_while_the_server_closes_raises_a_connection_error(
     async with make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client:
         server_close = await start_server_close(phoenix_server, client)
 
-        with pytest.raises(PHXConnectionError):
+        with pytest.raises(SocketError):
             await client.subscribe_to_topic(TOPIC)
         await asyncio.wait_for(server_close, ASYNC_TIMEOUT_S)
 
 
 @each_protocol
 async def test_subscribing_to_a_topic_the_server_rejects_raises(
-    client: PHXChannelsClient,
+    client: Client,
 ) -> None:
-    with pytest.raises(PHXTopicError, match="unmatched topic"):
+    with pytest.raises(ChannelError, match="unmatched topic"):
         await client.subscribe_to_topic(REJECTED_TOPIC)
 
 
@@ -75,7 +75,7 @@ async def test_rejected_join_leaves_no_unretrieved_future_error(
     # subscription, and its futures, from being collected.
     async def subscribe_to_rejected_topic() -> None:
         async with make_client(phoenix_server) as client:
-            with pytest.raises(PHXTopicError):
+            with pytest.raises(ChannelError):
                 await client.subscribe_to_topic(REJECTED_TOPIC)
 
     await subscribe_to_rejected_topic()
@@ -87,15 +87,15 @@ async def test_rejected_join_leaves_no_unretrieved_future_error(
 
 
 @each_protocol
-async def test_subscribing_twice_to_a_topic_raises(client: PHXChannelsClient) -> None:
+async def test_subscribing_twice_to_a_topic_raises(client: Client) -> None:
     await client.subscribe_to_topic(TOPIC)
 
-    with pytest.raises(PHXTopicError, match=f"^Topic {TOPIC} already subscribed$"):
+    with pytest.raises(ChannelError, match=f"^Topic {TOPIC} already subscribed$"):
         await client.subscribe_to_topic(TOPIC)
 
 
 @each_protocol
-async def test_unsubscribing_removes_the_topic(client: PHXChannelsClient) -> None:
+async def test_unsubscribing_removes_the_topic(client: Client) -> None:
     await client.subscribe_to_topic(TOPIC)
 
     await client.unsubscribe_from_topic(TOPIC)
@@ -112,7 +112,7 @@ async def test_unsubscribing_while_disconnected_fails_fast_and_keeps_the_topic(
         await phoenix_server.close_all_clients()
         assert await wait_for_condition(lambda: client.connection is None)
 
-        with pytest.raises(PHXConnectionError):
+        with pytest.raises(SocketError):
             await client.unsubscribe_from_topic(TOPIC)
 
         assert TOPIC in client.get_current_subscriptions()
@@ -125,7 +125,7 @@ async def test_unsubscribing_while_the_server_closes_raises_a_connection_error(
         await client.subscribe_to_topic(TOPIC)
         server_close = await start_server_close(phoenix_server, client)
 
-        with pytest.raises(PHXConnectionError):
+        with pytest.raises(SocketError):
             await client.unsubscribe_from_topic(TOPIC)
         await asyncio.wait_for(server_close, ASYNC_TIMEOUT_S)
 
@@ -133,8 +133,8 @@ async def test_unsubscribing_while_the_server_closes_raises_a_connection_error(
 @each_protocol
 async def test_a_subscribed_topic_receives_server_events(
     phoenix_server: FakePhoenixServer,
-    client: PHXChannelsClient,
-    received: asyncio.Queue[ChannelMessage],
+    client: Client,
+    received: asyncio.Queue[Message],
 ) -> None:
     payload = {"user_id": 123, "message": "Hello from server!"}
     await client.subscribe_to_topic(TOPIC, received.put)
@@ -209,14 +209,14 @@ async def test_a_v2_channel_push_uses_each_members_join_ref(
 
 @each_protocol
 async def test_unsubscribing_lets_the_running_callback_finish_and_drops_queued_events(
-    phoenix_server: FakePhoenixServer, client: PHXChannelsClient
+    phoenix_server: FakePhoenixServer, client: Client
 ) -> None:
     queued_events = 10
     handled: list[object] = []
     callback_started = asyncio.Event()
     release_callback = asyncio.Event()
 
-    async def blocking_callback(message: ChannelMessage) -> None:
+    async def blocking_callback(message: Message) -> None:
         handled.append(message.payload["event_id"])
         callback_started.set()
         await release_callback.wait()
@@ -244,10 +244,10 @@ async def test_unsubscribing_lets_the_running_callback_finish_and_drops_queued_e
 
 @each_protocol
 async def test_each_topic_delivers_to_its_own_callback(
-    phoenix_server: FakePhoenixServer, client: PHXChannelsClient
+    phoenix_server: FakePhoenixServer, client: Client
 ) -> None:
-    received_a: asyncio.Queue[ChannelMessage] = asyncio.Queue()
-    received_b: asyncio.Queue[ChannelMessage] = asyncio.Queue()
+    received_a: asyncio.Queue[Message] = asyncio.Queue()
+    received_b: asyncio.Queue[Message] = asyncio.Queue()
     await client.subscribe_to_topic(TOPIC, received_a.put)
     await client.subscribe_to_topic(OTHER_TOPIC, received_b.put)
 
@@ -263,8 +263,8 @@ async def test_each_topic_delivers_to_its_own_callback(
 @each_protocol
 async def test_messages_are_delivered_in_order(
     phoenix_server: FakePhoenixServer,
-    client: PHXChannelsClient,
-    received: asyncio.Queue[ChannelMessage],
+    client: Client,
+    received: asyncio.Queue[Message],
 ) -> None:
     sequence = list(range(5))
     await client.subscribe_to_topic(TOPIC, received.put)
@@ -279,7 +279,7 @@ async def test_messages_are_delivered_in_order(
 
 @each_protocol
 async def test_shutdown_unsubscribes_every_topic_and_closes_the_connection(
-    client: PHXChannelsClient,
+    client: Client,
 ) -> None:
     await client.subscribe_to_topic(TOPIC)
     await client.subscribe_to_topic(OTHER_TOPIC)
@@ -293,10 +293,10 @@ async def test_shutdown_unsubscribes_every_topic_and_closes_the_connection(
 @each_protocol
 async def test_an_event_handler_runs_alongside_the_topic_callback_until_removed(
     phoenix_server: FakePhoenixServer,
-    client: PHXChannelsClient,
-    received: asyncio.Queue[ChannelMessage],
+    client: Client,
+    received: asyncio.Queue[Message],
 ) -> None:
-    event = Event(EVENT)
+    event = EVENT
     handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
     await client.subscribe_to_topic(TOPIC, received.put)
 
@@ -319,14 +319,14 @@ async def handle_payload(payload: dict[str, object]) -> None:
     pass
 
 
-async def handle_message(message: ChannelMessage) -> None:
+async def handle_message(message: Message) -> None:
     pass
 
 
 async def test_an_event_handler_can_be_set_read_listed_and_removed(
-    client: PHXChannelsClient,
+    client: Client,
 ) -> None:
-    event = Event("custom_event")
+    event = "custom_event"
     await client.subscribe_to_topic(TOPIC)
 
     client.add_event_handler(TOPIC, event, handle_payload)
@@ -338,7 +338,7 @@ async def test_an_event_handler_can_be_set_read_listed_and_removed(
 
 
 async def test_a_message_handler_can_be_set_read_and_removed(
-    client: PHXChannelsClient,
+    client: Client,
 ) -> None:
     await client.subscribe_to_topic(TOPIC)
 
@@ -353,15 +353,15 @@ async def test_a_message_handler_can_be_set_read_and_removed(
     "use_handler_api",
     [
         pytest.param(
-            lambda c: c.add_event_handler(TOPIC, Event(EVENT), handle_payload),
+            lambda c: c.add_event_handler(TOPIC, EVENT, handle_payload),
             id="add_event_handler",
         ),
         pytest.param(
-            lambda c: c.remove_event_handler(TOPIC, Event(EVENT)),
+            lambda c: c.remove_event_handler(TOPIC, EVENT),
             id="remove_event_handler",
         ),
         pytest.param(
-            lambda c: c.get_event_handler(TOPIC, Event(EVENT)),
+            lambda c: c.get_event_handler(TOPIC, EVENT),
             id="get_event_handler",
         ),
         pytest.param(lambda c: c.list_event_handlers(TOPIC), id="list_event_handlers"),
@@ -376,23 +376,23 @@ async def test_a_message_handler_can_be_set_read_and_removed(
     ],
 )
 async def test_handler_apis_reject_an_unknown_topic(
-    client: PHXChannelsClient, use_handler_api: Callable[[PHXChannelsClient], object]
+    client: Client, use_handler_api: Callable[[Client], object]
 ) -> None:
-    with pytest.raises(PHXTopicError, match=f"Topic {TOPIC} not subscribed"):
+    with pytest.raises(ChannelError, match=f"Topic {TOPIC} not subscribed"):
         use_handler_api(client)
 
 
 async def test_handler_queries_report_nothing_for_an_unknown_topic(
-    client: PHXChannelsClient,
+    client: Client,
 ) -> None:
-    assert not client.has_event_handler(TOPIC, Event("x"))
+    assert not client.has_event_handler(TOPIC, "x")
     assert not client.has_message_handler(TOPIC)
 
 
 async def test_unsubscribing_from_an_unknown_topic_raises(
-    client: PHXChannelsClient,
+    client: Client,
 ) -> None:
-    with pytest.raises(PHXTopicError, match=f"Topic {TOPIC} not subscribed"):
+    with pytest.raises(ChannelError, match=f"Topic {TOPIC} not subscribed"):
         await client.unsubscribe_from_topic(TOPIC)
 
 
@@ -402,7 +402,7 @@ async def test_a_join_the_server_never_answers_times_out(
     phoenix_server.unanswered_join_ids.add(phoenix_server.next_client_id)
 
     async with make_client(phoenix_server, join_timeout_s=JOIN_TIMEOUT_S) as client:
-        with pytest.raises(PHXTopicError, match="Timed out"):
+        with pytest.raises(ChannelError, match="Timed out"):
             await client.subscribe_to_topic(TOPIC)
 
         assert TOPIC not in client.get_current_subscriptions()
@@ -411,18 +411,18 @@ async def test_a_join_the_server_never_answers_times_out(
 @each_protocol
 async def test_a_failing_callback_skips_its_event_handler_and_later_messages_arrive(
     phoenix_server: FakePhoenixServer,
-    client: PHXChannelsClient,
-    received: asyncio.Queue[ChannelMessage],
+    client: Client,
+    received: asyncio.Queue[Message],
 ) -> None:
     handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
 
-    async def fail_on_the_first_message(message: ChannelMessage) -> None:
+    async def fail_on_the_first_message(message: Message) -> None:
         if message.payload["n"] == 0:
             raise RuntimeError("callback boom")
         await received.put(message)
 
     await client.subscribe_to_topic(TOPIC, fail_on_the_first_message)
-    client.add_event_handler(TOPIC, Event(EVENT), handled_payloads.put)
+    client.add_event_handler(TOPIC, EVENT, handled_payloads.put)
 
     await deliver(phoenix_server, client, payload={"n": 0})
     await deliver(phoenix_server, client, payload={"n": 1})
@@ -433,11 +433,11 @@ async def test_a_failing_callback_skips_its_event_handler_and_later_messages_arr
 
 @each_protocol
 async def test_an_event_handler_runs_without_a_topic_callback(
-    phoenix_server: FakePhoenixServer, client: PHXChannelsClient
+    phoenix_server: FakePhoenixServer, client: Client
 ) -> None:
     handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
     await client.subscribe_to_topic(TOPIC)
-    client.add_event_handler(TOPIC, Event(EVENT), handled_payloads.put)
+    client.add_event_handler(TOPIC, EVENT, handled_payloads.put)
 
     await deliver(phoenix_server, client, payload={"n": 0})
 
@@ -452,7 +452,7 @@ async def test_a_full_topic_queue_drops_its_oldest_message(
     first_started = asyncio.Event()
     release_first = asyncio.Event()
 
-    async def held_on_the_first_message(message: ChannelMessage) -> None:
+    async def held_on_the_first_message(message: Message) -> None:
         handled.append(message.payload["id"])
         if not first_started.is_set():
             first_started.set()
@@ -496,8 +496,8 @@ async def test_a_message_from_an_older_join_is_not_delivered(
 
 async def test_a_message_without_handlers_is_skipped_and_later_ones_still_arrive(
     phoenix_server: FakePhoenixServer,
-    client: PHXChannelsClient,
-    received: asyncio.Queue[ChannelMessage],
+    client: Client,
+    received: asyncio.Queue[Message],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     await client.subscribe_to_topic(TOPIC)

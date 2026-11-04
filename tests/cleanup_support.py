@@ -7,8 +7,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
-from phoenix_channels_python_client import PHXChannelsClient
-from phoenix_channels_python_client.phx_messages import ChannelMessage
+from phoenix_channels_python_client import Client
+from phoenix_channels_python_client.messages import Message
 from tests.fake_server import FakePhoenixServer
 from tests.join_support import push
 from tests.support import STOP_REASON, TOPIC, make_client
@@ -16,14 +16,14 @@ from tests.support import STOP_REASON, TOPIC, make_client
 
 @dataclass
 class HeldCleanup:
-    client: PHXChannelsClient
+    client: Client
     running: asyncio.Event = field(default_factory=asyncio.Event)
     finalizing: asyncio.Event = field(default_factory=asyncio.Event)
     release: asyncio.Event = field(default_factory=asyncio.Event)
     finished: asyncio.Event = field(default_factory=asyncio.Event)
     callback: asyncio.Task[None] | None = None
 
-    async def receive(self, message: ChannelMessage) -> None:
+    async def receive(self, message: Message) -> None:
         del message
         self.callback = asyncio.current_task()
         self.running.set()
@@ -64,4 +64,4 @@ async def terminal_cleanup(peer: FakePhoenixServer) -> AsyncIterator[HeldCleanup
             await asyncio.gather(leave, return_exceptions=True)
         await client.shutdown(STOP_REASON)
         # Also completes teardown when testing the original premature-close bug.
-        await asyncio.gather(*client._cleanup_tasks)
+        await asyncio.gather(*client.cleanup_tasks)

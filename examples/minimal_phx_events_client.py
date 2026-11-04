@@ -17,11 +17,10 @@ import asyncio
 import logging
 
 from phoenix_channels_python_client import (
-    PhoenixChannelsProtocolVersion,
-    PHXChannelsClient,
-    setup_logging,
+    Client,
+    Message,
+    ProtocolVersion,
 )
-from phoenix_channels_python_client.phx_messages import ChannelMessage
 
 # Demo configuration - modify these values as needed
 API_KEY = "your-api-key"
@@ -31,15 +30,15 @@ TOPIC = "user_rooms:your-room-id"
 logger = logging.getLogger(__name__)
 
 
-async def message_handler(message: ChannelMessage) -> None:
+async def message_handler(message: Message) -> None:
     logger.info("Received: %s", message)
 
 
 async def main() -> None:
-    async with PHXChannelsClient(
+    async with Client(
         WS_BASE_URL,
         api_key=API_KEY,
-        protocol_version=PhoenixChannelsProtocolVersion.V2,
+        protocol_version=ProtocolVersion.V2,
     ) as client:
         await client.subscribe_to_topic(TOPIC, message_handler)
         logger.info("Ready - press Ctrl+C or send SIGTERM to stop")
@@ -47,6 +46,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    # logging.DEBUG shows protocol traffic.
-    setup_logging(logging.INFO)
+    # Set the package logger to DEBUG for connection diagnostics.
+    logging.basicConfig(level=logging.INFO)
     asyncio.run(main())

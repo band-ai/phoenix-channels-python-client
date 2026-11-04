@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from phoenix_channels_python_client.phx_messages import ChannelMessage
+from phoenix_channels_python_client.messages import Message
 from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer
 from tests.join_support import JoinProbe, deadline, push
@@ -61,11 +61,9 @@ class TestOptionalReconnect:
             optional = JoinProbe(client)
             required = JoinProbe(client, OTHER_TOPIC)
 
-            received: asyncio.Queue[tuple[ChannelMessage, object, bool]] = (
-                asyncio.Queue()
-            )
+            received: asyncio.Queue[tuple[Message, object, bool]] = asyncio.Queue()
 
-            async def receive(message: ChannelMessage) -> None:
+            async def receive(message: Message) -> None:
                 running.set()
                 try:
                     await release.wait()

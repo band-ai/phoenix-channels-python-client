@@ -23,11 +23,9 @@ from phoenix_channels_python_client.client_types import (
     ReconnectDecision,
     ReconnectEvent,
 )
-from phoenix_channels_python_client.phx_messages import ChannelMessage
-from phoenix_channels_python_client.protocol_handler import (
-    PhoenixChannelsProtocolVersion,
-    PHXProtocolHandler,
-)
+from phoenix_channels_python_client.messages import Message
+from phoenix_channels_python_client.protocol import ProtocolVersion
+from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.supervisor import SupervisorMixin
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
@@ -91,13 +89,11 @@ class FakeTopicProtocolHandler(PHXProtocolHandler):
     """Records what would be sent, so joins and leaves get no reply."""
 
     def __init__(self) -> None:
-        super().__init__(PhoenixChannelsProtocolVersion.V2)
+        super().__init__(ProtocolVersion.V2)
         self.raise_on_send: Exception | None = None
-        self.sent: list[ChannelMessage] = []
+        self.sent: list[Message] = []
 
-    async def send_message(
-        self, websocket: ClientConnection, message: ChannelMessage
-    ) -> None:
+    async def send_message(self, websocket: ClientConnection, message: Message) -> None:
         del websocket
         if self.raise_on_send is not None:
             raise self.raise_on_send
@@ -119,24 +115,24 @@ class TopicRuntimeHarness(TopicRuntimeMixin):
     ) -> None:
         self.logger = logging.getLogger(__name__)
         self.connection: ClientConnection | None = fake_connection()
-        self._state = ClientState.CONNECTED
-        self._ref_counter = 0
-        self._conn_generation = 1
-        self._topic_subscriptions: dict[str, TopicSubscription] = {}
+        self.state = ClientState.CONNECTED
+        self.ref_counter = 0
+        self.conn_generation = 1
+        self.topic_subscriptions: dict[str, TopicSubscription] = {}
         self.fake_handler = FakeTopicProtocolHandler()
-        self._protocol_handler = self.fake_handler
-        self._topics_lock = asyncio.Lock()
-        self._shutdown_event = asyncio.Event()
+        self.protocol_handler = self.fake_handler
+        self.topics_lock = asyncio.Lock()
+        self.shutdown_event = asyncio.Event()
         self.join_timeout_s = HARNESS_TIMEOUT_S
         self.leave_timeout_s = HARNESS_TIMEOUT_S
         self.max_topic_queue_size = 10
         self.callback_drain_timeout_s = HARNESS_TIMEOUT_S
-        self._on_topic_lost = on_topic_lost
-        self._lifecycle_tasks: set[asyncio.Task[None]] = set()
-        self._cleanup_tasks: set[asyncio.Task[None]] = set()
+        self.on_topic_lost = on_topic_lost
+        self.lifecycle_tasks: set[asyncio.Task[None]] = set()
+        self.cleanup_tasks: set[asyncio.Task[None]] = set()
         # The attempt each requested channel-rejoin backoff was for, in order.
         self.rejoin_backoff_attempts: list[int] = []
-        self._waits_before_stop = waits_before_stop
+        self.waits_before_stop = waits_before_stop
 
     def _channel_rejoin_delay(self, attempt: int) -> float:
         self.rejoin_backoff_attempts.append(attempt)
@@ -144,8 +140,8 @@ class TopicRuntimeHarness(TopicRuntimeMixin):
 
     async def _wait_for_shutdown_or_timeout(self, delay_s: float) -> None:
         del delay_s
-        if len(self.rejoin_backoff_attempts) >= self._waits_before_stop:
-            self._shutdown_event.set()
+        if len(self.rejoin_backoff_attempts) >= self.waits_before_stop:
+            self.shutdown_event.set()
 
     async def _invoke_callback_safely(
         self, label: str, callback: Callable[..., Awaitable[None]], *args: object
@@ -154,7 +150,7 @@ class TopicRuntimeHarness(TopicRuntimeMixin):
         await callback(*args)
 
     def register(self, subscription: TopicSubscription) -> TopicSubscription:
-        self._topic_subscriptions[subscription.name] = subscription
+        self.topic_subscriptions[subscription.name] = subscription
         return subscription
 
 
@@ -177,35 +173,35 @@ class SupervisorHarness(SupervisorMixin):
         self.channel_socket_url_redacted = "ws://unit-test/socket?api_key=***"
         self.auto_reconnect = True
         self.connection: ClientConnection | None = None
-        self._topic_subscriptions: dict[str, TopicSubscription] = {}
-        self._protocol_handler: Any = FakeRoutingProtocolHandler()
-        self._shutdown_event = asyncio.Event()
-        self._connected_event = asyncio.Event()
-        self._conn_generation = 0
-        self._state = ClientState.CONNECTING
-        self._supervisor_task: asyncio.Task[None] | None = None
-        self._message_routing_task: asyncio.Task[None] | None = None
-        self._initial_connection_future: asyncio.Future[None] | None = (
+        self.topic_subscriptions: dict[str, TopicSubscription] = {}
+        self.protocol_handler: Any = FakeRoutingProtocolHandler()
+        self.shutdown_event = asyncio.Event()
+        self.connected_event = asyncio.Event()
+        self.conn_generation = 0
+        self.state = ClientState.CONNECTING
+        self.supervisor_task: asyncio.Task[None] | None = None
+        self.message_routing_task: asyncio.Task[None] | None = None
+        self.initial_connection_future: asyncio.Future[None] | None = (
             asyncio.get_running_loop().create_future()
         )
-        self._terminal_error: Exception | None = None
-        self._heartbeat_dead_threshold_s: float | None = None
-        self._heartbeat_deadline: float | None = None
-        self._heartbeat_timeout: asyncio.Timeout | None = None
-        self._heartbeat_interval_s: float | None = None
-        self._heartbeat_task: asyncio.Task[None] | None = None
-        self._pending_heartbeat_ref = pending_heartbeat_ref
-        self._ref_counter = 0
-        self._on_reconnect = None
-        self._on_disconnect = None
-        self._on_heartbeat_ack = None
-        self._forced_close_pending = forced_close_pending
-        self._close_code = close_code
+        self.terminal_error: Exception | None = None
+        self.heartbeat_dead_threshold_s: float | None = None
+        self.heartbeat_deadline: float | None = None
+        self.heartbeat_timeout: asyncio.Timeout | None = None
+        self.heartbeat_interval_s: float | None = None
+        self.heartbeat_task: asyncio.Task[None] | None = None
+        self.pending_heartbeat_ref = pending_heartbeat_ref
+        self.ref_counter = 0
+        self.on_reconnect = None
+        self.on_disconnect = None
+        self.on_heartbeat_ack = None
+        self.forced_close_pending = forced_close_pending
+        self.close_code = close_code
 
         self.connect_attempts = 0
         self.wait_delays: list[float] = []
-        self._connect_failures = connect_failures
-        self._waits_before_stop = waits_before_stop
+        self.connect_failures = connect_failures
+        self.waits_before_stop = waits_before_stop
         self.disconnect_decision = HARNESS_RETRY
         self.connect_failure_decision = HARNESS_RETRY
         self.decided_events: list[ReconnectEvent] = []
@@ -213,7 +209,7 @@ class SupervisorHarness(SupervisorMixin):
 
     async def _connect(self) -> ClientConnection:
         self.connect_attempts += 1
-        if self.connect_attempts <= self._connect_failures:
+        if self.connect_attempts <= self.connect_failures:
             # A fresh error each time; a shared one would keep the old traceback.
             raise ConnectionRefusedError
         return fake_connection()
@@ -233,7 +229,7 @@ class SupervisorHarness(SupervisorMixin):
         self, *, connection: ClientConnection, routing_error: Exception | None
     ) -> tuple[int | None, str]:
         del connection, routing_error
-        return self._close_code, ""
+        return self.close_code, ""
 
     def _decide(self, event: ReconnectEvent) -> ReconnectDecision:
         self.decided_events.append(event)
@@ -246,13 +242,13 @@ class SupervisorHarness(SupervisorMixin):
         return decisions[type(event)]
 
     def _transition_state(self, new_state: ClientState) -> None:
-        self._state = new_state
+        self.state = new_state
 
     async def _wait_for_shutdown_or_timeout(self, delay_s: float) -> None:
         self.wait_delays.append(delay_s)
-        if len(self.wait_delays) >= self._waits_before_stop:
-            self._shutdown_event.set()
+        if len(self.wait_delays) >= self.waits_before_stop:
+            self.shutdown_event.set()
 
     async def shutdown(self, reason: str) -> None:
         del reason
-        self._shutdown_event.set()
+        self.shutdown_event.set()

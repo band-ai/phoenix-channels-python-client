@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from phoenix_channels_python_client.exceptions import PHXConnectionError, PHXTopicError
+from phoenix_channels_python_client.exceptions import ChannelError, SocketError
 from tests.fake_server import FakePhoenixServer, ReplyStatus, WireEvent
 from tests.join_support import (
     JoinProbe,
@@ -163,7 +163,7 @@ class TestJoinResponses:
                 async with pending_subscribe(client, probe) as admission:
                     await phoenix_server.deferred_joins.get()
                     await phoenix_server.reset_all_clients()
-                    with pytest.raises(PHXConnectionError):
+                    with pytest.raises(SocketError):
                         await admission
             assert probe.order == []
             assert TOPIC not in client.get_current_subscriptions()
@@ -194,7 +194,7 @@ class TestJoinResponses:
                 try:
                     await invoked.wait()
                     await phoenix_server.reset_all_clients()
-                    with pytest.raises(PHXTopicError) as caught:
+                    with pytest.raises(ChannelError) as caught:
                         await admission
                     assert caught.value.__cause__ is failure
                 finally:

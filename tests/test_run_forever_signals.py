@@ -11,9 +11,9 @@ from typing import Any
 
 import pytest
 
-from phoenix_channels_python_client.client import PHXChannelsClient
+from phoenix_channels_python_client.client import Client
 from phoenix_channels_python_client.client_types import ClientState
-from phoenix_channels_python_client.exceptions import PHXConnectionError
+from phoenix_channels_python_client.exceptions import SocketError
 from phoenix_channels_python_client.shutdown_signals import (
     SHUTDOWN_SIGNALS,
     _on_shutdown_signal,
@@ -60,7 +60,7 @@ def send(sig: signal.Signals, expected_handler: object) -> None:
     signal.raise_signal(sig)  # the Python handler runs before this returns
 
 
-async def start(client: PHXChannelsClient, **kwargs: bool) -> asyncio.Task[None]:
+async def start(client: Client, **kwargs: bool) -> asyncio.Task[None]:
     run = asyncio.create_task(client.run_forever(**kwargs))
     await asyncio.sleep(0)  # handlers are installed before the first suspension
     return run
@@ -212,7 +212,7 @@ async def test_run_forever_after_the_client_stopped_raises(
     async with client:
         pass
 
-    with pytest.raises(PHXConnectionError, match="not connected"):
+    with pytest.raises(SocketError, match="not connected"):
         await asyncio.wait_for(
             client.run_forever(install_signal_handlers=False), ASYNC_TIMEOUT_S
         )
@@ -265,7 +265,7 @@ async def test_a_signal_never_stops_a_client_waiting_off_the_main_thread(
             run = await start(client)
             main_loop.call_soon_threadsafe(worker_waiting.set)
             await asyncio.to_thread(release_worker.wait, ASYNC_TIMEOUT_S)
-            still_connected = client._state is ClientState.CONNECTED
+            still_connected = client.state is ClientState.CONNECTED
             await client.shutdown(STOP_REASON)
             await asyncio.wait_for(run, ASYNC_TIMEOUT_S)
             return still_connected

@@ -17,9 +17,9 @@ from websockets.exceptions import ConnectionClosed
 from websockets.frames import CloseCode
 from websockets.http11 import Request, Response
 
-from phoenix_channels_python_client.protocol_handler import (
+from phoenix_channels_python_client.protocol import (
     DEFAULT_PROTOCOL_VERSION,
-    PhoenixChannelsProtocolVersion,
+    ProtocolVersion,
 )
 
 # One IPv4 socket on a port the OS picks, so test runs never collide on a port.
@@ -33,7 +33,7 @@ SYSTEM_TOPIC = "phoenix"
 DEFAULT_REFUSAL_STATUS = HTTPStatus.SERVICE_UNAVAILABLE
 
 # Winsock's linger fields are unsigned shorts; POSIX uses ints.
-_ABORTIVE_LINGER = struct.pack("HH" if sys.platform == "win32" else "ii", 1, 0)
+ABORTIVE_LINGER = struct.pack("HH" if sys.platform == "win32" else "ii", 1, 0)
 
 
 # Wire names are spelled out here, not taken from the client, so the server
@@ -69,17 +69,17 @@ class FakePhoenixServer:
 
     def __init__(
         self,
-        protocol: PhoenixChannelsProtocolVersion = DEFAULT_PROTOCOL_VERSION,
+        protocol: ProtocolVersion = DEFAULT_PROTOCOL_VERSION,
     ) -> None:
         self.protocol = protocol
         self.host = LOOPBACK_HOST
         self.port = ANY_FREE_PORT
 
         self.server: Server | None = None
-        self._clients: set[ServerConnection] = set()
-        self._client_ids: dict[ServerConnection, int] = {}
-        self._client_api_key: dict[ServerConnection, str] = {}
-        self._next_client_id = 1
+        self.clients: set[ServerConnection] = set()
+        self.client_ids: dict[ServerConnection, int] = {}
+        self.client_api_key: dict[ServerConnection, str] = {}
+        self.next_client_number = 1
         self.close_on_join_ids: set[int] = set()
         self.close_on_join_code: int = CloseCode.SERVICE_RESTART
         self.fail_join_targets: set[tuple[int, str]] = set()
@@ -114,12 +114,12 @@ class FakePhoenixServer:
         self.handshake_pending = asyncio.Event()
         # Refused handshakes never reach `handler`, so they are counted here.
         self.refused_handshakes = 0
-        self._refusals_left = 0
-        self._refusal_status = DEFAULT_REFUSAL_STATUS
+        self.refusals_left = 0
+        self.refusal_status = DEFAULT_REFUSAL_STATUS
 
     def _encode(self, frame: Frame) -> str:
         match self.protocol:
-            case PhoenixChannelsProtocolVersion.V1:
+            case ProtocolVersion.V1:
                 return json.dumps(
                     {
                         "topic": frame.topic,
@@ -128,7 +128,7 @@ class FakePhoenixServer:
                         "payload": dict(frame.payload),
                     }
                 )
-            case PhoenixChannelsProtocolVersion.V2:
+            case ProtocolVersion.V2:
                 return json.dumps(
                     [
                         frame.join_ref,
@@ -142,7 +142,7 @@ class FakePhoenixServer:
     def _decode(self, raw: str | bytes) -> Frame | None:
         data = json.loads(raw)
         match self.protocol, data:
-            case PhoenixChannelsProtocolVersion.V1, {"topic": str(topic)}:
+            case ProtocolVersion.V1, {"topic": str(topic)}:
                 return Frame(
                     data.get("join_ref"),
                     data.get("ref"),
@@ -150,7 +150,7 @@ class FakePhoenixServer:
                     data.get("event"),
                     data.get("payload") or {},
                 )
-            case PhoenixChannelsProtocolVersion.V2, [
+            case ProtocolVersion.V2, [
                 join_ref,
                 ref,
                 str(topic),
@@ -185,33 +185,33 @@ class FakePhoenixServer:
             self.handshake_pending.set()
             await self.handshake_gate.wait()
             self.handshake_pending.clear()
-        if not self._refusals_left:
+        if not self.refusals_left:
             return None
-        self._refusals_left -= 1
+        self.refusals_left -= 1
         self.refused_handshakes += 1
-        return connection.respond(self._refusal_status, "refused\n")
+        return connection.respond(self.refusal_status, "refused\n")
 
     async def handler(self, websocket: ServerConnection) -> None:
-        client_id = self._next_client_id
-        self._next_client_id += 1
+        client_id = self.next_client_number
+        self.next_client_number += 1
         request_path = self._extract_request_path(websocket)
         path_only = urlparse(request_path).path
         api_key = (
             websocket.request.headers.get("x-api-key", "") if websocket.request else ""
         ) or self._extract_api_key(request_path)
 
-        self._clients.add(websocket)
-        self._client_ids[websocket] = client_id
-        self._client_api_key[websocket] = api_key
+        self.clients.add(websocket)
+        self.client_ids[websocket] = client_id
+        self.client_api_key[websocket] = api_key
         self.connection_attempts_by_path[path_only] = (
             self.connection_attempts_by_path.get(path_only, 0) + 1
         )
 
         if self.enforce_single_connection_per_api_key and api_key:
-            for existing in list(self._clients):
+            for existing in list(self.clients):
                 if existing is websocket:
                     continue
-                if self._client_api_key.get(existing) != api_key:
+                if self.client_api_key.get(existing) != api_key:
                     continue
                 await existing.close(
                     code=CloseCode.TRY_AGAIN_LATER, reason="duplicate session"
@@ -225,9 +225,9 @@ class FakePhoenixServer:
         except ConnectionClosed:
             pass
         finally:
-            self._clients.discard(websocket)
-            self._drop_memberships(self._client_ids.pop(websocket, None))
-            self._client_api_key.pop(websocket, None)
+            self.clients.discard(websocket)
+            self._drop_memberships(self.client_ids.pop(websocket, None))
+            self.client_api_key.pop(websocket, None)
             self.closes.append((websocket.close_code, websocket.close_reason))
 
     async def _send(self, websocket: ServerConnection, frame: Frame) -> None:
@@ -261,7 +261,7 @@ class FakePhoenixServer:
                 await self._handle_leave(websocket, frame)
 
     async def _handle_join(self, websocket: ServerConnection, frame: Frame) -> None:
-        client_id = self._client_ids.get(websocket)
+        client_id = self.client_ids.get(websocket)
         self.join_topics.append(frame.topic)
         self.joined.put_nowait((websocket, frame))
         if (client_id, frame.topic) in self.defer_join_targets:
@@ -273,7 +273,7 @@ class FakePhoenixServer:
         await self._answer_join(websocket, frame)
 
     async def _answer_join(self, websocket: ServerConnection, frame: Frame) -> None:
-        client_id = self._client_ids.get(websocket)
+        client_id = self.client_ids.get(websocket)
         if (client_id, frame.topic) in self.fail_join_targets:
             await self._reply(
                 websocket, frame, ReplyStatus.ERROR, "forced join failure"
@@ -281,7 +281,7 @@ class FakePhoenixServer:
             return
 
         if frame.topic in self.VALID_TOPICS:
-            self.members[(self._client_ids[websocket], frame.topic)] = frame.join_ref
+            self.members[(self.client_ids[websocket], frame.topic)] = frame.join_ref
             await self._reply(websocket, frame, ReplyStatus.OK)
             for event, payload in self.join_events.get(frame.topic, []):
                 await self._send(
@@ -302,7 +302,7 @@ class FakePhoenixServer:
         await self._reply(connection, frame, ReplyStatus.OK)
 
     async def release_join(self, connection: ServerConnection, frame: Frame) -> None:
-        self.defer_join_targets.discard((self._client_ids[connection], frame.topic))
+        self.defer_join_targets.discard((self.client_ids[connection], frame.topic))
         await self._answer_join(connection, frame)
 
     async def _handle_leave(self, websocket: ServerConnection, frame: Frame) -> None:
@@ -326,15 +326,15 @@ class FakePhoenixServer:
     ) -> None:
         """Broadcast to every client; explicit refs allow targeted frame injection."""
         frame = Frame(join_ref, ref, topic, event, payload)
-        for websocket in list(self._clients):
+        for websocket in list(self.clients):
             await self._send(websocket, frame)
 
     async def simulate_channel_push(
         self, topic: str, event: str, payload: Mapping[str, object]
     ) -> None:
         """Push to each member with its server-stored join_ref."""
-        for websocket in list(self._clients):
-            member = (self._client_ids[websocket], topic)
+        for websocket in list(self.clients):
+            member = (self.client_ids[websocket], topic)
             if member in self.members:
                 await self._send(
                     websocket, Frame(self.members[member], None, topic, event, payload)
@@ -349,7 +349,7 @@ class FakePhoenixServer:
         await self._end_channels(topic, WireEvent.CLOSE)
 
     async def _end_channels(self, topic: str, event: WireEvent) -> None:
-        for websocket in list(self._client_ids):
+        for websocket in list(self.client_ids):
             await self._end_channel(websocket, topic, event)
 
     async def _end_channel(
@@ -359,7 +359,7 @@ class FakePhoenixServer:
 
         The frame carries the stored join_ref as ref and join_ref, with no payload.
         """
-        member = (self._client_ids[websocket], topic)
+        member = (self.client_ids[websocket], topic)
         if member not in self.members:
             return
         join_ref = self.members.pop(member)
@@ -367,7 +367,7 @@ class FakePhoenixServer:
 
     async def send_raw(self, text: str) -> None:
         """Send ``text`` as-is to every client, valid frame or not."""
-        for websocket in list(self._clients):
+        for websocket in list(self.clients):
             await websocket.send(text)
 
     @contextmanager
@@ -375,18 +375,18 @@ class FakePhoenixServer:
         self, count: int, status: HTTPStatus = DEFAULT_REFUSAL_STATUS
     ) -> Iterator[None]:
         """Refuse the next ``count`` opening handshakes made before exit."""
-        self._refusals_left = count
-        self._refusal_status = status
+        self.refusals_left = count
+        self.refusal_status = status
         try:
             yield
         finally:
-            self._refusals_left = 0
-            self._refusal_status = DEFAULT_REFUSAL_STATUS
+            self.refusals_left = 0
+            self.refusal_status = DEFAULT_REFUSAL_STATUS
 
     @contextmanager
     def unresponsive(self) -> Iterator[None]:
         """Stop reading from every client until exit, like a peer that hangs."""
-        transports = [websocket.transport for websocket in self._clients]
+        transports = [websocket.transport for websocket in self.clients]
         for transport in transports:
             transport.pause_reading()
         try:
@@ -397,13 +397,13 @@ class FakePhoenixServer:
 
     async def reset_all_clients(self) -> None:
         """Inject an abrupt TCP reset rather than a WebSocket close handshake."""
-        connections = list(self._clients)
+        connections = list(self.clients)
         for connection in connections:
             transport_socket = connection.transport.get_extra_info("socket")
             if transport_socket is None:
                 raise RuntimeError("Expected a TCP connection")
             transport_socket.setsockopt(
-                socket.SOL_SOCKET, socket.SO_LINGER, _ABORTIVE_LINGER
+                socket.SOL_SOCKET, socket.SO_LINGER, ABORTIVE_LINGER
             )
             connection.transport.abort()
         await asyncio.gather(*(connection.wait_closed() for connection in connections))
@@ -414,22 +414,22 @@ class FakePhoenixServer:
         code: int = CloseCode.SERVICE_RESTART,
         reason: str = "service restart",
     ) -> None:
-        for websocket in list(self._clients):
+        for websocket in list(self.clients):
             await websocket.close(code=code, reason=reason)
 
     @property
     def next_client_id(self) -> int:
         """The id the next connection will get, to target it before it exists."""
-        return self._next_client_id
+        return self.next_client_number
 
     def current_client_ids(self) -> set[int]:
-        return set(self._client_ids.values())
+        return set(self.client_ids.values())
 
     def get_connection_attempts(self, path: str) -> int:
         return self.connection_attempts_by_path.get(path, 0)
 
     def list_client_connections(self) -> list[ServerConnection]:
-        return list(self._clients)
+        return list(self.clients)
 
     def url_for(self, path: str) -> str:
         return f"ws://{self.host}:{self.port}{path}"

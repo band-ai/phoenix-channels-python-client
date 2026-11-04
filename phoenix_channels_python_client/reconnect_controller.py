@@ -18,12 +18,12 @@ from phoenix_channels_python_client.default_decider import (
     equal_jitter,
     exponential_delay,
 )
-from phoenix_channels_python_client.exceptions import PHXConnectionError
+from phoenix_channels_python_client.exceptions import SocketError
 
 
 def _decider_failure(message: str, cause: Exception | None = None) -> ReconnectDecision:
     """A stop for a broken decider; never the built-in policy deciding instead."""
-    error = PHXConnectionError(message)
+    error = SocketError(message)
     error.__cause__ = cause
     return ReconnectDecision(should_reconnect=False, terminal_error=error)
 
@@ -35,19 +35,19 @@ class ReconnectControllerMixin:
         raise NotImplementedError
 
     reconnect_policy: ReconnectPolicy
-    _reconnect_decider: ReconnectDecider | None
-    _decider: ReconnectDecider
+    reconnect_decider: ReconnectDecider | None
+    decider: ReconnectDecider
 
     def _new_decider(self) -> ReconnectDecider:
         """The consumer's decider, or a fresh built-in one for this run."""
-        if self._reconnect_decider is not None:
-            return self._reconnect_decider
+        if self.reconnect_decider is not None:
+            return self.reconnect_decider
         return DefaultReconnectDecider(self.reconnect_policy, self.logger)
 
     def _decide(self, event: ReconnectEvent) -> ReconnectDecision:
         """The decider's answer to ``event``; a broken answer stops the client."""
         try:
-            decision = self._decider(event)
+            decision = self.decider(event)
         except Exception as exc:
             self.logger.exception("reconnect_decider failed; stopping the client")
             return _decider_failure("reconnect_decider failed", exc)
