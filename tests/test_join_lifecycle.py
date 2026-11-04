@@ -8,7 +8,9 @@ import pytest
 
 from phoenix_channels_python_client.exceptions import ChannelError, SocketError
 from phoenix_channels_python_client.messages import Message
+from phoenix_channels_python_client.protocol import ProtocolVersion
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
+from tests.channel_support import UnansweredLeavesPeer
 from tests.cleanup_support import HeldCleanup
 from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer, ReplyStatus, WireEvent
@@ -33,7 +35,6 @@ from tests.support import (
     is_joined,
     join_channel,
     make_client,
-    wait_for_condition,
 )
 
 JOIN_DEADLINE = 10.0
@@ -74,10 +75,12 @@ class TestJoinLifecycle:
             assert TOPIC in client.topic_subscriptions
             with pytest.raises(ChannelError):
                 await client.channel(TOPIC).join()
+            owner = client.topic_subscriptions[TOPIC]
             await push(phoenix_server, request, WireEvent.CLOSE, ref=request.ref)
-            assert await wait_for_condition(
-                lambda: TOPIC not in client.topic_subscriptions
-            )
+            await owner.terminal_received.wait()
+            assert owner.leave_task is not None
+            await owner.leave_task
+            assert TOPIC not in client.topic_subscriptions
             assert old.order == []
             current_id = phoenix_server.next_client_id - 1
             phoenix_server.defer_join_targets.add((current_id, TOPIC))
@@ -137,10 +140,12 @@ class TestJoinLifecycle:
             assert TOPIC in client.topic_subscriptions
             with pytest.raises(ChannelError):
                 await client.channel(TOPIC).join()
+            owner = client.topic_subscriptions[TOPIC]
             await push(phoenix_server, request, WireEvent.CLOSE, ref=request.ref)
-            assert await wait_for_condition(
-                lambda: TOPIC not in client.topic_subscriptions
-            )
+            await owner.terminal_received.wait()
+            assert owner.leave_task is not None
+            await owner.leave_task
+            assert TOPIC not in client.topic_subscriptions
             assert old.order == []
             current_id = phoenix_server.next_client_id - 1
             phoenix_server.defer_join_targets.add((current_id, TOPIC))
@@ -306,6 +311,106 @@ class TestJoinLifecycle:
             assert TOPIC not in client.topic_subscriptions
             await join_channel(client, TOPIC, on_join_response=probe.install)
             assert probe.order == [{}]
+
+    @pytest.mark.clock
+    @pytest.mark.parametrize("rejection_before_cleanup", [True, False])
+    async def test_exact_late_rejection_releases_retired_admission(
+        self, clock: Clock, protocol: ProtocolVersion, *, rejection_before_cleanup: bool
+    ) -> None:
+        async with (
+            UnansweredLeavesPeer(protocol) as peer,
+            make_client(peer, join_timeout_s=JOIN_DEADLINE) as client,
+        ):
+            neighbor = JoinProbe(client, OTHER_TOPIC)
+            await join_channel(client, OTHER_TOPIC, neighbor.receive)
+            connection = client.connection
+            peer.defer_join_targets.add((peer.next_client_id - 1, TOPIC))
+            probe = JoinProbe(client)
+            terminal_before_cleanup = False
+            async with pending_subscribe(client, probe) as admission:
+                _, request = await peer.deferred_joins.get()
+                owner = client.topic_subscriptions[TOPIC]
+                await clock.advance(JOIN_DEADLINE)
+                peer_connection, leave = await peer.left.get()
+                if rejection_before_cleanup:
+                    await reply(peer, request, status=ReplyStatus.ERROR)
+                    await peer.simulate_channel_push(OTHER_TOPIC, EVENT, {})
+                    await neighbor.delivered.get()
+                    terminal_before_cleanup = owner.terminal_received.is_set()
+                    assert TOPIC in client.topic_subscriptions
+                await peer._reply(peer_connection, leave, ReplyStatus.OK)
+                with pytest.raises(ChannelError, match="Timed out"):
+                    await admission
+            if not rejection_before_cleanup:
+                assert not owner.terminal_received.is_set()
+                await reply(peer, request, status=ReplyStatus.ERROR)
+            await peer.simulate_channel_push(OTHER_TOPIC, EVENT, {})
+            await neighbor.delivered.get()
+            if rejection_before_cleanup:
+                assert terminal_before_cleanup
+            assert owner.terminal_received.is_set()
+            assert TOPIC not in client.topic_subscriptions
+            peer.defer_join_targets.clear()
+            replacement = JoinProbe(client)
+            await join_channel(client, TOPIC, replacement.receive)
+            await peer.simulate_channel_push(TOPIC, EVENT, {"replacement": True})
+            assert (await replacement.delivered.get()).payload == {"replacement": True}
+            assert client.connection is connection
+
+    async def test_duplicate_rejection_does_not_retire_an_established_join(
+        self, phoenix_server: FakePhoenixServer
+    ) -> None:
+        async with deadline(), make_client(phoenix_server) as client:
+            probe = JoinProbe(client)
+            channel = await join_channel(client, TOPIC, probe.receive)
+            _, request = await phoenix_server.joined.get()
+            await reply(phoenix_server, request, status=ReplyStatus.ERROR)
+            await push(phoenix_server, request, payload={"healthy": True})
+            assert (await probe.delivered.get()).payload == {"healthy": True}
+            assert channel.joined
+            assert not channel.subscription.terminal_received.is_set()
+
+    @pytest.mark.clock
+    @pytest.mark.parametrize(
+        ("payload", "ref"),
+        [
+            ({"status": ReplyStatus.OK}, None),
+            ({}, None),
+            ({"status": ReplyStatus.ERROR}, "obsolete-join"),
+        ],
+    )
+    async def test_nonterminal_late_reply_preserves_retired_reservation(
+        self,
+        clock: Clock,
+        clocked_peer: FakePhoenixServer,
+        payload: dict[str, object],
+        ref: str | None,
+    ) -> None:
+        async with make_client(clocked_peer, join_timeout_s=JOIN_DEADLINE) as client:
+            neighbor = JoinProbe(client, OTHER_TOPIC)
+            await join_channel(client, OTHER_TOPIC, neighbor.receive)
+            clocked_peer.defer_join_targets.add(
+                (clocked_peer.next_client_id - 1, TOPIC)
+            )
+            probe = JoinProbe(client)
+            async with pending_subscribe(client, probe) as admission:
+                _, request = await clocked_peer.deferred_joins.get()
+                owner = client.topic_subscriptions[TOPIC]
+                await clock.advance(JOIN_DEADLINE)
+                with pytest.raises(ChannelError, match="Timed out"):
+                    await admission
+            await push(
+                clocked_peer,
+                request,
+                WireEvent.REPLY,
+                payload,
+                ref=request.ref if ref is None else ref,
+            )
+            await clocked_peer.simulate_channel_push(OTHER_TOPIC, EVENT, {})
+            await neighbor.delivered.get()
+            assert not owner.terminal_received.is_set()
+            with pytest.raises(ChannelError, match="already has a live channel"):
+                await client.channel(TOPIC).join()
 
     @pytest.mark.parametrize(
         ("event", "error_type"),

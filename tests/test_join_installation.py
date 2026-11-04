@@ -13,6 +13,11 @@ import pytest
 from phoenix_channels_python_client import JoinResponseCallback
 from phoenix_channels_python_client.exceptions import ChannelError
 from phoenix_channels_python_client.messages import Message
+from phoenix_channels_python_client.protocol import ProtocolVersion
+from phoenix_channels_python_client.supervisor import SupervisorMixin
+from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
+from tests.channel_support import UnansweredLeavesPeer
+from tests.clock import Clock
 from tests.fake_server import FakePhoenixServer, ReplyStatus
 from tests.join_hooks import AsyncInstaller
 from tests.join_support import (
@@ -22,7 +27,9 @@ from tests.join_support import (
     pending_subscribe,
     push,
 )
+from tests.scheduling import TaskTimerObserver
 from tests.support import (
+    EVENT,
     FAST_RECONNECT,
     OTHER_TOPIC,
     TOPIC,
@@ -31,6 +38,8 @@ from tests.support import (
     join_channel,
     make_client,
 )
+
+LEAVE_DEADLINE = 10.0
 
 
 def throwing_hook(error: BaseException) -> JoinResponseCallback:
@@ -264,6 +273,73 @@ class TestJoinInstallation:
             await join_channel(client, TOPIC, on_join_response=probe.install)
             assert installed == [{}]
             assert lost.empty()
+
+    @pytest.mark.clock
+    @pytest.mark.parametrize("socket_loss", [False, True])
+    async def test_rejoin_loss_survives_leave_cleanup_failure(
+        self, clock: Clock, protocol: ProtocolVersion, *, socket_loss: bool
+    ) -> None:
+        lost: asyncio.Queue[Exception] = asyncio.Queue()
+        reconnected: asyncio.Queue[None] = asyncio.Queue()
+        installed: list[object] = []
+        failure = ValueError("snapshot installation failed")
+
+        def install(response: object) -> None:
+            if installed:
+                raise failure
+            installed.append(response)
+
+        async def on_lost(topic: str, error: Exception) -> None:
+            assert topic == TOPIC
+            lost.put_nowait(error)
+
+        backoff = TaskTimerObserver(
+            SupervisorMixin._supervisor_loop.__code__
+            if socket_loss
+            else TopicRuntimeMixin._recover_channel.__code__
+        )
+        cleanup = TaskTimerObserver(TopicRuntimeMixin._leave_and_cleanup.__code__)
+        async with (
+            UnansweredLeavesPeer(protocol) as peer,
+            make_client(
+                peer,
+                reconnect_policy=FAST_RECONNECT,
+                leave_timeout_s=LEAVE_DEADLINE,
+                on_topic_lost=on_lost,
+                on_reconnect=lambda: reconnected.put(None),
+            ) as client,
+        ):
+            channel = await join_channel(client, TOPIC, on_join_response=install)
+            neighbor = JoinProbe(client, OTHER_TOPIC)
+            await join_channel(client, OTHER_TOPIC, neighbor.receive)
+            with backoff.installed(), cleanup.installed():
+                if socket_loss:
+                    await peer.close_all_clients()
+                else:
+                    await peer.crash_channel(TOPIC)
+                await backoff.registered.get()
+                await clock.advance(1)
+                leave_task = await cleanup.registered.get()
+                await peer.left.get()
+                connection = client.connection
+                await clock.advance(LEAVE_DEADLINE)
+                with pytest.raises(ChannelError, match="Leave deadline expired"):
+                    await leave_task
+            if socket_loss:
+                await reconnected.get()
+            await asyncio.gather(*client.lifecycle_tasks)
+            assert lost.qsize() == 1
+            await peer.simulate_channel_push(OTHER_TOPIC, EVENT, {"healthy": True})
+            assert (await neighbor.delivered.get()).payload == {"healthy": True}
+            error = lost.get_nowait()
+            assert isinstance(error, ChannelError)
+            assert isinstance(error.__cause__, ChannelError)
+            assert error.__cause__.__cause__ is failure
+            assert client.connection is connection
+            assert not channel.joined
+            assert channel.subscription.cleanup_done
+            assert client.topic_subscriptions[TOPIC] is channel.subscription
+            assert not channel.subscription.terminal_received.is_set()
 
     async def test_join_ack_installs_outside_a_saturated_application_queue(
         self, phoenix_server: FakePhoenixServer

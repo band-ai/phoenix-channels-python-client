@@ -263,12 +263,23 @@ class TopicRuntimeMixin:
         if (
             message.event != SystemEvent.reply
             or message.ref != topic.join_ref
-            or topic.current_join_ready.done()
             or not self._is_registered(topic)
             or not self._is_on_current_connection(topic)
+        ):
+            return
+
+        if (
+            topic.current_join_ready.done()
             or topic.leave_requested.is_set()
             or self.shutdown_event.is_set()
         ):
+            if (
+                topic.state == ChannelState.LEFT
+                and isinstance(message.payload, dict)
+                and message.payload.get("status") == "error"
+            ):
+                topic.terminal_received.set()
+                self._release_reservation(topic)
             return
 
         if not isinstance(message.payload, dict):
@@ -585,7 +596,12 @@ class TopicRuntimeMixin:
             self._transition_channel(
                 topic, ChannelCause.CLOSE, error or ChannelError("Channel retired")
             )
-        await self._leave_channel(topic)
+        try:
+            await self._leave_channel(topic)
+        except (ChannelError, SocketError):
+            self.logger.exception(
+                "Permanent topic loss cleanup failed for %s", topic.name
+            )
         return topic
 
     async def _cleanup_subscription(
