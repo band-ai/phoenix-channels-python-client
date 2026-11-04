@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from websockets.asyncio.server import ServerConnection
 
 from phoenix_channels_python_client import Channel, ProtocolVersion, Reply
-from tests.fake_server import FakePhoenixServer, Frame, WireEvent
+from tests.fake_server import SYSTEM_TOPIC, FakePhoenixServer, Frame, WireEvent
 from tests.support import EVENT
 
 PushRequest = tuple[ServerConnection, Frame]
@@ -21,7 +21,9 @@ class PushPeer(FakePhoenixServer):
         self.pushes: asyncio.Queue[PushRequest] = asyncio.Queue()
 
     async def handle_frame(self, websocket: ServerConnection, frame: Frame) -> None:
-        if frame.event not in {*WireEvent}:
+        if frame.event not in {*WireEvent} or (
+            frame.event == WireEvent.HEARTBEAT and frame.topic != SYSTEM_TOPIC
+        ):
             self.pushes.put_nowait((websocket, frame))
             return
         await super().handle_frame(websocket, frame)

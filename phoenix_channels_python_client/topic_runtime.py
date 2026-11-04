@@ -24,6 +24,7 @@ from phoenix_channels_python_client.exceptions import (
 from phoenix_channels_python_client.messages import (
     CLIENT_LIFECYCLE_EVENTS,
     HEARTBEAT_EVENT,
+    PHOENIX_TOPIC,
     ChannelEvent,
     Message,
     SystemEvent,
@@ -778,7 +779,9 @@ class TopicRuntimeMixin:
             raise ValueError("timeout_s must be finite and > 0")
         if not isinstance(payload, dict):
             raise TypeError("Push payload must be a map")
-        if event in {*SystemEvent, HEARTBEAT_EVENT}:
+        if event in {*SystemEvent} or (
+            event == HEARTBEAT_EVENT and topic.name == PHOENIX_TOPIC
+        ):
             raise ValueError("push requires an application event")
         ref = self._generate_ref()
         message = make_message(

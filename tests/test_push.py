@@ -22,7 +22,7 @@ from tests.clock import Clock
 from tests.fake_server import Frame, WireEvent
 from tests.join_support import deadline, paused_writes
 from tests.push_support import PushPeer, pending_push
-from tests.scheduling import TaskLifecycleGate
+from tests.scheduling import TaskLifecycleGate, TimerCallbackGate
 from tests.support import (
     EVENT,
     FAST_RECONNECT,
@@ -420,7 +420,9 @@ async def test_v2_membership_fences_precede_push_correlation() -> None:
 
 
 @each_protocol
-@pytest.mark.parametrize("event", [*WireEvent])
+@pytest.mark.parametrize(
+    "event", [event for event in WireEvent if event != WireEvent.HEARTBEAT]
+)
 async def test_protocol_events_cannot_be_pushed_as_application_events(
     push_peer: PushPeer, event: str
 ) -> None:
@@ -531,4 +533,117 @@ async def test_write_deadline_times_out_originating_push_and_fails_its_neighbor(
                 with pytest.raises(SocketError):
                     await other
                 await client.run_forever(install_signal_handlers=False)
+        assert client.connection is None
+
+
+@each_protocol
+async def test_heartbeat_named_application_event_uses_normal_push_correlation(
+    push_peer: PushPeer,
+) -> None:
+    async with (
+        deadline(),
+        make_client(push_peer) as client,
+        client.channel(TOPIC) as channel,
+    ):
+        task = asyncio.create_task(
+            channel.push(WireEvent.HEARTBEAT, {"application": True})
+        )
+        try:
+            request = await push_peer.pushes.get()
+            assert (request[1].topic, request[1].event, request[1].payload) == (
+                TOPIC,
+                WireEvent.HEARTBEAT,
+                {"application": True},
+            )
+            await push_peer.answer_push(request)
+            assert (await task).status == "ok"
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.clock
+@each_protocol
+async def test_dispatched_old_watchdog_cannot_fail_a_push_after_client_reentry(
+    clock: Clock, push_peer: PushPeer
+) -> None:
+    async with (
+        deadline(),
+        make_client(
+            push_peer, heartbeat_interval_s=None, auto_reconnect=False
+        ) as client,
+    ):
+        channel = client.channel(TOPIC)
+        await channel.join()
+        old_connection, old_session = client.connection, client.send_session
+        old_generation = client.conn_generation
+        gate = TimerCallbackGate(SessionSends._expire.__code__)
+        with gate.installed():
+            async with pending_push(channel, timeout_s=PUSH_TIMEOUT_S) as old_push:
+                await push_peer.pushes.get()
+                timer = await gate.registered.get()
+                await clock.advance(PUSH_TIMEOUT_S)
+                await timer.ready.wait()
+                await client.shutdown()
+                with pytest.raises(ChannelError):
+                    await old_push
+
+            await client.__aenter__()
+            async with (
+                client.channel(TOPIC) as fresh,
+                pending_push(fresh) as new_push,
+            ):
+                request = await push_peer.pushes.get()
+                assert client.connection is not old_connection
+                assert client.send_session is not old_session
+                assert client.conn_generation == old_generation
+                # Deliberate delayed-dispatch fault: the old timer already fired.
+                timer.release()
+                await push_peer.answer_push(request, response={"fresh": True})
+                assert (await new_push).response == {"fresh": True}
+                assert fresh.joined
+        assert old_session is not None
+        assert old_session.operations == {}
+
+
+@pytest.mark.clock
+@each_protocol
+@pytest.mark.parametrize("first_callback", [0, 1])
+async def test_equal_write_deadlines_settle_by_processed_callback_order(
+    clock: Clock, push_peer: PushPeer, first_callback: int
+) -> None:
+    async with (
+        deadline(),
+        make_client(
+            push_peer, heartbeat_interval_s=None, auto_reconnect=False
+        ) as client,
+    ):
+        channel, neighbor = client.channel(TOPIC), client.channel(OTHER_TOPIC)
+        await channel.join()
+        await neighbor.join()
+        connection, session = client.connection, client.send_session
+        assert connection is not None
+        assert session is not None
+        gate = TimerCallbackGate(SessionSends._expire.__code__, count=2)
+        with paused_writes(connection), gate.installed():
+            async with (
+                pending_push(channel, timeout_s=PUSH_TIMEOUT_S) as task,
+                pending_push(neighbor, timeout_s=PUSH_TIMEOUT_S) as other,
+            ):
+                timers = [await gate.registered.get(), await gate.registered.get()]
+                await push_peer.pushes.get()
+                await push_peer.pushes.get()
+                assert timers[0].deadline == timers[1].deadline
+                await clock.advance(PUSH_TIMEOUT_S)
+                await timers[0].ready.wait()
+                await timers[1].ready.wait()
+                timers[first_callback].release()
+                timers[1 - first_callback].release()
+                results = await asyncio.gather(task, other, return_exceptions=True)
+                assert type(results[first_callback]) is PushTimeoutError
+                assert type(results[1 - first_callback]) is SocketError
+                await client.run_forever(install_signal_handlers=False)
+        assert channel.subscription.pending_pushes == {}
+        assert neighbor.subscription.pending_pushes == {}
+        assert session.operations == {}
         assert client.connection is None

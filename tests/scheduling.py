@@ -7,6 +7,7 @@ import inspect
 from collections.abc import Callable, Coroutine, Generator, Iterator
 from contextlib import contextmanager
 from contextvars import Context, copy_context
+from dataclasses import dataclass, field
 from types import CodeType
 from typing import Any
 from unittest.mock import patch
@@ -158,3 +159,70 @@ class TaskLifecycleGate:
             work.close()
             self.exiting.set()
             await self.finish.wait()
+
+
+@dataclass
+class TimerCallback:
+    deadline: float
+    callback: Callable[..., object]
+    args: tuple[object, ...]
+    context: Context
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    released: bool = False
+
+    def release(self) -> None:
+        if self.ready.is_set() and not self.released:
+            self.released = True
+            self.context.run(self.callback, *self.args)
+
+
+class TimerCallbackGate:
+    """Delay dispatched native timers to inject stale callbacks or choose tie order."""
+
+    def __init__(self, code: CodeType, *, count: int = 1) -> None:
+        self.code = code
+        self.count = count
+        self.registered: asyncio.Queue[TimerCallback] = asyncio.Queue()
+        self.timers: list[TimerCallback] = []
+        self.holding = False
+
+    @contextmanager
+    def installed(self) -> Iterator[None]:
+        loop = asyncio.get_running_loop()
+        schedule = loop.call_at
+        self.holding = True
+
+        def call_at(
+            when: float,
+            callback: Callable[..., object],
+            *args: object,
+            context: Context | None = None,
+        ) -> asyncio.TimerHandle:
+            function = getattr(callback, "__func__", callback)
+            if (
+                len(self.timers) < self.count
+                and getattr(function, "__code__", None) is self.code
+            ):
+                timer = TimerCallback(
+                    when,
+                    callback,
+                    args,
+                    context if context is not None else copy_context(),
+                )
+                self.timers.append(timer)
+                self.registered.put_nowait(timer)
+                return schedule(when, self._hold, timer)
+            return schedule(when, callback, *args, context=context)
+
+        try:
+            with patch.object(loop, "call_at", call_at):
+                yield
+        finally:
+            self.holding = False
+            for timer in self.timers:
+                timer.release()
+
+    def _hold(self, timer: TimerCallback) -> None:
+        timer.ready.set()
+        if not self.holding:
+            timer.release()
