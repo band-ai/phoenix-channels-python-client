@@ -29,7 +29,7 @@ ChannelEvent = str | SystemEvent
 Ref = Annotated[str | None, Field(coerce_numbers_to_str=True)]
 
 
-class _BaseMessage(BaseModel):
+class BaseMessage(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     topic: str
@@ -44,14 +44,14 @@ class _BaseMessage(BaseModel):
         return subtopic
 
 
-class _UserMessage(_BaseMessage):
+class UserMessage(BaseMessage):
     event: str
     join_ref: Ref = None
 
 
-class _SystemMessage(_BaseMessage):
+class SystemMessage(BaseMessage):
     event: SystemEvent
     join_ref: Ref = None
 
 
-Message = _UserMessage | _SystemMessage
+Message = UserMessage | SystemMessage

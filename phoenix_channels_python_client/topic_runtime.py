@@ -29,7 +29,7 @@ from phoenix_channels_python_client.topic_subscription import (
 from phoenix_channels_python_client.utils import cancel_and_wait, make_message
 
 
-class _TopicRuntimeDeps(Protocol):
+class TopicRuntimeDeps(Protocol):
     async def _invoke_callback_safely(
         self, label: str, callback: Callable[..., Awaitable[None]], *args: object
     ) -> None: ...
@@ -83,8 +83,8 @@ class TopicRuntimeMixin:
     _cleanup_tasks: set[asyncio.Task[None]]
 
     @property
-    def _runtime_deps(self) -> _TopicRuntimeDeps:
-        return cast(_TopicRuntimeDeps, self)
+    def _runtime_deps(self) -> TopicRuntimeDeps:
+        return cast(TopicRuntimeDeps, self)
 
     def _set_subscription_ready(self, topic_subscription: TopicSubscription) -> None:
         topic_subscription.established = True

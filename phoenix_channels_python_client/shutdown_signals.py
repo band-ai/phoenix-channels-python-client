@@ -23,10 +23,10 @@ logger = logging.getLogger(__name__)
 SHUTDOWN_SIGNALS = (signal.SIGTERM, signal.SIGINT)
 
 # typeshed's signal._HANDLER is private.
-_Handler = Callable[[int, FrameType | None], Any] | int | None
+Handler = Callable[[int, FrameType | None], Any] | int | None
 
 
-class _Waiter(NamedTuple):
+class Waiter(NamedTuple):
     loop: asyncio.AbstractEventLoop
     event: asyncio.Event
 
@@ -36,8 +36,8 @@ class _Waiter(NamedTuple):
 
 
 # Each waiter maps to the last signal it took, if any.
-_waiters: dict[_Waiter, int | None] = {}
-_previous: dict[int, _Handler] = {}
+_waiters: dict[Waiter, int | None] = {}
+_previous: dict[int, Handler] = {}
 
 
 def _on_main_thread() -> bool:
@@ -79,7 +79,7 @@ def _restore() -> None:
             signal.signal(sig, _previous[sig])
 
 
-def _unregister(waiter: _Waiter) -> int | None:
+def _unregister(waiter: Waiter) -> int | None:
     """Drop ``waiter``, restoring the handlers if it was the last one.
 
     Returns the last signal it took, if any.
@@ -105,7 +105,7 @@ def handle_shutdown_signals(event: asyncio.Event) -> Generator[None, None, None]
         logger.debug("Signal handlers not available off the main thread")
         yield
         return
-    waiter = _Waiter(asyncio.get_running_loop(), event)
+    waiter = Waiter(asyncio.get_running_loop(), event)
     consumed = False
     try:
         # Register before installing so a signal mid-install is never dropped.

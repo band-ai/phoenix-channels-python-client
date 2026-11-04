@@ -6,8 +6,8 @@ from phoenix_channels_python_client.messages import (
     ChannelEvent,
     Message,
     SystemEvent,
-    _SystemMessage,
-    _UserMessage,
+    SystemMessage,
+    UserMessage,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,14 +32,14 @@ def make_message(
 
     processed_event = parse_event(event)
     if isinstance(processed_event, SystemEvent):
-        return _SystemMessage(
+        return SystemMessage(
             event=processed_event,
             topic=topic,
             ref=ref,
             payload=payload,
             join_ref=join_ref,
         )
-    return _UserMessage(
+    return UserMessage(
         event=processed_event,
         topic=topic,
         ref=ref,

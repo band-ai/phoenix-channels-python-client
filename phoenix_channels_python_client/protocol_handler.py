@@ -20,7 +20,7 @@ from phoenix_channels_python_client.utils import make_message
 logger = logging.getLogger(__name__)
 
 
-class _RawFrame(NamedTuple):
+class RawFrame(NamedTuple):
     """A decoded frame whose fields are not validated yet."""
 
     # The message model validates the refs.
@@ -31,10 +31,10 @@ class _RawFrame(NamedTuple):
     payload: object
 
 
-def _decode_v1(parsed: object, label: str) -> _RawFrame:
+def _decode_v1(parsed: object, label: str) -> RawFrame:
     match parsed:
         case dict():
-            return _RawFrame(
+            return RawFrame(
                 join_ref=parsed.get("join_ref"),
                 ref=parsed.get("ref"),
                 topic=parsed.get("topic"),
@@ -47,10 +47,10 @@ def _decode_v1(parsed: object, label: str) -> _RawFrame:
             )
 
 
-def _decode_v2(parsed: object, label: str) -> _RawFrame:
+def _decode_v2(parsed: object, label: str) -> RawFrame:
     match parsed:
         case [join_ref, ref, topic, event, payload]:
-            return _RawFrame(join_ref, ref, topic, event, payload)
+            return RawFrame(join_ref, ref, topic, event, payload)
         case list():
             raise ValueError(
                 f"Protocol {label} expects 5-element array "
@@ -68,7 +68,7 @@ def _require_text(value: object, label: str, field: str) -> str:
     return value
 
 
-def _to_message(label: str, frame: _RawFrame) -> Message:
+def _to_message(label: str, frame: RawFrame) -> Message:
     return make_message(
         topic=_require_text(frame.topic, label, "topic"),
         event=_require_text(frame.event, label, "event"),
@@ -78,16 +78,16 @@ def _to_message(label: str, frame: _RawFrame) -> Message:
     )
 
 
-class _ProtocolSpec(NamedTuple):
+class ProtocolSpec(NamedTuple):
     """A protocol version's diagnostic label and frame decoder."""
 
     label: str
-    decode: Callable[[object, str], _RawFrame]
+    decode: Callable[[object, str], RawFrame]
 
 
 _PROTOCOL_SPECS = {
-    ProtocolVersion.V1: _ProtocolSpec("v1", _decode_v1),
-    ProtocolVersion.V2: _ProtocolSpec("v2", _decode_v2),
+    ProtocolVersion.V1: ProtocolSpec("v1", _decode_v1),
+    ProtocolVersion.V2: ProtocolSpec("v2", _decode_v2),
 }
 
 

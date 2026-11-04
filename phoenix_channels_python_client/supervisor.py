@@ -47,13 +47,13 @@ def _truncate_close_reason(reason: str) -> str:
     return encoded[:_MAX_CLOSE_REASON_BYTES].decode("utf-8", errors="ignore")
 
 
-class _CloseDetails(NamedTuple):
+class CloseDetails(NamedTuple):
     code: int | None
     reason: str
     forced: bool
 
 
-class _SupervisorRuntimeDeps(Protocol):
+class SupervisorRuntimeDeps(Protocol):
     def redact_diagnostic(self, text: str) -> str: ...
 
     def _generate_ref(self) -> str: ...
@@ -97,8 +97,8 @@ class SupervisorMixin:
     _forced_close_pending: bool
 
     @property
-    def _deps(self) -> _SupervisorRuntimeDeps:
-        return cast(_SupervisorRuntimeDeps, self)
+    def _deps(self) -> SupervisorRuntimeDeps:
+        return cast(SupervisorRuntimeDeps, self)
 
     async def _start_processing(
         self, connection: ClientConnection, conn_generation: int
@@ -356,11 +356,11 @@ class SupervisorMixin:
 
     async def _end_session(
         self, connection: ClientConnection, routing_error: Exception | None
-    ) -> _CloseDetails:
+    ) -> CloseDetails:
         code, reason = self._deps._extract_close_details(
             connection=connection, routing_error=routing_error
         )
-        close = _CloseDetails(code, reason, forced=self._forced_close_pending)
+        close = CloseDetails(code, reason, forced=self._forced_close_pending)
 
         await self._cleanup_connection()
 
@@ -370,7 +370,7 @@ class SupervisorMixin:
             )
         return close
 
-    def _decide_reconnect(self, close: _CloseDetails) -> ReconnectDecision | None:
+    def _decide_reconnect(self, close: CloseDetails) -> ReconnectDecision | None:
         if self._shutdown_event.is_set() or not self.auto_reconnect:
             return None
 
