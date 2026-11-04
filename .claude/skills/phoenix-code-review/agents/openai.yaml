@@ -1,4 +1,0 @@
-interface:
-  display_name: "Phoenix Code Review"
-  short_description: "Run the six-angle review when explicitly requested"
-  default_prompt: "Use $phoenix-code-review for this request."

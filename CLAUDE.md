@@ -78,13 +78,13 @@ share the same project rules. Invoke a skill with `/name` in Claude Code or
 
 | Skill | Use |
 | --- | --- |
-| [phoenix-plan](.claude/skills/phoenix-plan/SKILL.md) | Investigate and review a ticket plan before implementation. |
-| [phoenix-python-conventions](.claude/skills/phoenix-python-conventions/SKILL.md) | Write or review Python source, logging, and error handling. |
-| [phoenix-python-test-conventions](.claude/skills/phoenix-python-test-conventions/SKILL.md) | Write or assess tests, coverage, peers, and synchronization. |
-| [phoenix-code-review](.claude/skills/phoenix-code-review/SKILL.md) | Run the six-angle review when explicitly requested. |
-| [phoenix-here-is-a-review](.claude/skills/phoenix-here-is-a-review/SKILL.md) | Verify and address supplied review feedback. |
-| [phoenix-pr-triage](.claude/skills/phoenix-pr-triage/SKILL.md) | Assess a PR quickly without changing code or publishing. |
-| [phoenix-ci-triage](.claude/skills/phoenix-ci-triage/SKILL.md) | Diagnose failing GitHub Actions checks. |
-| [phoenix-investigate-test-error](.claude/skills/phoenix-investigate-test-error/SKILL.md) | Investigate a failing or flaky test with an unclear cause. |
-| [phoenix-linear-create-branch](.claude/skills/phoenix-linear-create-branch/SKILL.md) | Create a branch for an identified Linear ticket. |
-| [phoenix-dependabot-triage](.claude/skills/phoenix-dependabot-triage/SKILL.md) | Assess Dependabot updates and validate authorized changes. |
+| [band-plan](.claude/skills/band-plan/SKILL.md) | Investigate and review a ticket plan before implementation. |
+| [band-python-conventions](.claude/skills/band-python-conventions/SKILL.md) | Write or review Python source, logging, and error handling. |
+| [band-python-test-conventions](.claude/skills/band-python-test-conventions/SKILL.md) | Write or assess tests, coverage, peers, and synchronization. |
+| [band-code-review](.claude/skills/band-code-review/SKILL.md) | Run the six-angle review when explicitly requested. |
+| [band-here-is-a-review](.claude/skills/band-here-is-a-review/SKILL.md) | Verify and address supplied review feedback. |
+| [band-pr-triage](.claude/skills/band-pr-triage/SKILL.md) | Assess a PR quickly without changing code or publishing. |
+| [band-ci-triage](.claude/skills/band-ci-triage/SKILL.md) | Diagnose failing GitHub Actions checks. |
+| [band-investigate-test-error](.claude/skills/band-investigate-test-error/SKILL.md) | Investigate a failing or flaky test with an unclear cause. |
+| [band-linear-create-branch](.claude/skills/band-linear-create-branch/SKILL.md) | Create a branch for an identified Linear ticket. |
+| [band-dependabot-triage](.claude/skills/band-dependabot-triage/SKILL.md) | Assess Dependabot updates and validate authorized changes. |
