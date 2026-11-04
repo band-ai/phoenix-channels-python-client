@@ -14,6 +14,7 @@ from phoenix_channels_python_client.messages import (
     CLIENT_LIFECYCLE_EVENTS,
     ChannelEvent,
     Message,
+    Payload,
 )
 from phoenix_channels_python_client.replies import Reply
 from phoenix_channels_python_client.send_session import SessionSends
@@ -66,8 +67,8 @@ class TopicSubscription:
     cleanup_done: bool = False
     loss_reported: bool = False
     leave_requested: asyncio.Event = field(default_factory=asyncio.Event)
-    event_handlers: dict[ChannelEvent, Callable[[dict[str, Any]], Awaitable[None]]] = (
-        field(default_factory=dict)
+    event_handlers: dict[ChannelEvent, Callable[[Payload], Awaitable[None]]] = field(
+        default_factory=dict
     )
     on_join_response: JoinResponseCallback | None = None
     blocks_reconnect: bool = True
@@ -100,7 +101,7 @@ class TopicSubscription:
         return self.unsubscribe_completed_future
 
     def add_event_handler(
-        self, event: ChannelEvent, handler: Callable[[dict[str, Any]], Awaitable[None]]
+        self, event: ChannelEvent, handler: Callable[[Payload], Awaitable[None]]
     ) -> None:
         if event in CLIENT_LIFECYCLE_EVENTS:
             raise ValueError(
@@ -114,7 +115,7 @@ class TopicSubscription:
 
     def get_event_handler(
         self, event: ChannelEvent
-    ) -> Callable[[dict[str, Any]], Awaitable[None]] | None:
+    ) -> Callable[[Payload], Awaitable[None]] | None:
         return self.event_handlers.get(event)
 
     def has_event_handler(self, event: ChannelEvent) -> bool:

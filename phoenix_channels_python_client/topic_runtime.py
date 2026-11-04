@@ -16,6 +16,7 @@ from phoenix_channels_python_client.client_types import (
     ClientState,
     JoinResponseCallback,
 )
+from phoenix_channels_python_client.codec import encode_message
 from phoenix_channels_python_client.exceptions import (
     ChannelError,
     PushTimeoutError,
@@ -27,7 +28,9 @@ from phoenix_channels_python_client.messages import (
     PHOENIX_TOPIC,
     ChannelEvent,
     Message,
+    Payload,
     SystemEvent,
+    _require_payload,
 )
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
 from phoenix_channels_python_client.replies import Reply, reply_from_message
@@ -64,7 +67,7 @@ async def _cancel_unless_current(task: asyncio.Task[None] | None) -> None:
 async def _run_handlers(
     message: Message,
     message_handler: Callable[[Message], Awaitable[None]] | None,
-    event_handler: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    event_handler: Callable[[Payload], Awaitable[None]] | None,
 ) -> None:
     if message_handler is not None:
         await message_handler(message)
@@ -223,7 +226,10 @@ class TopicRuntimeMixin:
             self._start_topic_loss(topic, exc)
 
     def _handle_channel_control(
-        self, topic: TopicSubscription, message: Message
+        self,
+        topic: TopicSubscription,
+        message: Message,
+        binary_reply_status: str | None = None,
     ) -> bool:
         if not self._is_registered(topic) or not self._is_on_current_connection(topic):
             return True
@@ -239,17 +245,24 @@ class TopicRuntimeMixin:
             self._handle_join_response_mode(topic, message)
             return True
         return (
-            self._resolve_push_reply(topic, message)
+            self._resolve_push_reply(topic, message, binary_reply_status)
             or topic.state != ChannelState.JOINED
         )
 
-    def _resolve_push_reply(self, topic: TopicSubscription, message: Message) -> bool:
+    def _resolve_push_reply(
+        self,
+        topic: TopicSubscription,
+        message: Message,
+        binary_reply_status: str | None,
+    ) -> bool:
         outcome = topic.pending_pushes.pop(message.ref, None) if message.ref else None
         if outcome is None:
             return False
         if not outcome.done():
             try:
-                outcome.set_result(reply_from_message(message))
+                outcome.set_result(
+                    reply_from_message(message, binary_status=binary_reply_status)
+                )
             except (TypeError, ValueError) as exc:
                 error = ChannelError("Malformed push reply")
                 error.__cause__ = exc
@@ -516,7 +529,7 @@ class TopicRuntimeMixin:
         self, topic: TopicSubscription, message: Message
     ) -> tuple[
         Callable[[Message], Awaitable[None]] | None,
-        Callable[[dict[str, Any]], Awaitable[None]] | None,
+        Callable[[Payload], Awaitable[None]] | None,
     ]:
         message_handler = topic.async_callback
         event_handler = topic.get_event_handler(message.event)
@@ -722,7 +735,7 @@ class TopicRuntimeMixin:
             raise SocketError("Connection lost before channel operation")
         captured_connection: ClientConnection = connection
         # Freeze the frame before scheduling any send continuation.
-        frame = self.protocol_handler.serialize_message(message)
+        frame = encode_message(message, self.protocol_handler.protocol_version)
         session = topic.send_session = self._session_for(connection)
         topic.send_outcomes = {
             existing
@@ -769,7 +782,7 @@ class TopicRuntimeMixin:
         self,
         topic: TopicSubscription,
         event: ChannelEvent,
-        payload: dict[str, Any],
+        payload: Payload,
         *,
         timeout_s: float,
     ) -> Reply:
@@ -777,8 +790,7 @@ class TopicRuntimeMixin:
             raise ChannelError("Channel is not joined")
         if not math.isfinite(timeout_s) or timeout_s <= 0:
             raise ValueError("timeout_s must be finite and > 0")
-        if not isinstance(payload, dict):
-            raise TypeError("Push payload must be a map")
+        _require_payload(payload)
         if event in {*SystemEvent} or (
             event == HEARTBEAT_EVENT and topic.name == PHOENIX_TOPIC
         ):

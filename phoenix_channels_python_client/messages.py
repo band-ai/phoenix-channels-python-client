@@ -4,7 +4,7 @@ from enum import StrEnum, unique
 from functools import cached_property
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
 PHOENIX_TOPIC = "phoenix"
 
@@ -25,6 +25,15 @@ CLIENT_LIFECYCLE_EVENTS = frozenset({SystemEvent.error, SystemEvent.close})
 HEARTBEAT_EVENT = "heartbeat"
 ChannelEvent = str | SystemEvent
 
+Payload = dict[str, Any] | bytes
+
+
+def _require_payload(value: object) -> Payload:
+    if isinstance(value, dict) or type(value) is bytes:
+        return value
+    raise TypeError("Payload must be a dict or bytes")
+
+
 # Servers may send a ref as a JSON number; the client matches refs as strings.
 Ref = Annotated[str | None, Field(coerce_numbers_to_str=True)]
 
@@ -34,7 +43,7 @@ class BaseMessage(BaseModel):
 
     topic: str
     ref: Ref
-    payload: dict[str, Any]
+    payload: Annotated[Payload, BeforeValidator(_require_payload)]
 
     @cached_property
     def subtopic(self) -> str | None:

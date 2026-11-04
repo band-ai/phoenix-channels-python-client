@@ -64,7 +64,10 @@ class SupervisorRuntimeDeps(Protocol):
     def _fail_pending_joins(self, error: Exception) -> None: ...
     def _retire_channels(self, error: Exception) -> None: ...
     def _handle_channel_control(
-        self, topic: TopicSubscription, message: Message
+        self,
+        topic: TopicSubscription,
+        message: Message,
+        binary_reply_status: str | None = None,
     ) -> bool: ...
     def _release_reservation(self, topic: TopicSubscription) -> None: ...
     def _channel_recoveries(self) -> list[asyncio.Task[None]]: ...
@@ -442,12 +445,14 @@ class SupervisorMixin:
 
     def _fail_joins_when_routing_stops(self, task: asyncio.Task[None]) -> None:
         if not task.cancelled():
-            self._fail_pending_joins_for_lost_connection()
+            self._fail_pending_joins_for_lost_connection(task.exception())
 
-    def _fail_pending_joins_for_lost_connection(self) -> None:
-        self.deps._fail_pending_joins(
-            SocketError("Connection lost before the join completed")
-        )
+    def _fail_pending_joins_for_lost_connection(
+        self, cause: BaseException | None = None
+    ) -> None:
+        error = SocketError("Connection lost while waiting for a channel operation")
+        error.__cause__ = cause
+        self.deps._fail_pending_joins(error)
 
     async def _cleanup_connection(self) -> None:
         self._fail_pending_joins_for_lost_connection()

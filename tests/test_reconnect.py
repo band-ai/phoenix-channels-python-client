@@ -4,7 +4,6 @@ import asyncio
 from contextlib import ExitStack
 from enum import StrEnum
 from http import HTTPStatus
-from typing import Any
 
 import pytest
 from websockets.frames import CloseCode
@@ -17,7 +16,7 @@ from phoenix_channels_python_client.client_types import (
     ReconnectEvent,
 )
 from phoenix_channels_python_client.exceptions import SocketError
-from phoenix_channels_python_client.messages import Message
+from phoenix_channels_python_client.messages import Message, Payload
 from tests.fake_server import FakePhoenixServer
 from tests.join_support import paused_writes
 from tests.support import (
@@ -91,14 +90,16 @@ class HeldMessageHandlers:
         self.finished_events: list[object] = []
 
     async def on_message(self, message: Message) -> None:
+        assert isinstance(message.payload, dict)
         self.started.append(message.payload["id"])
         if not self.running.is_set():
             self.running.set()
             await self.release.wait()
 
-    async def on_event(self, payload: dict[str, Any]) -> None:
+    async def on_event(self, payload: Payload) -> None:
         # Yields first, so a cancel cuts the handler off before it records.
         await asyncio.sleep(0)
+        assert isinstance(payload, dict)
         self.finished_events.append(payload["id"])
 
 
@@ -209,6 +210,7 @@ async def test_messages_queued_before_a_reconnect_are_dropped(
     first_started = asyncio.Event()
 
     async def stuck_on_the_first_message(message: Message) -> None:
+        assert isinstance(message.payload, dict)
         handled.append(message.payload["id"])
         if not first_started.is_set():
             first_started.set()
@@ -550,7 +552,7 @@ async def test_a_subscribe_during_a_rejoin_fails_fast_when_the_socket_drops(
         await phoenix_server.close_all_clients()
 
         with pytest.raises(
-            SocketError, match="Connection lost before the join completed"
+            SocketError, match="Connection lost while waiting for a channel operation"
         ):
             await asyncio.wait_for(subscribe, ASYNC_TIMEOUT_S)
         assert OTHER_TOPIC not in client.topic_subscriptions.copy()

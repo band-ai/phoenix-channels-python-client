@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from websockets.asyncio.server import ServerConnection
 
-from phoenix_channels_python_client import Channel, ProtocolVersion, Reply
+from phoenix_channels_python_client import Channel, Payload, ProtocolVersion, Reply
 from tests.fake_server import SYSTEM_TOPIC, FakePhoenixServer, Frame, WireEvent
 from tests.support import EVENT
 
@@ -51,9 +51,11 @@ class PushPeer(FakePhoenixServer):
 
 @asynccontextmanager
 async def pending_push(
-    channel: Channel, *, payload: dict[str, object] | None = None, timeout_s: float = 10
+    channel: Channel, *, payload: Payload | None = None, timeout_s: float = 10
 ) -> AsyncIterator[asyncio.Task[Reply]]:
-    task = asyncio.create_task(channel.push(EVENT, payload or {}, timeout_s=timeout_s))
+    task = asyncio.create_task(
+        channel.push(EVENT, {} if payload is None else payload, timeout_s=timeout_s)
+    )
     try:
         yield task
     finally:

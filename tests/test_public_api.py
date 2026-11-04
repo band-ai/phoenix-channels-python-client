@@ -22,6 +22,7 @@ def test_wildcard_imports_expose_only_the_public_api() -> None:
         "HeartbeatAckCallback",
         "JoinResponseCallback",
         "Message",
+        "Payload",
         "ProtocolVersion",
         "PushTimeoutError",
         "ReconnectCallback",

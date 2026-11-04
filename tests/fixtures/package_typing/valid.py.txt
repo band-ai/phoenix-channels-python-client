@@ -1,20 +1,29 @@
 from typing import Any, assert_type
 from phoenix_channels_python_client import (
-    Channel, Client, Message, ProtocolVersion, Reply,
+    Channel, Client, Message, Payload, ProtocolVersion, Reply,
 )
 client = Client('ws://localhost/socket', api_key=None, protocol_version=ProtocolVersion.V2)
 assert_type(client, Client)
 room = client.channel('room:1', params=lambda: {'token': 'fresh'})
 assert_type(room, Channel)
 @room.on('event')
-async def on_event(payload: dict[str, object]) -> None:
-    pass
+async def on_event(payload: Payload) -> None:
+    if isinstance(payload, bytes):
+        assert_type(payload, bytes)
+    else:
+        assert_type(payload, dict[str, Any])
 async def scoped() -> None:
     async with room:
         reply = await room.push('event', {'value': 1}, timeout_s=5.0)
         assert_type(reply, Reply)
         assert_type(reply.status, str)
-        assert_type(reply.response, dict[str, Any])
+        assert_type(reply.response, Payload)
+        binary_reply = await room.push('update', b'\x0a\x05hello')
+        assert_type(binary_reply, Reply)
+        if isinstance(binary_reply.response, bytes):
+            assert_type(binary_reply.response, bytes)
+        else:
+            assert_type(binary_reply.response, dict[str, Any])
 assert_type(client.channel_socket_url, str)
 assert_type(ProtocolVersion.V2.vsn, str)
 def receive(message: Message) -> str:
