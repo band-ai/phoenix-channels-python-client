@@ -59,17 +59,20 @@ The public names have changed without compatibility aliases:
 | `PhoenixChannelsProtocolVersion` | `ProtocolVersion` |
 | `PHXEvent` | `SystemEvent` |
 | `ChannelMessage` | `Message` |
+| `phx_messages` module | `messages` module |
 | `Client(url, key)` | `Client(url, api_key=key)` |
 | `setup_logging(level)` | Standard-library logging configuration (see [Logging](#logging)) |
+| `PHXProtocolHandler` | Internal protocol implementation; no public replacement |
+| `get_protocol_handler()` | Removed; protocol parsing and serialization are internal |
+| `Event` | Use `str` or `SystemEvent` for event names |
+| `__author__` | Removed; no public replacement |
 
-Import public types from `phoenix_channels_python_client`. Message types now live
-in `messages` rather than `phx_messages`; `Message` is an annotation/result union,
-not a model constructor. The installed package ships `py.typed` for type checkers.
+Import public types from `phoenix_channels_python_client`. `Message` is an
+annotation/result union, not a model constructor. The installed package ships
+`py.typed` for type checkers.
 `SystemEvent` is a `StrEnum`, so members compare directly with their wire strings.
 
-`PHXProtocolHandler`, `get_protocol_handler()`, `Event`, and `__author__` are no
-longer public API. Protocol parsing and serialization remain internal. Topic
-subscription and handler methods are unchanged in this cleanup.
+Topic subscription and handler methods are unchanged in this cleanup.
 
 ## Quick Start
 
