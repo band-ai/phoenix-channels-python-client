@@ -723,6 +723,8 @@ class TopicRuntimeMixin:
             return {}
         try:
             value = provider() if callable(provider) else provider
+            if isinstance(value, dict):
+                return dict(value)
         except (Exception, asyncio.CancelledError) as exc:
             raise ChannelError("Join params resolution failed") from exc
         if (
@@ -730,11 +732,9 @@ class TopicRuntimeMixin:
             and inspect.getcoroutinestate(value) == inspect.CORO_CREATED
         ):
             value.close()
-        if not isinstance(value, dict):
-            raise ChannelError("Join params must resolve to a dict") from TypeError(
-                "params must be a dict or synchronous dict provider"
-            )
-        return dict(value)
+        raise ChannelError("Join params must resolve to a dict") from TypeError(
+            "params must be a dict or synchronous dict provider"
+        )
 
     def _validate_join_hook(self, topic: TopicSubscription) -> None:
         hook = topic.on_join_response

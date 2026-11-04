@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Awaitable, Callable
-from typing import Any, cast
+from collections.abc import Awaitable, Callable, Iterator
+from typing import Any, Never, cast
 
 import pytest
 
@@ -21,6 +21,21 @@ from tests.support import (
     each_protocol,
     make_client,
 )
+
+
+class UncopyableParams(dict[str, Any]):
+    """Valid dict whose snapshot operation fails through its mapping hooks."""
+
+    def __init__(self, failure: RuntimeError) -> None:
+        super().__init__({"token": "initial"})
+        self.failure = failure
+
+    def __iter__(self) -> Iterator[str]:
+        # Dict copying consults mapping hooks when iteration is overridden.
+        return super().__iter__()
+
+    def keys(self) -> Never:
+        raise self.failure
 
 
 @each_protocol
@@ -97,6 +112,30 @@ async def test_initial_params_failure_preserves_its_cause_and_sends_nothing(
         await channel.join()
     async with client.channel(TOPIC) as replacement:
         assert replacement.joined
+
+
+@each_protocol
+@pytest.mark.parametrize("use_provider", [False, True], ids=["direct", "provider"])
+async def test_params_snapshot_failure_retires_the_handle_and_preserves_its_cause(
+    client: Client,
+    phoenix_server: FakePhoenixServer,
+    *,
+    use_provider: bool,
+) -> None:
+    failure = RuntimeError("cannot snapshot params")
+    values = UncopyableParams(failure)
+    params = (lambda: values) if use_provider else values
+
+    async with deadline():
+        channel = client.channel(TOPIC, params=params)
+        with pytest.raises(ChannelError) as caught:
+            await channel.join()
+        assert caught.value.__cause__ is failure
+        assert phoenix_server.join_topics == []
+        with pytest.raises(ChannelError):
+            await channel.join()
+        async with client.channel(TOPIC) as replacement:
+            assert replacement.joined
 
 
 @each_protocol
@@ -275,7 +314,13 @@ async def _crash_channel(server: FakePhoenixServer) -> None:
 
 @each_protocol
 @pytest.mark.parametrize(
-    "invalid", [[], {"token": object()}], ids=["non-dict", "unencodable-dict"]
+    ("invalid", "cause_type"),
+    [
+        ([], TypeError),
+        ({"token": object()}, TypeError),
+        (UncopyableParams(RuntimeError("cannot snapshot params")), RuntimeError),
+    ],
+    ids=["non-dict", "unencodable-dict", "uncopyable-dict"],
 )
 @pytest.mark.parametrize(
     ("recover", "new_connections"),
@@ -285,6 +330,7 @@ async def _crash_channel(server: FakePhoenixServer) -> None:
 async def test_invalid_recovery_params_retire_only_the_affected_channel(
     phoenix_server: FakePhoenixServer,
     invalid: object,
+    cause_type: type[Exception],
     recover: Callable[[FakePhoenixServer], Awaitable[None]],
     new_connections: int,
 ) -> None:
@@ -323,7 +369,7 @@ async def test_invalid_recovery_params_retire_only_the_affected_channel(
         assert topic == TOPIC
         assert isinstance(error, ChannelError)
         assert isinstance(error.__cause__, ChannelError)
-        assert isinstance(error.__cause__.__cause__, TypeError)
+        assert isinstance(error.__cause__.__cause__, cause_type)
         for _ in range(new_connections):
             await installed.get()
         assert not affected.joined
