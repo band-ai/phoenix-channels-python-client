@@ -23,6 +23,7 @@ from phoenix_channels_python_client.client_types import (
     ReconnectDecision,
     ReconnectEvent,
 )
+from phoenix_channels_python_client.codec import decode_message
 from phoenix_channels_python_client.messages import Message
 from phoenix_channels_python_client.protocol import ProtocolVersion
 from phoenix_channels_python_client.protocol_handler import PHXProtocolHandler
@@ -130,7 +131,8 @@ class TopicRuntimeHarness(TopicRuntimeMixin):
     @property
     def sent_messages(self) -> list[Message]:
         return [
-            self.protocol_handler.parse_message(frame) for frame in self.socket.sent
+            decode_message(frame, self.protocol_handler.protocol_version).message
+            for frame in self.socket.sent
         ]
 
     def _channel_rejoin_delay(self, attempt: int) -> float:

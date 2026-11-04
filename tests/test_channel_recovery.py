@@ -7,7 +7,7 @@ import pytest
 
 from phoenix_channels_python_client.client import Client
 from phoenix_channels_python_client.exceptions import ChannelError
-from phoenix_channels_python_client.messages import Message, SystemEvent
+from phoenix_channels_python_client.messages import Message, Payload, SystemEvent
 from phoenix_channels_python_client.protocol import ProtocolVersion
 from phoenix_channels_python_client.topic_subscription import ChannelState
 from tests.fake_server import FakePhoenixServer, WireEvent
@@ -369,7 +369,7 @@ async def test_resubscribing_from_on_topic_lost_works(
 async def test_lifecycle_event_handlers_are_rejected(
     client: Client, event: str | SystemEvent
 ) -> None:
-    async def handler(payload: dict[str, object]) -> None:
+    async def handler(payload: Payload) -> None:
         del payload
 
     await join_channel(client, TOPIC)

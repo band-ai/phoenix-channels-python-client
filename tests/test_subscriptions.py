@@ -8,7 +8,7 @@ import pytest
 
 from phoenix_channels_python_client.client import Client
 from phoenix_channels_python_client.exceptions import ChannelError, SocketError
-from phoenix_channels_python_client.messages import Message
+from phoenix_channels_python_client.messages import Message, Payload
 from tests.fake_server import FakePhoenixServer
 from tests.support import (
     ASYNC_TIMEOUT_S,
@@ -220,6 +220,7 @@ async def test_unsubscribing_lets_the_running_callback_finish_and_drops_queued_e
     release_callback = asyncio.Event()
 
     async def blocking_callback(message: Message) -> None:
+        assert isinstance(message.payload, dict)
         handled.append(message.payload["event_id"])
         callback_started.set()
         await release_callback.wait()
@@ -275,9 +276,12 @@ async def test_messages_are_delivered_in_order(
     for sequence_id in sequence:
         await deliver(phoenix_server, client, payload={"sequence_id": sequence_id})
 
-    assert [
-        (await expect_message(received)).payload["sequence_id"] for _ in sequence
-    ] == sequence
+    delivered = []
+    for _ in sequence:
+        message = await expect_message(received)
+        assert isinstance(message.payload, dict)
+        delivered.append(message.payload["sequence_id"])
+    assert delivered == sequence
 
 
 @each_protocol
@@ -300,7 +304,7 @@ async def test_an_event_handler_runs_alongside_the_topic_callback_until_removed(
     received: asyncio.Queue[Message],
 ) -> None:
     event = EVENT
-    handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    handled_payloads: asyncio.Queue[Payload] = asyncio.Queue()
     await join_channel(client, TOPIC, received.put)
 
     await deliver(phoenix_server, client, event=event)
@@ -318,7 +322,7 @@ async def test_an_event_handler_runs_alongside_the_topic_callback_until_removed(
     assert handled_payloads.empty()
 
 
-async def handle_payload(payload: dict[str, object]) -> None:
+async def handle_payload(payload: Payload) -> None:
     pass
 
 
@@ -367,9 +371,10 @@ async def test_a_failing_callback_skips_its_event_handler_and_later_messages_arr
     client: Client,
     received: asyncio.Queue[Message],
 ) -> None:
-    handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    handled_payloads: asyncio.Queue[Payload] = asyncio.Queue()
 
     async def fail_on_the_first_message(message: Message) -> None:
+        assert isinstance(message.payload, dict)
         if message.payload["n"] == 0:
             raise RuntimeError("callback boom")
         await received.put(message)
@@ -388,7 +393,7 @@ async def test_a_failing_callback_skips_its_event_handler_and_later_messages_arr
 async def test_an_event_handler_runs_without_a_topic_callback(
     phoenix_server: FakePhoenixServer, client: Client
 ) -> None:
-    handled_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    handled_payloads: asyncio.Queue[Payload] = asyncio.Queue()
     await join_channel(client, TOPIC)
     channel_for(client, TOPIC).on(EVENT, handled_payloads.put)
 
@@ -406,6 +411,7 @@ async def test_a_full_topic_queue_drops_its_oldest_message(
     release_first = asyncio.Event()
 
     async def held_on_the_first_message(message: Message) -> None:
+        assert isinstance(message.payload, dict)
         handled.append(message.payload["id"])
         if not first_started.is_set():
             first_started.set()

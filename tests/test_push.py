@@ -12,6 +12,7 @@ from phoenix_channels_python_client import (
     ChannelError,
     Client,
     Message,
+    Payload,
     ProtocolVersion,
     PushTimeoutError,
     Reply,
@@ -111,7 +112,7 @@ async def test_a_handler_can_push_on_its_own_topic(push_peer: PushPeer) -> None:
         channel = client.channel(TOPIC)
 
         @channel.on(EVENT)
-        async def handle(payload: dict[str, object]) -> None:
+        async def handle(payload: Payload) -> None:
             completed.put_nowait(await channel.push("from_handler", payload))
 
         async with channel:
@@ -131,7 +132,7 @@ async def test_push_completion_does_not_wait_for_an_earlier_handler(
         channel = client.channel(TOPIC)
 
         @channel.on(EVENT)
-        async def handle(payload: dict[str, object]) -> None:
+        async def handle(payload: Payload) -> None:
             del payload
             entered.set()
             await release.wait()
@@ -444,7 +445,7 @@ async def test_invalid_payload_type_does_not_submit_a_push(push_peer: PushPeer) 
         make_client(push_peer) as client,
         client.channel(TOPIC) as channel,
     ):
-        with pytest.raises(TypeError, match="payload"):
+        with pytest.raises(TypeError, match=r"[Pp]ayload"):
             await channel.push(EVENT, [])  # type: ignore[bad-argument-type]
         assert channel.subscription.pending_pushes == {}
         assert push_peer.pushes.empty()
@@ -487,7 +488,7 @@ async def test_crash_reaches_a_handler_awaiting_its_own_topic_push(
         channel = client.channel(TOPIC)
 
         @channel.on(EVENT)
-        async def handle(payload: dict[str, object]) -> None:
+        async def handle(payload: Payload) -> None:
             try:
                 await channel.push("from_handler", payload)
             except ChannelError as exc:

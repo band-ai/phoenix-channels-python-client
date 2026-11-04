@@ -95,9 +95,8 @@ Create the channel, register its handlers, then join with `async with`:
 
 ```python
 import asyncio
-from typing import Any
 
-from phoenix_channels_python_client import Client
+from phoenix_channels_python_client import Client, Payload
 
 async def main() -> None:
     async with Client(
@@ -106,8 +105,11 @@ async def main() -> None:
         room = client.channel("room:lobby")
 
         @room.on("new_msg")
-        async def handle_message(payload: dict[str, Any]) -> None:
-            print(f"Received: {payload}")
+        async def handle_message(payload: Payload) -> None:
+            if isinstance(payload, bytes):
+                print(f"Received binary: {payload.hex()}")
+            else:
+                print(f"Received: {payload}")
 
         async with room:
             await client.run_forever()
@@ -234,10 +236,12 @@ A channel supports one catch-all handler and one handler per event:
 | Registration | Handler receives | Removal |
 | --- | --- | --- |
 | `@room.on_any` or `room.on_any(handler)` | Full `Message` | `room.off_any()` |
-| `@room.on("new_msg")` or `room.on("new_msg", handler)` | Payload dict | `room.off("new_msg")` |
+| `@room.on("new_msg")` or `room.on("new_msg", handler)` | `Payload` (dict or bytes) | `room.off("new_msg")` |
 
 Both registration forms return the handler unchanged. Registering again replaces
-the previous handler for that slot. Handlers must be async functions.
+the previous handler for that slot. Handlers must be async functions. `Payload`
+is the public alias `dict[str, Any] | bytes`; narrow it before accessing dict
+fields or decoding application bytes.
 
 For each dispatched event, the catch-all runs first, then its event-specific
 handler. Handler selection is captured for that dispatch: changes apply to later
@@ -251,21 +255,26 @@ Register event decorators before joining:
 
 ```python
 import asyncio
-from typing import Any
 
-from phoenix_channels_python_client import Client
+from phoenix_channels_python_client import Client, Payload
 
 async def main() -> None:
     async with Client("ws://localhost:4000/socket/websocket", api_key="api-key") as client:
         room = client.channel("room:lobby")
 
         @room.on("user_join")
-        async def handle_user_join(payload: dict[str, Any]) -> None:
-            print(f"User joined: {payload}")
+        async def handle_user_join(payload: Payload) -> None:
+            if isinstance(payload, bytes):
+                print(f"Binary join notice: {payload.hex()}")
+            else:
+                print(f"User joined: {payload}")
 
         @room.on("user_leave")
-        async def handle_user_leave(payload: dict[str, Any]) -> None:
-            print(f"User left: {payload}")
+        async def handle_user_leave(payload: Payload) -> None:
+            if isinstance(payload, bytes):
+                print(f"Binary leave notice: {payload.hex()}")
+            else:
+                print(f"User left: {payload}")
 
         async with room:
             await client.run_forever()
@@ -337,8 +346,9 @@ during recovery permanently loses only that channel instead of retrying forever.
 ## Pushing Events
 
 Use `await channel.push(event, payload, timeout_s=10.0)` to send an application
-event and wait for its matching reply. The payload is a JSON-serializable dict;
-`timeout_s` must be finite and greater than zero. The default is 10 seconds.
+event and wait for its matching reply. Pass a JSON-serializable dict or, on V2,
+`bytes` (see [Binary payloads](#binary-payloads)). `timeout_s` must be finite and
+greater than zero. The default is 10 seconds.
 
 ```python
 import asyncio
@@ -359,7 +369,8 @@ asyncio.run(main())
 ```
 
 `Reply` is a frozen Pydantic model with `status: str` and
-`response: dict[str, Any]`. Status values are server-defined: an `"error"` reply
+`response: Payload`. A text reply has a dict response; a binary reply has a bytes
+response. Status values are server-defined: an `"error"` reply
 is returned as a `Reply`, without raising `ChannelError`.
 
 | Situation | Result |
@@ -389,6 +400,47 @@ handling, so its completion does not imply that earlier callbacks completed.
 Only a reply matching a pending push is consumed by that caller; an unmatched
 or late reply can reach the normal handlers, subject to current membership
 checks.
+
+### Binary payloads
+
+V2 supports `bytes` for pushes, replies, server events and broadcasts. Dicts use
+JSON text frames in both protocols. Passing bytes on V1 raises `TypeError` before
+submission; the client does not encode, decode or select an application format
+for you. Join parameters and lifecycle control frames remain JSON dicts.
+
+For example, the [protobuf wire format](https://protobuf.dev/programming-guides/encoding/)
+for `message Update { string body = 1; }` serializes `body="hello"` to the bytes below. With generated protobuf classes,
+pass `update.SerializeToString()` and parse a bytes response with your generated
+class. This example uses the wire bytes directly, so it needs no protobuf
+dependency:
+
+```python
+import asyncio
+
+from phoenix_channels_python_client import Client, ProtocolVersion
+
+async def main() -> None:
+    async with Client(
+        "ws://localhost:4000/socket/websocket",
+        api_key="api-key",
+        protocol_version=ProtocolVersion.V2,
+    ) as client:
+        room = client.channel("room:lobby")
+        async with room:
+            encoded_update = b"\x0a\x05hello"
+            reply = await room.push("update", encoded_update)
+            if isinstance(reply.response, bytes):
+                print(f"Protobuf response: {reply.response.hex()}")
+            else:
+                print(f"JSON response: {reply.response}")
+
+asyncio.run(main())
+```
+
+Event handlers and `Message.payload` also receive raw bytes for binary server
+events and broadcasts. A broadcast can have no `join_ref` and is delivered to
+its current topic. The application chooses the payload decoder; binary data
+is never interpreted as JSON merely because it contains JSON-looking bytes.
 
 ## Configuration
 

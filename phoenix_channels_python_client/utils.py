@@ -5,6 +5,7 @@ from typing import Any
 from phoenix_channels_python_client.messages import (
     ChannelEvent,
     Message,
+    Payload,
     SystemEvent,
     SystemMessage,
     UserMessage,
@@ -24,7 +25,7 @@ def make_message(
     event: ChannelEvent,
     topic: str,
     ref: str | None = None,
-    payload: dict[str, Any] | None = None,
+    payload: Payload | None = None,
     join_ref: str | None = None,
 ) -> Message:
     if payload is None:

@@ -29,7 +29,7 @@ from phoenix_channels_python_client.client_types import (
     ReconnectPolicy,
 )
 from phoenix_channels_python_client.exceptions import ChannelError
-from phoenix_channels_python_client.messages import Message
+from phoenix_channels_python_client.messages import Message, Payload
 from phoenix_channels_python_client.protocol import ProtocolVersion
 from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 from tests.fake_server import FakePhoenixServer
@@ -225,8 +225,8 @@ class TopicRecorder:
         self.topic = topic
         self.channel = client.channel(topic)
         self.messages: asyncio.Queue[Message] = asyncio.Queue()
-        self.event_payloads: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-        self.deliveries: list[tuple[dict[str, object], bool]] = []
+        self.event_payloads: asyncio.Queue[Payload] = asyncio.Queue()
+        self.deliveries: list[tuple[Payload, bool]] = []
 
     async def receive(self, message: Message) -> None:
         self.deliveries.append((message.payload, self.channel.joined))

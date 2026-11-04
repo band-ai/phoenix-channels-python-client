@@ -3,16 +3,16 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Self, TypeVar, overload
+from typing import TYPE_CHECKING, Self, TypeVar, overload
 
-from phoenix_channels_python_client.messages import ChannelEvent, Message
+from phoenix_channels_python_client.messages import ChannelEvent, Message, Payload
 from phoenix_channels_python_client.replies import DEFAULT_PUSH_TIMEOUT_S, Reply
 from phoenix_channels_python_client.topic_subscription import TopicSubscription
 
 if TYPE_CHECKING:
     from phoenix_channels_python_client.topic_runtime import TopicRuntimeMixin
 
-EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
+EventHandler = Callable[[Payload], Awaitable[None]]
 MessageHandler = Callable[[Message], Awaitable[None]]
 H = TypeVar("H", bound=EventHandler)
 M = TypeVar("M", bound=MessageHandler)
@@ -67,7 +67,7 @@ class Channel:
     async def push(
         self,
         event: ChannelEvent,
-        payload: dict[str, Any],
+        payload: Payload,
         *,
         timeout_s: float = DEFAULT_PUSH_TIMEOUT_S,
     ) -> Reply:

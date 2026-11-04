@@ -23,7 +23,7 @@ from phoenix_channels_python_client.exceptions import (
     PushTimeoutError,
     SocketError,
 )
-from phoenix_channels_python_client.messages import Message, SystemEvent
+from phoenix_channels_python_client.messages import Message, Payload, SystemEvent
 from phoenix_channels_python_client.protocol import ProtocolVersion
 from phoenix_channels_python_client.replies import Reply
 
@@ -42,6 +42,7 @@ __all__ = [
     "HeartbeatAckCallback",
     "JoinResponseCallback",
     "Message",
+    "Payload",
     "ProtocolVersion",
     "PushTimeoutError",
     "ReconnectCallback",

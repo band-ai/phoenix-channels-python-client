@@ -10,6 +10,7 @@ from phoenix_channels_python_client import (
     ChannelError,
     Client,
     Message,
+    Payload,
     SocketError,
 )
 from tests.channel_support import UnansweredLeavesPeer
@@ -29,7 +30,7 @@ def test_creation_and_registration_do_not_require_an_event_loop() -> None:
     client = Client("ws://127.0.0.1:1/socket")
     channel = client.channel(TOPIC)
 
-    async def handler(payload: dict[str, Any]) -> None:
+    async def handler(payload: Payload) -> None:
         del payload
 
     assert channel.on(EVENT, handler) is handler
@@ -57,10 +58,10 @@ async def test_decorator_sees_the_first_event_and_context_exit_leaves(
     payload = {"body": "first"}
     phoenix_server.join_events[TOPIC] = [(EVENT, payload)]
     channel = client.channel(TOPIC)
-    received: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    received: asyncio.Queue[Payload] = asyncio.Queue()
 
     @channel.on(EVENT)
-    async def handle(message: dict[str, Any]) -> None:
+    async def handle(message: Payload) -> None:
         received.put_nowait(message)
 
     assert not phoenix_server.join_topics
