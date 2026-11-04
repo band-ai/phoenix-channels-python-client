@@ -204,5 +204,5 @@ def encode_message(message: Message, protocol_version: ProtocolVersion) -> str |
     )
     try:
         return json.dumps(frame)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         raise TypeError("Cannot serialize message as JSON") from exc
