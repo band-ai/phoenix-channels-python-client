@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.5.2...phoenix-channels-python-client-v0.5.3) (2026-11-04)
+
+
+### Bug Fixes
+
+* **deps:** support Python 3.14 and enforce package typing ([#105](https://github.com/band-ai/phoenix-channels-python-client/issues/105)) ([fa1b6ef](https://github.com/band-ai/phoenix-channels-python-client/commit/fa1b6ef310677c112fff40fe95e1f61156da55a3))
+
 ## [0.5.2](https://github.com/band-ai/phoenix-channels-python-client/compare/phoenix-channels-python-client-v0.5.1...phoenix-channels-python-client-v0.5.2) (2026-11-04)
 
 
