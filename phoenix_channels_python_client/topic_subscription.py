@@ -40,7 +40,8 @@ class ChannelCause(StrEnum):
     STOP = "stop"
 
 
-JoinParams = dict[str, Any] | Callable[[], dict[str, Any]] | None
+JoinPayload = dict[str, Any] | bytes
+JoinParams = JoinPayload | Callable[[], JoinPayload] | None
 
 
 @dataclass()

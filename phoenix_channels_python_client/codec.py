@@ -160,10 +160,10 @@ def decode_message(
 
 
 def _encode_binary(message: Message, payload: bytes) -> bytes:
-    if message.event in {SystemEvent.join, SystemEvent.leave} or (
+    if message.event == SystemEvent.leave or (
         message.topic == PHOENIX_TOPIC and message.event == HEARTBEAT_EVENT
     ):
-        raise TypeError("Channel control frames require a JSON object payload")
+        raise TypeError("Leave and heartbeat frames require a JSON object payload")
     fields = tuple(
         field.encode("utf-8")
         for field in (

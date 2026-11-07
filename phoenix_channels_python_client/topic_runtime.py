@@ -39,6 +39,7 @@ from phoenix_channels_python_client.topic_subscription import (
     ChannelCause,
     ChannelState,
     JoinParams,
+    JoinPayload,
     TopicSubscription,
 )
 from phoenix_channels_python_client.utils import cancel_and_wait, make_message
@@ -817,14 +818,17 @@ class TopicRuntimeMixin:
             if topic.pending_pushes.get(ref) is outcome:
                 topic.pending_pushes.pop(ref)
 
-    def _resolve_join_params(self, topic: TopicSubscription) -> dict[str, Any]:
+    def _resolve_join_params(self, topic: TopicSubscription) -> JoinPayload:
         provider = topic.params
         if provider is None:
             return {}
         try:
             value = provider() if callable(provider) else provider
-            if isinstance(value, dict):
-                return dict(value)
+            match value:
+                case dict():
+                    return dict(value)
+                case bytes():
+                    return value
         except (Exception, asyncio.CancelledError) as exc:
             raise ChannelError("Join params resolution failed") from exc
         if (
@@ -832,8 +836,10 @@ class TopicRuntimeMixin:
             and inspect.getcoroutinestate(value) == inspect.CORO_CREATED
         ):
             value.close()
-        raise ChannelError("Join params must resolve to a dict") from TypeError(
-            "params must be a dict or synchronous dict provider"
+        raise ChannelError(
+            "Join params must resolve to a dict or bytes"
+        ) from TypeError(
+            "params must be a dict, bytes or synchronous provider of either"
         )
 
     def _validate_join_hook(self, topic: TopicSubscription) -> None:

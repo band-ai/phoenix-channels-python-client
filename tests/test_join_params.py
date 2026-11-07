@@ -10,6 +10,7 @@ from typing import Any, Never, cast
 import pytest
 
 from phoenix_channels_python_client import ChannelError, Client, Message
+from phoenix_channels_python_client.protocol import ProtocolVersion
 from phoenix_channels_python_client.topic_subscription import JoinParams
 from tests.fake_server import FakePhoenixServer
 from tests.join_support import deadline
@@ -86,6 +87,7 @@ async def test_callable_params_are_fresh_for_channel_and_socket_rejoins(
         await installed.get()
         _, reconnect = await phoenix_server.joined.get()
         assert reconnect.payload == {"attempt": 3}
+        assert isinstance(reconnect.payload, dict)
         assert attempts == reconnect.payload["attempt"]
         assert room.joined
 
@@ -384,3 +386,58 @@ async def test_invalid_recovery_params_retire_only_the_affected_channel(
         assert lost.empty()
         async with client.channel(TOPIC) as replacement:
             assert replacement.joined
+
+
+BINARY_PARAMS = b"\x0a\x05hello"
+
+
+@pytest.mark.parametrize("use_provider", [False, True], ids=["direct", "provider"])
+async def test_bytes_join_params_are_sent_as_a_binary_push(
+    client: Client, phoenix_server: FakePhoenixServer, *, use_provider: bool
+) -> None:
+    params = (lambda: BINARY_PARAMS) if use_provider else BINARY_PARAMS
+    async with client.channel(TOPIC, params=params) as room:
+        _, request = await phoenix_server.joined.get()
+        assert request.event == "phx_join"
+        assert request.payload == BINARY_PARAMS
+        assert room.joined
+
+
+async def test_bytes_join_params_are_resent_on_recovery(
+    phoenix_server: FakePhoenixServer,
+) -> None:
+    async with (
+        deadline(),
+        make_client(phoenix_server, reconnect_policy=FAST_RECONNECT) as client,
+    ):
+        room = client.channel(TOPIC, params=BINARY_PARAMS)
+        await room.join()
+        await phoenix_server.joined.get()
+        await phoenix_server.crash_channel(TOPIC)
+        _, channel_rejoin = await phoenix_server.joined.get()
+        assert channel_rejoin.payload == BINARY_PARAMS
+        await phoenix_server.close_all_clients()
+        _, socket_rejoin = await phoenix_server.joined.get()
+        assert socket_rejoin.payload == BINARY_PARAMS
+
+
+@pytest.mark.parametrize("params", [bytearray(b"x"), "text", lambda: "text"])
+async def test_non_dict_non_bytes_params_are_rejected(
+    client: Client, phoenix_server: FakePhoenixServer, params: object
+) -> None:
+    channel = client.channel(TOPIC, params=cast("JoinParams", params))
+    with pytest.raises(ChannelError, match="dict or bytes"):
+        await channel.join()
+    assert phoenix_server.join_topics == []
+
+
+async def test_bytes_join_params_require_protocol_v2() -> None:
+    async with (
+        FakePhoenixServer(ProtocolVersion.V1) as server,
+        deadline(),
+        make_client(server) as client,
+    ):
+        channel = client.channel(TOPIC, params=BINARY_PARAMS)
+        with pytest.raises(ChannelError, match="Join params encoding failed"):
+            await channel.join()
+        assert server.join_topics == []
